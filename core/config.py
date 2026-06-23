@@ -19,7 +19,14 @@ class ConfigManager:
     def __init__(self):
         # ── Paths ──
         self.output_dir = Path("Downloads")
-        self.max_concurrent = 3
+        self.max_concurrent = 3   # legacy, maps to file_concurrency
+
+        # ── Download concurrency (P2) ──
+        self.work_concurrency: int = 1
+        self.file_concurrency: int = 4
+        self.chunk_size: int = 1048576  # 1 MB
+        self.retry_count: int = 5
+        self.retry_backoff: int = 2    # exponential base seconds
 
         # ── Proxy: three-channel split ──
         self.metadata_proxy: Optional[str] = None   # API metadata requests
@@ -77,6 +84,16 @@ class ConfigManager:
                     data.get('output_dir', 'Downloads'))
                 config.max_concurrent = int(
                     data.get('max_concurrent', 3))
+                config.work_concurrency = int(
+                    data.get('work_concurrency', 1))
+                config.file_concurrency = int(
+                    data.get('file_concurrency', 4))
+                config.chunk_size = int(
+                    data.get('chunk_size', 1048576))
+                config.retry_count = int(
+                    data.get('retry_count', 5))
+                config.retry_backoff = int(
+                    data.get('retry_backoff', 2))
                 config.tag_audio = bool(
                     data.get('tag_audio', True))
                 config.sort_files = bool(
@@ -117,6 +134,11 @@ class ConfigManager:
         data = {
             "output_dir": str(self.output_dir),
             "max_concurrent": self.max_concurrent,
+            "work_concurrency": self.work_concurrency,
+            "file_concurrency": self.file_concurrency,
+            "chunk_size": self.chunk_size,
+            "retry_count": self.retry_count,
+            "retry_backoff": self.retry_backoff,
             "metadata_proxy": self.metadata_proxy,
             "download_proxy": self.download_proxy,
             "cover_proxy": self.cover_proxy,

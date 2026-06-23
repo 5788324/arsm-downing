@@ -18,8 +18,7 @@ from core.config import ConfigManager
 from core.database import LibraryVault
 from core.network import NetworkKernel
 from core.audio import AudioProcessor
-
-CHUNK_SIZE = 10485760  # 10MB chunks
+from core.speed import SpeedTracker
 
 
 class Orchestrator:
@@ -31,7 +30,8 @@ class Orchestrator:
         self.config = config
         self.db = db
         self.stats = SessionStats()
-        self.sem = asyncio.Semaphore(config.max_concurrent)
+        self.speed = SpeedTracker(window_seconds=5.0)
+        self.sem = asyncio.Semaphore(config.file_concurrency)
         self.download_queue: asyncio.Queue = asyncio.Queue()
         self.active_tasks: Dict[str, asyncio.Task] = {}
         self.cancelled_rjs: set = set()
@@ -101,6 +101,9 @@ class Orchestrator:
                     row["id"], rj_id, row["track_title"],
                     row["local_path"], 'paused',
                     row["downloaded_bytes"], row["total_bytes"])
+
+        # Freeze speed meters
+        self.speed.pause_work(rj_id)
 
         # Cancel active task if running
         if rj_id in self.active_tasks:
@@ -434,7 +437,7 @@ class Orchestrator:
             if existing_size > track.size:
                 existing_size = 0
 
-        for attempt in range(3):
+        for attempt in range(self.config.retry_count):
             self.db.upsert_download(dl_id, meta.rj_id, track.title,
                                     str(final_path), 'downloading',
                                     existing_size, track.size)
@@ -449,7 +452,8 @@ class Orchestrator:
                         track.url, headers)
 
                     if not success:
-                        if attempt == 2:
+                        last_attempt = attempt == self.config.retry_count - 1
+                        if last_attempt:
                             self.stats.failed += 1
                             self.db.upsert_download(
                                 dl_id, meta.rj_id, track.title,
@@ -459,7 +463,8 @@ class Orchestrator:
                                                 existing_size, track.size, "failed")
                             return False
                         existing_size = 0  # reset for retry
-                        await asyncio.sleep(1 * (attempt + 1))
+                        await asyncio.sleep(
+                                self.config.retry_backoff ** attempt)
                         continue
 
                     resp = resp_or_err
@@ -472,7 +477,8 @@ class Orchestrator:
                             return True
 
                         if resp.status not in (200, 206):
-                            if attempt == 2:
+                            last_attempt = attempt == self.config.retry_count - 1
+                            if last_attempt:
                                 self.stats.failed += 1
                                 self.db.upsert_download(
                                     dl_id, meta.rj_id, track.title,
@@ -482,7 +488,8 @@ class Orchestrator:
                                                     existing_size, track.size, "failed")
                                 return False
                             existing_size = 0
-                            await asyncio.sleep(1 * (attempt + 1))
+                            await asyncio.sleep(
+                                self.config.retry_backoff ** attempt)
                             continue
 
                         is_partial = resp.status == 206
@@ -502,10 +509,15 @@ class Orchestrator:
                         downloaded = existing_size if is_partial else 0
 
                         async with aiofiles.open(target, mode) as f:
-                            async for chunk in resp.content.iter_chunked(CHUNK_SIZE):
+                            async for chunk in resp.content.iter_chunked(
+                                self.config.chunk_size):
                                 await f.write(chunk)
                                 downloaded += len(chunk)
                                 self.stats.bytes_downloaded += len(chunk)
+                                # Update speed meter
+                                self.speed.update(
+                                    meta.rj_id, track.id or track.title,
+                                    downloaded)
                                 self._emit_progress(meta.rj_id, track.title,
                                                     downloaded, track.size, "downloading")
                     finally:
@@ -533,12 +545,14 @@ class Orchestrator:
                 return True
 
             except asyncio.CancelledError:
+                self.speed.pause_track(meta.rj_id, track.id or track.title)
                 self.db.upsert_download(dl_id, meta.rj_id, track.title,
                                         str(final_path), 'paused',
                                         existing_size, track.size)
                 raise
             except Exception as e:
-                if attempt == 2:
+                last_attempt = attempt == self.config.retry_count - 1
+                if last_attempt:
                     self.stats.failed += 1
                     self.db.upsert_download(dl_id, meta.rj_id, track.title,
                                             str(final_path), 'failed', error=str(e))
@@ -547,7 +561,8 @@ class Orchestrator:
                     return False
                 logging.warning(f"Retry {attempt+1}/3 for {track.title}: {e}")
                 existing_size = 0
-                await asyncio.sleep(1 * (attempt + 1))
+                await asyncio.sleep(
+                                self.config.retry_backoff ** attempt)
 
         return False
 

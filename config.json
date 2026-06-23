@@ -16,5 +16,10 @@
     "dns": "1.1.1.1",
     "achievements": [
         "first_blood"
-    ]
+    ],
+    "work_concurrency": 1,
+    "file_concurrency": 4,
+    "chunk_size": 1048576,
+    "retry_count": 5,
+    "retry_backoff": 2
 }
