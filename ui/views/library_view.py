@@ -24,7 +24,7 @@ class LibraryView(ft.Container):
         super().__init__()
         self.app_controller = app_controller
         self.expand = True
-        self.padding = 0
+        self.padding = 10
 
         self.search_input = ft.TextField(
             hint_text="搜索库 (支持作品名或社团)...",
@@ -41,12 +41,13 @@ class LibraryView(ft.Container):
         self.content = ft.Column(
             [
                 ft.Text("您的资源库", size=32, weight=ft.FontWeight.BOLD),
-                self.search_input,
-                ft.Divider(color="transparent"),
+                ft.Container(
+                    content=self.search_input,
+                    padding=10),
+                ft.Divider(height=1, color="transparent"),
                 self.grid,
             ],
             expand=True,
-            scroll=ft.ScrollMode.AUTO,
         )
 
     def load_library(self, query=""):

@@ -145,9 +145,17 @@ class DownloadView(ft.Container):
         self._refresh_queue()
 
     def _batch_resume(self):
-        self.app_controller.orc.resume_all()
+        orc = self.app_controller.orc
+        loop = self.app_controller.loop
+        rj_ids = orc.resume_all()
+        for rj_id in rj_ids:
+            orc.speed.resume_work(rj_id)
+        import asyncio
+        asyncio.run_coroutine_threadsafe(
+            orc._resume_all_async(), loop)
         self._refresh_queue()
-        self.app_controller.show_snack("已恢复所有待下载/暂停任务")
+        self.app_controller.show_snack(
+            f"已恢复 {len(rj_ids)} 个任务")
 
     def process_input(self, text: str):
         codes = []
@@ -274,6 +282,21 @@ class DownloadView(ft.Container):
                 tooltip="清除记录",
                 on_click=lambda e, r=rj_id: self.cancel_item(r))
             actions.append(btn_clear)
+        elif "重复" in status or "Duplicate" in status:
+            # Duplicate: open dir + force download
+            btn_open = ft.IconButton(
+                icon=ft.icons.FOLDER_OPEN, icon_color=ACCENT_SECONDARY,
+                tooltip="打开目录",
+                on_click=lambda e, r=rj_id: self._open_work_dir(r))
+            btn_force = ft.IconButton(
+                icon=ft.icons.FORCE_GRAPH_3, icon_color=WARNING,
+                tooltip="仍然下载",
+                on_click=lambda e, r=rj_id: self._force_download(r))
+            btn_clear = ft.IconButton(
+                icon=ft.icons.DELETE_OUTLINE, icon_color="grey",
+                tooltip="清除",
+                on_click=lambda e, r=rj_id: self.cancel_item(r))
+            actions.extend([btn_open, btn_force, btn_clear])
         elif self._is_failed(status):
             # Failed: retry + clear + open folder
             btn_retry = ft.IconButton(
@@ -444,6 +467,16 @@ class DownloadView(ft.Container):
         data["cache_hit"] = False
         self.build_queue_item(rj_id)
         self.app_controller.resume_download(rj_id)
+
+    def _force_download(self, rj_id: str):
+        """Force download a duplicate work."""
+        data = self.active_downloads.get(rj_id)
+        if not data:
+            return
+        data["status"] = "队列中"
+        data["cache_hit"] = False
+        self.build_queue_item(rj_id)
+        self.app_controller.start_download(rj_id)
 
     def _open_work_dir(self, rj_id: str):
         """Open the download directory for this work."""

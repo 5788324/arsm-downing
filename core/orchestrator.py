@@ -190,7 +190,7 @@ class Orchestrator:
     #  P3.5: batch controls
     # ══════════════════════════════════════════════
     def pause_all(self):
-        """Pause all non-terminal works and freeze speed meters."""
+        """Pause all non-terminal works, freeze speed, emit paused."""
         rows = self.db.conn.execute(
             "SELECT DISTINCT rj_id FROM downloads "
             "WHERE status NOT IN ('completed','registered','failed','paused')"
@@ -199,18 +199,22 @@ class Orchestrator:
             rj_id = row["rj_id"]
             self.speed.pause_work(rj_id)
             self.pause_job(rj_id)
+            # Emit paused so UI updates speed/status
+            self._emit_work_status(rj_id, "Paused")
 
     def resume_all(self):
-        """Resume all paused/queued works. Does NOT retry failed."""
+        """Return RJs that need resuming. Caller must schedule async resume."""
         rows = self.db.conn.execute(
             "SELECT DISTINCT rj_id FROM downloads "
             "WHERE status IN ('paused','queued')"
         ).fetchall()
-        tasks = []
-        for row in rows:
-            tasks.append(asyncio.ensure_future(
-                self.resume_job(row["rj_id"])))
-        return tasks
+        return [row["rj_id"] for row in rows]
+
+    async def _resume_all_async(self):
+        """Internal: actually resume all paused/queued works."""
+        for rj_id in self.resume_all():
+            self.speed.resume_work(rj_id)
+            await self.resume_job(rj_id)
 
     async def resume_job(self, rj_id: str):
 
@@ -763,8 +767,20 @@ class Orchestrator:
                 logging.warning(f"Cover timeout for {rj_id}")
                 cover_path = None
             except Exception as e:
-                logging.error(f"Cover failed for {rj_id}: {e}")
-                cover_path = None
+                # Try direct if proxy failed
+                logging.warning(f"Cover proxy failed: {e}, trying direct")
+                try:
+                    async def fetch_cover_direct():
+                        async with await self.kernel.stream(
+                            meta.cover_url, purpose='download'
+                        ) as resp:
+                            if resp.status == 200:
+                                cover_path.write_bytes(await resp.read())
+                    await asyncio.wait_for(fetch_cover_direct(), timeout=10.0)
+                except Exception:
+                    logging.warning(
+                        f"Cover direct also failed for {rj_id}")
+                    cover_path = None
         else:
             cover_path = None
 
