@@ -619,20 +619,33 @@ class DownloadView(ft.Container):
 
     def refresh_dialog_list(self, rj_id: str):
         data = self.active_downloads.get(rj_id)
-        if not data or not hasattr(self, "dialog_list"):
-            return
         self.dialog_list.controls.clear()
-        for title, info in data.get("tracks", {}).items():
-            prog = info["downloaded"] / info["total"] \
-                if info.get("total", 0) > 0 else 0
-            color = SUCCESS if info["status"] == "completed" else \
-                    ERROR if info["status"] == "failed" else ACCENT_SECONDARY
-            self.dialog_list.controls.append(ft.Column([
-                ft.Row([ft.Text(title[:40], size=12),
-                        ft.Text(f"{prog*100:.1f}%", size=12)],
-                       alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                ft.ProgressBar(value=prog, color=color)
-            ]))
+
+        # Multi-fallback track detail
+        tracks_data = data.get("tracks", {}) if data else {}
+        details = self.app_controller.orc.get_track_detail_for_ui(
+            rj_id, active_tracks=tracks_data)
+
+        if not details:
+            self.dialog_list.controls.append(
+                ft.Text("暂无文件列表，请重新准备元数据",
+                        color="grey", size=14))
+        else:
+            for d in details:
+                total = d["total"]
+                dl = d["downloaded"]
+                prog = dl / total if total > 0 else 0
+                color = (SUCCESS if d["status"] == "completed"
+                         else ERROR if d["status"] == "failed"
+                         else ACCENT_SECONDARY)
+                title = d["title"][:40]
+                self.dialog_list.controls.append(ft.Column([
+                    ft.Row([
+                        ft.Text(title, size=12),
+                        ft.Text(f"{prog*100:.1f}%", size=12),
+                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                    ft.ProgressBar(value=prog, color=color),
+                ]))
         try:
             self.dialog_list.update()
         except Exception:

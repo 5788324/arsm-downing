@@ -20,6 +20,8 @@ from core.network import NetworkKernel
 from core.audio import AudioProcessor
 from core.speed import SpeedTracker
 
+logger = logging.getLogger("echovault")
+
 
 class Orchestrator:
     """Orchestrates download operations with metadata cache and download state."""
@@ -186,6 +188,55 @@ class Orchestrator:
                 results[row["rj_id"]] = status
         return results
 
+    def get_track_detail_for_ui(self, rj_id: str, active_tracks: dict = None):
+        """Return track details for UI detail dialog. Multi-fallback.
+
+        Returns: list of dicts with title/status/downloaded/total/local_path
+        """
+        result = []
+
+        # 1. Active downloads in memory
+        if active_tracks:
+            for title, info in active_tracks.items():
+                result.append({
+                    "title": title,
+                    "status": info.get("status", "pending"),
+                    "downloaded": info.get("downloaded", 0),
+                    "total": info.get("total", 0),
+                    "local_path": "",
+                })
+
+        # 2. Fallback to DB downloads table
+        if not result:
+            rows = self.db.get_downloads_by_rj(rj_id)
+            for r in rows:
+                result.append({
+                    "title": r["track_title"],
+                    "status": r["status"],
+                    "downloaded": r["downloaded_bytes"],
+                    "total": r["total_bytes"],
+                    "local_path": r["local_path"],
+                })
+
+        # 3. Fallback to metadata_cache
+        if not result:
+            cached = self.db.get_metadata_cache(rj_id)
+            if cached:
+                import json as _j
+                tracks = _j.loads(cached.get("tracks_json", "[]"))
+                for t in tracks:
+                    if t.get("type") == "folder":
+                        continue
+                    result.append({
+                        "title": t.get("title", "Unknown"),
+                        "status": "pending",
+                        "downloaded": 0,
+                        "total": t.get("size", 0),
+                        "local_path": "",
+                    })
+
+        return result
+
     # ══════════════════════════════════════════════
     #  P3.5: batch controls
     # ══════════════════════════════════════════════
@@ -195,12 +246,13 @@ class Orchestrator:
             "SELECT DISTINCT rj_id FROM downloads "
             "WHERE status NOT IN ('completed','registered','failed','paused')"
         ).fetchall()
-        for row in rows:
-            rj_id = row["rj_id"]
+        rj_ids = [row["rj_id"] for row in rows]
+        logger.info(f"pause_all: affecting {len(rj_ids)} works: {rj_ids}")
+        for rj_id in rj_ids:
             self.speed.pause_work(rj_id)
             self.pause_job(rj_id)
-            # Emit paused so UI updates speed/status
             self._emit_work_status(rj_id, "Paused")
+        return rj_ids
 
     def resume_all(self):
         """Return RJs that need resuming. Caller must schedule async resume."""
@@ -212,25 +264,25 @@ class Orchestrator:
 
     async def _resume_all_async(self):
         """Internal: actually resume all paused/queued works."""
-        for rj_id in self.resume_all():
+        rj_ids = self.resume_all()
+        logger.info(f"resume_all: {len(rj_ids)} works: {rj_ids}")
+        for rj_id in rj_ids:
             self.speed.resume_work(rj_id)
             await self.resume_job(rj_id)
 
-    async def resume_job(self, rj_id: str):
+    async def resume_job(self, rj_id: str) -> dict:
 
     # ══════════════════════════════════════════════
         """Resume paused/queued downloads from DB state."""
         cached = self.db.get_metadata_cache(rj_id)
         if not cached:
-            logging.warning(f"Cannot resume {rj_id}: no metadata cache")
-            return
+            return {"status": "no_cache", "message": "No metadata cache"}
 
         try:
             meta_raw = _json.loads(cached["metadata_json"])
             tracks_raw = _json.loads(cached["tracks_json"])
         except Exception:
-            logging.error(f"Corrupt cache for {rj_id}")
-            return
+            return {"status": "cache_corrupt", "message": "Corrupt cache"}
 
         meta = self._build_metadata(rj_id, meta_raw)
         root_path = self.get_save_path(meta)
@@ -261,8 +313,9 @@ class Orchestrator:
                 resume_targets.append(t)
 
         if not resume_targets:
-            self._emit_work_status(rj_id, "No pending tracks to resume")
-            return
+            self._emit_work_status(rj_id, "No pending tracks")
+            return {"status": "no_pending",
+                    "message": "No pending tracks to resume"}
 
         self._emit_work_status(rj_id, "Resuming...")
         for t in resume_targets:
@@ -282,6 +335,8 @@ class Orchestrator:
             (rj_id, self._process_download(rj_id, meta,
                                            resume_targets, root_path))
         )
+        return {"status": "resumed", "message": "Resumed",
+                "count": len(resume_targets)}
 
     # ══════════════════════════════════════════════
     #  P1.5-2:  restore on startup
@@ -466,8 +521,14 @@ class Orchestrator:
                     self.db.invalidate_cache(rj_id)
 
         if meta_raw is None:
-            meta_raw, tracks_raw = await self._fetch_metadata_live(
-                rj_id, rj_numeric)
+            try:
+                meta_raw, tracks_raw = await self._fetch_metadata_live(
+                    rj_id, rj_numeric)
+            except Exception as e:
+                logger.error(f"Metadata fetch failed for {rj_id}: {e}")
+                self._emit_work_status(rj_id,
+                    f"Metadata proxy failed: {e}")
+                return None, None, None, False
             if not meta_raw:
                 self._emit_work_status(rj_id, "Failed to fetch metadata")
                 return None, None, None, False
@@ -518,6 +579,7 @@ class Orchestrator:
                                 existing_size, t.size, "pending")
 
         status_msg = "Prepared (cached)" if from_cache else "Prepared"
+        logger.info(f"prepare_work {rj_id}: {status_msg}, {len(targets)} tracks")
         self._emit_work_status(rj_id, status_msg)
         return meta, targets, root_path, from_cache
 

@@ -76,17 +76,34 @@ class ToolsView(ft.Container):
         self.log("> 测试 API 连通性...", "white")
         import aiohttp
         from core.config import HOSTNAME_MIRRORS
+        cfg = self.app_controller.config
+
         async def _test():
+            # Check metadata proxy
+            mp = cfg.metadata_proxy or cfg.proxy
+            if mp:
+                try:
+                    async with aiohttp.ClientSession() as s:
+                        async with s.get(mp, timeout=5) as resp:
+                            self.log(f"✓ 代理 {mp} 可用", SUCCESS)
+                except Exception:
+                    self.log(f"⚠ 代理 {mp} 不可用 — 请检查端口", WARNING)
+
             for mirror in HOSTNAME_MIRRORS:
                 try:
                     async with aiohttp.ClientSession() as session:
-                        async with session.get(mirror, timeout=5) as resp:
+                        async with session.get(mirror, timeout=5,
+                                               proxy=mp) as resp:
                             if resp.status in (200, 403, 404):
                                 self.log(f"✓ {mirror} 连接正常", SUCCESS)
                             else:
-                                self.log(f"⚠ {mirror} 状态异常: {resp.status}", WARNING)
+                                self.log(
+                                    f"⚠ {mirror} 状态异常: {resp.status}",
+                                    WARNING)
                 except Exception:
-                    self.log(f"✗ {mirror} 无法连接", ERROR)
+                    self.log(
+                        f"✗ {mirror} 无法连接 — 请检查 metadata_proxy",
+                        ERROR)
         import asyncio
         if hasattr(self, 'app_controller') and \
            hasattr(self.app_controller, 'loop'):
