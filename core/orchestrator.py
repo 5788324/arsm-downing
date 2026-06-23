@@ -142,7 +142,7 @@ class Orchestrator:
 
         # Only resume tracks that are paused/queued/downloading
         db_states = {
-            row["id"]: row
+            row["id"]: dict(row)
             for row in self.db.get_downloads_by_rj(rj_id)
         }
         resume_targets = []
@@ -557,32 +557,25 @@ class Orchestrator:
     async def _stream_with_fallback(self, url: str, headers: dict):
         """Stream with fallback: direct → proxy on failure."""
         # Try direct first (purpose='download' = no proxy unless configured)
+        direct_error = None
         try:
             resp = await self.kernel.stream(url, headers, purpose='download')
             return True, resp
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
-            pass  # will try fallback
+            direct_error = e
 
         if not self.config.download_fallback_to_proxy:
-            return False, "Direct connection failed (fallback disabled)"
+            return False, f"Direct failed, fallback disabled: {direct_error}"
 
         fallback_proxy = (self.config.download_proxy or
                           self.config.metadata_proxy or
                           self.config.proxy)
         if not fallback_proxy:
-            return False, "Direct connection failed (no proxy configured)"
+            return False, f"Direct failed, no proxy configured: {direct_error}"
 
         logging.info(f"Download fallback via proxy for {url[:80]}...")
         try:
-            resp = await self.kernel.stream(url, headers, purpose='download')
-            # Reload session with proxy override
-            if resp is not None:
-                return True, resp
-        except Exception as e:
-            pass
-
-        # Force proxy by overriding purpose
-        try:
+            await self.kernel.boot()
             resp = await self.kernel.session.get(
                 url, headers=headers, proxy=fallback_proxy)
             return True, resp
@@ -642,11 +635,11 @@ class Orchestrator:
 
         try:
             if failed_count == 0 and cancelled_count == 0:
-                # All success — register work
+                # All success — register work as completed
                 final_size = sum(
                     t.save_path.stat().st_size
                     for t in targets if t.save_path.exists())
-                self.db.register(meta, final_size, root_path)
+                self.db.register(meta, final_size, root_path, status='completed')
                 for t in targets:
                     dl_id = self._make_dl_id(
                         rj_id, t.id or t.title, t.save_path, t.title)
@@ -658,10 +651,9 @@ class Orchestrator:
                 # Was paused — leave paused tracks in DB, don't overwrite
                 self._emit_work_status(rj_id, "Paused (partial)")
             else:
-                # Some failed — report partial, do NOT overwrite failed
+                # Some failed — register as partial, do NOT overwrite failed
                 self._emit_work_status(
                     rj_id, f"Partially completed ({success_count}/{total})")
-                # Only register success ones
                 success_targets = [
                     t for i, t in enumerate(targets)
                     if results[i] is True]
@@ -669,7 +661,8 @@ class Orchestrator:
                     final_size = sum(
                         t.save_path.stat().st_size
                         for t in success_targets if t.save_path.exists())
-                    self.db.register(meta, final_size, root_path)
+                    self.db.register(meta, final_size, root_path,
+                                     status='partial')
                     for t in success_targets:
                         dl_id = self._make_dl_id(
                             rj_id, t.id or t.title, t.save_path, t.title)

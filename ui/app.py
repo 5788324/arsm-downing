@@ -95,13 +95,14 @@ class AppController:
     def _start_ui_poller(self):
         """Start a background thread that polls the message queue
         and dispatches UI updates to Flet's main event loop."""
+        self.ui_processing = False
 
         def poll_loop():
             while True:
                 time.sleep(0.1)
                 try:
-                    if not self.ui_queue.empty():
-                        # Schedule async processing on Flet's event loop
+                    if not self.ui_processing and not self.ui_queue.empty():
+                        self.ui_processing = True
                         self.page.run_task(self._process_ui_queue())
                 except Exception as e:
                     logging.debug(f"UI poller error: {e}")
@@ -111,38 +112,41 @@ class AppController:
     async def _process_ui_queue(self):
         """Process all pending UI messages. Runs on Flet's event loop."""
         processed = False
-        while not self.ui_queue.empty():
-            try:
-                msg = self.ui_queue.get_nowait()
-                msg_type = msg[0]
+        try:
+            while not self.ui_queue.empty():
+                try:
+                    msg = self.ui_queue.get_nowait()
+                    msg_type = msg[0]
 
-                if msg_type == "progress":
-                    _, rj_id, track_id, downloaded, total, status = msg
-                    try:
-                        self.views[0].update_track_progress(
-                            rj_id, track_id, downloaded, total, status
-                        )
-                    except Exception as e:
-                        logging.debug(f"UI progress update error: {e}")
+                    if msg_type == "progress":
+                        _, rj_id, track_id, downloaded, total, status = msg
+                        try:
+                            self.views[0].update_track_progress(
+                                rj_id, track_id, downloaded, total, status
+                            )
+                        except Exception as e:
+                            logging.debug(f"UI progress update error: {e}")
 
-                elif msg_type == "work_status":
-                    _, rj_id, status = msg
-                    try:
-                        self.views[0].update_work_status(rj_id, status)
-                    except Exception as e:
-                        logging.debug(f"UI work_status update error: {e}")
+                    elif msg_type == "work_status":
+                        _, rj_id, status = msg
+                        try:
+                            self.views[0].update_work_status(rj_id, status)
+                        except Exception as e:
+                            logging.debug(f"UI work_status update error: {e}")
 
-                processed = True
-            except queue.Empty:
-                break
-            except Exception as e:
-                logging.debug(f"UI queue processing error: {e}")
+                    processed = True
+                except queue.Empty:
+                    break
+                except Exception as e:
+                    logging.debug(f"UI queue processing error: {e}")
 
-        if processed:
-            try:
-                self.page.update()
-            except Exception:
-                pass
+            if processed:
+                try:
+                    self.page.update()
+                except Exception:
+                    pass
+        finally:
+            self.ui_processing = False
 
     # ──────────────────────────────────────────────────────
     #  UI setup

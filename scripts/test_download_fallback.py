@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""下载 fallback 回退代理测试 — 验证直连失败时自动切换代理。
+"""下载 fallback 测试 — mock 验证直连失败→代理成功。
 
-此为单元级测试，不依赖真实网络。
+mock kernel.stream 第 1 次抛错，session.get 第 1 次成功。
 """
 
 import asyncio
@@ -13,67 +13,133 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 async def test():
     print(f"\n{'='*60}")
-    print(f"  下载 fallback 代理测试")
+    print(f"  下载 fallback mock 测试")
     print(f"{'='*60}\n")
 
     from core.config import ConfigManager
+    from core.database import LibraryVault
+    from core.network import NetworkKernel
+    from core.orchestrator import Orchestrator
+    import aiohttp
 
-    # ── 1. 配置 fallback ──
-    print("── 1. 配置验证 ──")
     cfg = ConfigManager()
     cfg.download_fallback_to_proxy = True
     cfg.metadata_proxy = "http://127.0.0.1:7890"
-    cfg.proxy = "http://127.0.0.1:1080"
-
-    assert cfg.download_fallback_to_proxy is True
-    assert cfg.get_proxy_for('metadata') == "http://127.0.0.1:7890"
-    assert cfg.get_proxy_for('download') is None  # default: no proxy
-    assert cfg.get_proxy_for('cover') == "http://127.0.0.1:7890"
-    print(f"  ✓ metadata_proxy: {cfg.get_proxy_for('metadata')}")
-    print(f"  ✓ download_proxy: {cfg.get_proxy_for('download')} (无代理=直连)")
-    print(f"  ✓ cover_proxy: {cfg.get_proxy_for('cover')}")
-
-    # ── 2. 验证 fallback proxy 地址 ──
-    fallback = (cfg.download_proxy or cfg.metadata_proxy or cfg.proxy)
-    assert fallback == "http://127.0.0.1:7890", \
-        f"fallback 应取 metadata_proxy, 实际: {fallback}"
-    print(f"  ✓ fallback proxy: {fallback}")
-
-    # ── 3. fallback 关闭时不应回退 ──
-    cfg.download_fallback_to_proxy = False
-    assert cfg.download_fallback_to_proxy is False
-    print(f"  ✓ download_fallback_to_proxy=False 时不回退")
-
-    # ── 4. 无代理配置时 fallback 应返回 false ──
-    from core.orchestrator import Orchestrator
-    from core.database import LibraryVault
-    from core.network import NetworkKernel
+    fallback_proxy = "http://127.0.0.1:7890"
 
     db = LibraryVault()
     kernel = NetworkKernel(cfg)
     orc = Orchestrator(kernel, cfg, db)
 
-    # _stream_with_fallback with an invalid URL should fail and return (False, msg)
+    # ── Mock tracking ──
+    stream_calls = 0
+    session_get_calls = 0
+    session_get_proxy = None
+
+    class MockResponse:
+        status = 200
+        content = None
+        closed = False
+
+        def close(self):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            pass
+
+    # Mock kernel.stream: first call raises, second call (if any) returns response
+    original_stream = kernel.stream
+
+    async def mock_stream(url, headers, purpose='download'):
+        nonlocal stream_calls
+        stream_calls += 1
+        if stream_calls == 1:
+            raise aiohttp.ClientConnectionError("Simulated direct failure")
+        return MockResponse()
+
+    kernel.stream = mock_stream
+
+    # Mock kernel.session.get: records proxy arg
+    class MockSession:
+        async def get(self, url, headers=None, proxy=None, **kwargs):
+            nonlocal session_get_calls, session_get_proxy
+            session_get_calls += 1
+            session_get_proxy = proxy
+            return MockResponse()
+
+    kernel.session = MockSession()
+    async def mock_boot():
+        pass
+    kernel.boot = mock_boot
+
+    # ── Run ──
+    print("── 调用 _stream_with_fallback ──")
+    success, result = await orc._stream_with_fallback(
+        "http://example.com/test.mp3", {})
+    print(f"  success: {success}")
+    print(f"  stream_calls: {stream_calls}")
+    print(f"  session_get_calls: {session_get_calls}")
+    print(f"  session_get_proxy: {session_get_proxy}")
+
+    # ── Verify ──
+    assert success is True, f"应返回 True, 实际 {success}"
+    assert stream_calls == 1, \
+        f"stream 应只调用 1 次(直连失败), 实际 {stream_calls}"
+    assert session_get_calls == 1, \
+        f"session.get 应调用 1 次(fallback), 实际 {session_get_calls}"
+    assert session_get_proxy == fallback_proxy, \
+        f"session.get proxy 应为 {fallback_proxy}, 实际 {session_get_proxy}"
+
+    print(f"\n  ✓ stream 只调 1 次（直连失败，不重复）")
+    print(f"  ✓ session.get 调 1 次（走代理）")
+    print(f"  ✓ proxy 参数正确")
+
+    # Restore
+    kernel.stream = original_stream
+
+    # ── Test: fallback disabled ──
+    print(f"\n── fallback 关闭时不应回退 ──")
+    cfg.download_fallback_to_proxy = False
+    kernel.stream = mock_stream
+    stream_calls = 0
+    session_get_calls = 0
+
+    success, msg = await orc._stream_with_fallback(
+        "http://example.com/test2.mp3", {})
+    print(f"  success: {success}, msg: {msg[:60]}")
+    assert success is False
+    assert "disabled" in str(msg).lower()
+    assert session_get_calls == 0, "fallback 关闭时不应调用 session.get"
+    print(f"  ✓ fallback 关闭时正确返回失败")
+
+    # ── Test: no proxy configured ──
+    print(f"\n── 无代理时不应回退 ──")
     cfg.download_fallback_to_proxy = True
-    cfg.download_proxy = None
     cfg.metadata_proxy = None
+    cfg.download_proxy = None
     cfg.proxy = None
+    stream_calls = 0
+    session_get_calls = 0
 
+    kernel.stream = mock_stream
+    success, msg = await orc._stream_with_fallback(
+        "http://example.com/test3.mp3", {})
+    print(f"  success: {success}, msg: {msg[:60]}")
+    assert success is False
+    assert session_get_calls == 0, "无代理时不应调用 session.get"
+    print(f"  ✓ 无代理时正确返回失败")
+
+    kernel.stream = original_stream
     try:
-        success, msg = await orc._stream_with_fallback(
-            "http://192.0.2.1:1/nonexistent", {})
-        assert success is False, "应返回 False（无代理且直连失败）"
-        assert "No proxy" in str(msg).lower() or "proxy" in str(msg).lower() \
-               or "failed" in str(msg).lower(), f"消息应提及无代理: {msg}"
-        print(f"  ✓ 无代理时 fallback 返回: {msg[:60]}")
-    except Exception as e:
-        # May raise if DNS resolution fails immediately
-        print(f"  ✓ 无代理时抛异常（预期行为）: {e}")
-
-    await kernel.shutdown()
+        await kernel.shutdown()
+    except Exception:
+        pass  # MockSession may not support shutdown
 
     print(f"\n{'='*60}")
-    print(f"  ✓ 下载 fallback 代理测试通过")
+    print(f"  ✓ 下载 fallback mock 测试通过")
     print(f"{'='*60}\n")
     return 0
 

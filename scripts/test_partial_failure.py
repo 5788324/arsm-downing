@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""部分失败测试 — 验证 failed 不被 registered 覆盖, partial 状态正确。
+"""部分失败测试 — monkeypatch orc.download_file 后真实调用 _process_download。
 
-直接测试 _process_download 的结果汇总逻辑，不依赖网络。
+验证: failed 不被 registered 覆盖; works.status=partial.
 """
 
 import asyncio
@@ -13,20 +13,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
-class FakeTask:
-    """Simulates a download_file result."""
-    def __init__(self, success):
-        self.success = success
-
-    def __await__(self):
-        async def _inner():
-            return self.success
-        return _inner().__await__()
-
-
 async def test():
     print(f"\n{'='*60}")
-    print(f"  部分失败状态测试")
+    print(f"  部分失败 monkeypatch 测试")
     print(f"{'='*60}\n")
 
     from core.config import ConfigManager
@@ -35,7 +24,7 @@ async def test():
     from core.orchestrator import Orchestrator
     from core.models import WorkMetadata, TrackItem
 
-    rj_code = "RJ99999"
+    rj_code = "RJ99998"
     cfg = ConfigManager.load()
     tmpdir = tempfile.mkdtemp()
     cfg.output_dir = Path(tmpdir)
@@ -44,83 +33,106 @@ async def test():
     kernel = NetworkKernel(cfg)
     orc = Orchestrator(kernel, cfg, db)
 
-    # ── Setup: 3 tracks, track2 will "fail" ──
+    # ── Setup meta & tracks ──
     meta = WorkMetadata(
-        rj_id=rj_code, title="Test", circle="TC",
+        rj_id=rj_code, title="Test Partial", circle="TC",
         cv=[], tags=[], price=0, source_url="", dl_count=0,
         rating=0.0, release_date="", cover_url="")
-    root = cfg.output_dir / f"{rj_code} Test"
+    root = cfg.output_dir / f"{rj_code} Test Partial"
     root.mkdir(parents=True, exist_ok=True)
 
-    t1_path = root / "t1.mp3"; t1_path.write_bytes(b"x" * 100)
-    t1 = TrackItem(id="1", title="t1", type="audio",
+    t1_path = root / "ok1.mp3"
+    t1_path.write_bytes(b"y" * 100)
+    t1 = TrackItem(id="a1", title="ok1", type="audio",
                    url="", size=100, save_path=t1_path)
 
-    t2_path = root / "t2.wav"
-    t2 = TrackItem(id="2", title="t2", type="audio",
+    t2_path = root / "fail1.wav"
+    t2 = TrackItem(id="a2", title="fail1", type="audio",
                    url="", size=200, save_path=t2_path)
 
-    t3_path = root / "t3.flac"; t3_path.write_bytes(b"x" * 300)
-    t3 = TrackItem(id="3", title="t3", type="audio",
+    t3_path = root / "ok2.flac"
+    t3_path.write_bytes(b"z" * 300)
+    t3 = TrackItem(id="a3", title="ok2", type="audio",
                    url="", size=300, save_path=t3_path)
 
-    # Pre-write states to DB
-    for t in [t1, t2, t3]:
-        dl_id = orc._make_dl_id(rj_code, t.id or t.title, t.save_path, t.title)
+    targets = [t1, t2, t3]
+
+    # Pre-write queued states
+    for t in targets:
+        dl_id = orc._make_dl_id(rj_code, t.id, t.save_path, t.title)
         db.upsert_download(dl_id, rj_code, t.title, str(t.save_path),
                            'queued', 0, t.size)
 
-    # ── Directly test result aggregation logic ──
-    # Simulate: t1=True, t2=False, t3=True
-    print("── 模拟结果: t1=成功, t2=失败, t3=成功 ──")
-    results = [True, False, True]
+    # ── Monkeypatch download_file ──
+    call_log = []
 
-    success_count = sum(1 for r in results if r is True)
-    failed_count = sum(1 for r in results if r is not True)
-    print(f"  成功: {success_count}, 失败: {failed_count}")
+    async def fake_download(track, meta, cover_path):
+        call_log.append(track.id)
+        # t1, t3 succeed; t2 fails
+        if track.id == "a2":
+            # Write failed state to DB (simulating real failure)
+            dl_id = orc._make_dl_id(rj_code, track.id, track.save_path, track.title)
+            db.upsert_download(dl_id, rj_code, track.title, str(track.save_path),
+                               'failed', 0, track.size, error="simulated")
+            return False
+        # Success: create dummy file if not exists
+        if not track.save_path.exists():
+            track.save_path.write_bytes(b"x" * track.size)
+        dl_id = orc._make_dl_id(rj_code, track.id, track.save_path, track.title)
+        db.upsert_download(dl_id, rj_code, track.title, str(track.save_path),
+                           'completed', track.size, track.size)
+        return True
 
-    # Verify: only successful tracks get registered
-    print("\n── 验证 registered 只覆盖成功文件 ──")
-    for i, t in enumerate([t1, t2, t3]):
-        dl_id = orc._make_dl_id(rj_code, t.id or t.title, t.save_path, t.title)
-        if results[i] is True:
-            db.upsert_download(dl_id, rj_code, t.title, str(t.save_path),
-                               'registered', t.size, t.size)
-        else:
-            # Leave as-is (downloading/failed), do NOT overwrite
-            db.upsert_download(dl_id, rj_code, t.title, str(t.save_path),
-                               'failed', 0, t.size, error="simulated error")
+    orc.download_file = fake_download
 
+    # ── Real call to _process_download ──
+    print("── 调用真实的 _process_download (2 成功, 1 失败) ──")
+    orc.set_callbacks(
+        lambda *a: None,
+        lambda rj, st: print(f"  work_status: {rj} → {st}")
+    )
+    await orc._process_download(rj_code, meta, targets, root)
+
+    # ── Verify DB state ──
+    print("\n── 验证 DB 状态 ──")
     rows = db.get_downloads_by_rj(rj_code)
     states = {}
     for row in rows:
         states[row["id"]] = row["status"]
-        print(f"  {row['id'][:30]}: {row['status']} "
-              f"({row['downloaded_bytes']}/{row['total_bytes']})")
+        print(f"  {row['id'][:30]}: {row['status']}")
 
-    dl1_id = orc._make_dl_id(rj_code, "1", t1_path, "t1")
-    dl2_id = orc._make_dl_id(rj_code, "2", t2_path, "t2")
-    dl3_id = orc._make_dl_id(rj_code, "3", t3_path, "t3")
+    dl1_id = orc._make_dl_id(rj_code, "a1", t1_path, "ok1")
+    dl2_id = orc._make_dl_id(rj_code, "a2", t2_path, "fail1")
+    dl3_id = orc._make_dl_id(rj_code, "a3", t3_path, "ok2")
 
     assert states.get(dl1_id) == 'registered', \
-        f"track1 应为 registered, 实际: {states.get(dl1_id)}"
+        f"ok1 应为 registered, 实际: {states.get(dl1_id)}"
     assert states.get(dl2_id) == 'failed', \
-        f"track2 应为 failed, 实际: {states.get(dl2_id)}"
+        f"fail1 应为 failed(不被覆盖), 实际: {states.get(dl2_id)}"
     assert states.get(dl3_id) == 'registered', \
-        f"track3 应为 registered, 实际: {states.get(dl3_id)}"
+        f"ok2 应为 registered, 实际: {states.get(dl3_id)}"
 
     print(f"\n  ✓ failed 未被子序列覆盖")
-    print(f"  ✓ partial 状态正确区分")
+
+    # ── Verify works.status is partial ──
+    row = db.conn.execute(
+        "SELECT status FROM works WHERE rj_id=?", (rj_code,)
+    ).fetchone()
+    ws = row["status"] if row else "missing"
+    print(f"  works.status: {ws}")
+    assert ws == 'partial', \
+        f"works 应为 partial(部分失败), 实际: {ws}"
 
     # Cleanup
     db.conn.execute("DELETE FROM downloads WHERE rj_id=?", (rj_code,))
+    db.conn.execute("DELETE FROM works WHERE rj_id=?", (rj_code,))
     db.conn.commit()
     await kernel.shutdown()
     import shutil
     shutil.rmtree(tmpdir)
 
     print(f"\n{'='*60}")
-    print(f"  ✓ 部分失败状态测试通过")
+    print(f"  ✓ 部分失败 monkeypatch 测试通过")
     print(f"{'='*60}\n")
     return 0
 

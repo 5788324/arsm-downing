@@ -35,7 +35,8 @@ class LibraryVault:
                     downloaded_at TIMESTAMP,
                     size_bytes INTEGER DEFAULT 0,
                     local_path TEXT,
-                    cover_url TEXT
+                    cover_url TEXT,
+                    status TEXT DEFAULT 'completed'
                 )
             """)
 
@@ -44,6 +45,7 @@ class LibraryVault:
             ("size_bytes", "INTEGER DEFAULT 0"),
             ("local_path", "TEXT"),
             ("cover_url", "TEXT"),
+            ("status", "TEXT DEFAULT 'completed'"),
         ]:
             self._safe_alter("works", col_name, col_type)
 
@@ -208,15 +210,18 @@ class LibraryVault:
     # ──────────────────────────────────────────────
     #  Works library (P0, unchanged logic)
     # ──────────────────────────────────────────────
-    def register(self, meta: WorkMetadata, size: int, path: Path) -> None:
+    def register(self, meta: WorkMetadata, size: int, path: Path,
+                 status: str = 'completed') -> None:
+        """Register a work in the library with a given status."""
         try:
             with self.conn:
                 self.conn.execute(
                     """INSERT OR REPLACE INTO works
-                       (rj_id, title, circle, downloaded_at, size_bytes, local_path, cover_url)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                       (rj_id, title, circle, downloaded_at, size_bytes,
+                        local_path, cover_url, status)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (meta.rj_id, meta.title, meta.circle,
-                     datetime.now(), size, str(path), meta.cover_url)
+                     datetime.now(), size, str(path), meta.cover_url, status)
                 )
         except sqlite3.Error as e:
             logging.error(f"Database register error for {meta.rj_id}: {e}")
