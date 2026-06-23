@@ -95,6 +95,11 @@ class DownloadView(ft.Container):
             pass
 
     def load_queue(self):
+        """Restore queue UI state from queue.json.
+
+        Does NOT auto-start downloads — that's handled by
+        Orchestrator.restore_pending_downloads() and the downloads table.
+        """
         if QUEUE_FILE.exists():
             try:
                 with open(QUEUE_FILE, "r", encoding="utf-8") as f:
@@ -102,16 +107,18 @@ class DownloadView(ft.Container):
                 for rj, data in saved.items():
                     try:
                         rj_id = f"RJ{rj}" if not rj.upper().startswith("RJ") else rj
-                        if data["status"] == "已完成":
+                        # Skip all terminal states
+                        if self._is_terminal(data.get("status", "")):
                             continue
+
+                        # Load as paused — Orchestrator handles real recovery
                         self.active_downloads[rj_id] = {
-                            "status": "队列中",
+                            "status": "已暂停",
                             "tracks": data.get("tracks", {}),
                             "control": None, "last_time": time.time(),
                             "last_bytes": 0, "cache_hit": False
                         }
                         self.build_queue_item(rj_id)
-                        self.app_controller.start_download(rj_id)
                     except Exception as e:
                         print(f"Error loading {rj}: {e}")
             except Exception as e:
@@ -235,7 +242,11 @@ class DownloadView(ft.Container):
                 icon=ft.icons.DELETE_OUTLINE, icon_color=ERROR,
                 tooltip="清除失败任务",
                 on_click=lambda e, r=rj_id: self.cancel_item(r))
-            actions.extend([btn_retry, btn_clear])
+            btn_open = ft.IconButton(
+                icon=ft.icons.FOLDER_OPEN, icon_color=ACCENT_SECONDARY,
+                tooltip="打开下载目录",
+                on_click=lambda e, r=rj_id: self._open_work_dir(r))
+            actions.extend([btn_retry, btn_clear, btn_open])
         elif status in ("已暂停", "Paused"):
             # Paused: resume + cancel
             btn_resume = ft.IconButton(
@@ -388,6 +399,35 @@ class DownloadView(ft.Container):
         data["cache_hit"] = False
         self.build_queue_item(rj_id)
         self.app_controller.resume_download(rj_id)
+
+    def _open_work_dir(self, rj_id: str):
+        """Open the download directory for this work."""
+        from core.config import ConfigManager
+        cfg = ConfigManager.load()
+        # Try to find path from metadata cache
+        from core.database import LibraryVault
+        db = LibraryVault()
+        cached = db.get_metadata_cache(rj_id)
+        if cached:
+            title = Orchestrator.sanitize(cached.get("title", ""))
+            dir_template = cfg.dir_template
+            folder = dir_template.format(rj_id=rj_id, title=title,
+                                         circle="", year="")
+            path = cfg.output_dir / folder
+        else:
+            path = cfg.output_dir
+
+        path = Path(path)
+        if path.exists():
+            try:
+                if platform.system() == "Windows":
+                    os.startfile(path)
+                elif platform.system() == "Darwin":
+                    subprocess.run(["open", path])
+                else:
+                    subprocess.run(["xdg-open", path])
+            except Exception:
+                pass
 
     def cancel_item(self, rj_id: str):
         data = self.active_downloads.get(rj_id)
