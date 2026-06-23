@@ -45,6 +45,18 @@ class ToolsView(ft.Container):
         self.log(f"  新增索引: {result['indexed']} 个", ACCENT_PRIMARY)
         if result['errors']:
             self.log(f"  错误: {result['errors']}", ERROR)
+        # Trigger enrichment + verification in background
+        import asyncio
+        async def _enrich_and_verify():
+            orc = self.app_controller.orc
+            enriched = await orc.enrich_external_works(max_concurrent=2)
+            self.log(f"  已补全元数据: {enriched} 个", SUCCESS)
+            verified = await orc.verify_library_works()
+            partial_count = sum(1 for v in verified.values() if v == "partial")
+            if partial_count:
+                self.log(f"  部分完成: {partial_count} 个", WARNING)
+        asyncio.run_coroutine_threadsafe(
+            _enrich_and_verify(), self.app_controller.loop)
 
     def repair_db(self, e):
         self.log("> 开始修复数据库...", "white")

@@ -10,7 +10,11 @@ from ui.theme import Styles, ACCENT_PRIMARY, SUCCESS, WARNING, ERROR
 STATUS_LABELS = {
     "completed": ("已完成", SUCCESS),
     "partial": ("部分完成", WARNING),
+    "prepared": ("已就绪", ACCENT_PRIMARY),
+    "external": ("外部资源", ACCENT_PRIMARY),
+    "indexed": ("已索引", ACCENT_PRIMARY),
     "missing": ("文件缺失", ERROR),
+    "verified": ("已验证", SUCCESS),
     None: ("", "grey"),
 }
 
@@ -20,24 +24,30 @@ class LibraryView(ft.Container):
         super().__init__()
         self.app_controller = app_controller
         self.expand = True
+        self.padding = 0
+
+        self.search_input = ft.TextField(
+            hint_text="搜索库 (支持作品名或社团)...",
+            border_radius=10, expand=True,
+            on_change=self.on_search,
+            on_submit=self.on_search,
+        )
 
         self.grid = ft.GridView(
             expand=1, runs_count=5, max_extent=200,
             child_aspect_ratio=0.8, spacing=10, run_spacing=10,
         )
 
-        self.search_input = ft.TextField(
-            hint_text="搜索库 (支持作品名或社团)...",
-            border_radius=10, expand=True,
-            on_change=self.on_search
+        self.content = ft.Column(
+            [
+                ft.Text("您的资源库", size=32, weight=ft.FontWeight.BOLD),
+                self.search_input,
+                ft.Divider(color="transparent"),
+                self.grid,
+            ],
+            expand=True,
+            scroll=ft.ScrollMode.AUTO,
         )
-
-        self.content = ft.Column([
-            ft.Text("您的资源库", size=32, weight=ft.FontWeight.BOLD),
-            self.search_input,
-            ft.Divider(color="transparent"),
-            self.grid
-        ])
 
     def load_library(self, query=""):
         self.grid.controls.clear()
@@ -45,8 +55,8 @@ class LibraryView(ft.Container):
 
         for row in results:
             rj_id = row["rj_id"]
-            title = row["title"]
-            circle = row["circle"]
+            title = row["title"] or rj_id
+            circle = row["circle"] or ""
             local_path = row["local_path"]
             cover_url = (
                 row["cover_url"] if "cover_url" in row.keys() else None)
@@ -56,6 +66,7 @@ class LibraryView(ft.Container):
             label, color = STATUS_LABELS.get(
                 status, STATUS_LABELS[None])
 
+            # Show cover or icon
             image_control = (
                 ft.Image(src=cover_url, width=150, height=150,
                          fit=ft.ImageFit.COVER, border_radius=10)
@@ -64,28 +75,32 @@ class LibraryView(ft.Container):
                              color=ACCENT_PRIMARY)
             )
 
-            # Status badge
-            status_row = ft.Row([ft.Text(rj_id, weight=ft.FontWeight.BOLD)])
+            # Status badge row
+            status_badges = [
+                ft.Text(rj_id, weight=ft.FontWeight.BOLD, size=13),
+            ]
             if label:
-                status_row.controls.append(
+                status_badges.append(
                     ft.Container(
                         content=ft.Text(label, size=9, color="white"),
                         bgcolor=color, border_radius=4,
-                        padding=ft.padding.symmetric(horizontal=6, vertical=2),
+                        padding=ft.padding.symmetric(
+                            horizontal=6, vertical=2),
                     )
                 )
 
-            card_content = ft.Column([
+            card = ft.Column([
                 image_control,
-                status_row,
-                ft.Text(title, size=12, max_lines=2,
+                ft.Row(status_badges, wrap=True),
+                ft.Text(title, size=11, max_lines=2,
                         overflow=ft.TextOverflow.ELLIPSIS),
-                ft.Text(circle, size=10, color="grey", max_lines=1,
+                ft.Text(circle, size=9, color="grey", max_lines=1,
                         overflow=ft.TextOverflow.ELLIPSIS),
             ], alignment=ft.MainAxisAlignment.CENTER,
-               horizontal_alignment=ft.CrossAxisAlignment.CENTER)
+               horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+               spacing=4)
 
-            container = Styles.glass_container(card_content, padding=10)
+            container = Styles.glass_container(card, padding=8)
             container.on_click = lambda e, p=local_path: self.open_folder(p)
             self.grid.controls.append(container)
 

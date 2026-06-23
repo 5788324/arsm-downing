@@ -376,3 +376,68 @@ class LibraryVault:
                 result["errors"] += 1
         self.conn.commit()
         return result
+
+    def enrich_external_metadata(self, rj_id: str, meta_raw: dict,
+                                  cover_url: str, title: str, circle: str):
+        """Update works table with metadata for an external entry."""
+        try:
+            self.conn.execute(
+                """UPDATE works SET title=?, circle=?, cover_url=?, status='external'
+                   WHERE rj_id=? AND status IN ('external','indexed','prepared')""",
+                (title, circle, cover_url, rj_id))
+            self.conn.commit()
+        except Exception as e:
+            logging.error(f"Enrich error {rj_id}: {e}")
+
+    def verify_library_item(self, rj_id: str, work_dir: str,
+                            metadata_tracks: list) -> str:
+        """Compare metadata tracks with local files. Returns status."""
+        import os as _os
+        d = Path(work_dir)
+        if not d.exists():
+            self.conn.execute(
+                "UPDATE works SET status='missing' WHERE rj_id=? AND local_path=?",
+                (rj_id, work_dir))
+            self.conn.commit()
+            return "missing"
+
+        has_part = any(f.suffix == ".part" for f in d.rglob("*.part"))
+        if has_part:
+            self.conn.execute(
+                "UPDATE works SET status='partial' WHERE rj_id=? AND local_path=?",
+                (rj_id, work_dir))
+            self.conn.commit()
+            return "partial"
+
+        # Check track-level completeness
+        missing_count = 0
+        for track in metadata_tracks:
+            if track.get("type") == "folder":
+                continue
+            tname = track.get("title", "")
+            found = any(
+                f.name.startswith(Path(tname).stem)
+                for f in d.rglob("*") if f.is_file())
+            if not found:
+                missing_count += 1
+
+        if missing_count > 0:
+            status = "partial"
+        else:
+            status = "verified"
+        self.conn.execute(
+            "UPDATE works SET status=? WHERE rj_id=? AND local_path=?",
+            (status, rj_id, work_dir))
+        self.conn.commit()
+        return status
+
+    def get_external_works(self) -> List[sqlite3.Row]:
+        """Get works needing metadata enrichment."""
+        try:
+            return self.conn.execute(
+                "SELECT * FROM works WHERE status IN ('external','indexed') "
+                "AND (title IS NULL OR title = '' OR title = rj_id)"
+            ).fetchall()
+        except Exception as e:
+            logging.error(f"Get external works error: {e}")
+            return []

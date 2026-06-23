@@ -137,16 +137,68 @@ class Orchestrator:
         self.pause_job(rj_id)
 
     # ══════════════════════════════════════════════
+    #  RC1: external metadata enrichment
+    # ══════════════════════════════════════════════
+    async def enrich_external_works(self, max_concurrent: int = 3):
+        """Fetch metadata for external/indexed works missing titles."""
+        ext = self.db.get_external_works()
+        if not ext:
+            return 0
+        sem = asyncio.Semaphore(max_concurrent)
+
+        async def _enrich_one(rj_id):
+            async with sem:
+                cached = self.db.get_metadata_cache(rj_id)
+                if cached:
+                    self.db.enrich_external_metadata(
+                        rj_id, None, cached.get("cover_url", ""),
+                        cached.get("title", rj_id), cached.get("circle", ""))
+                    return
+                rj_num = rj_id[2:]
+                meta = await self.kernel.fetch(f"/api/workInfo/{rj_num}")
+                if meta:
+                    title = meta.get("title", rj_id)
+                    circle = meta.get("circle", {}).get("name", "")
+                    cover = meta.get("mainCoverUrl", "")
+                    self.db.set_metadata_cache(
+                        rj_id, title, circle, cover, meta, [])
+                    self.db.enrich_external_metadata(
+                        rj_id, meta, cover, title, circle)
+
+        tasks = [_enrich_one(row["rj_id"]) for row in ext]
+        await asyncio.gather(*tasks)
+        return len(tasks)
+
+    async def verify_library_works(self):
+        """Verify completeness of all external/partial works."""
+        rows = self.db.conn.execute(
+            "SELECT rj_id, local_path FROM works "
+            "WHERE status IN ('external','indexed','partial','verified')"
+        ).fetchall()
+        results = {}
+        for row in rows:
+            cached = self.db.get_metadata_cache(row["rj_id"])
+            if cached:
+                import json as _j
+                tracks = _j.loads(cached.get("tracks_json", "[]"))
+                status = self.db.verify_library_item(
+                    row["rj_id"], row["local_path"], tracks)
+                results[row["rj_id"]] = status
+        return results
+
+    # ══════════════════════════════════════════════
     #  P3.5: batch controls
     # ══════════════════════════════════════════════
     def pause_all(self):
-        """Pause all non-terminal works."""
+        """Pause all non-terminal works and freeze speed meters."""
         rows = self.db.conn.execute(
             "SELECT DISTINCT rj_id FROM downloads "
             "WHERE status NOT IN ('completed','registered','failed','paused')"
         ).fetchall()
         for row in rows:
-            self.pause_job(row["rj_id"])
+            rj_id = row["rj_id"]
+            self.speed.pause_work(rj_id)
+            self.pause_job(rj_id)
 
     def resume_all(self):
         """Resume all paused/queued works. Does NOT retry failed."""
@@ -373,7 +425,8 @@ class Orchestrator:
     # ══════════════════════════════════════════════
     #  P3.2: prepare_work — separate metadata from download
     # ══════════════════════════════════════════════
-    async def prepare_work(self, rj_id: str, force_refresh: bool = False):
+    async def prepare_work(self, rj_id: str, force_refresh: bool = False,
+                            allow_duplicate: bool = False):
         """Fetch metadata, create folder, write DB state. No download.
 
         Returns:
@@ -383,6 +436,15 @@ class Orchestrator:
         if not rj_id.upper().startswith("RJ"):
             rj_id = f"RJ{rj_id}"
         rj_numeric = rj_id[2:]
+
+        # ── RC1: core-level duplicate guard ──
+        if not allow_duplicate:
+            dup = self.db.find_in_library(rj_id)
+            if dup:
+                paths = [d["work_dir"] for d in dup[:3]]
+                self._emit_work_status(
+                    rj_id, f"Duplicate: {', '.join(paths)}")
+                return None, None, None, False
 
         meta_raw = None
         tracks_raw = None
