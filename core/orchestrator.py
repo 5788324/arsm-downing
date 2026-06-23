@@ -241,12 +241,18 @@ class Orchestrator:
     #  P3.5: batch controls
     # ══════════════════════════════════════════════
     def pause_all(self):
-        """Pause all non-terminal works, freeze speed, emit paused."""
+        """Pause all non-terminal, non-metadata_failed works."""
         rows = self.db.conn.execute(
             "SELECT DISTINCT rj_id FROM downloads "
-            "WHERE status NOT IN ('completed','registered','failed','paused')"
+            "WHERE status IN ('queued','downloading','paused')"
         ).fetchall()
         rj_ids = [row["rj_id"] for row in rows]
+        # Also check works table for prepared status
+        w_rows = self.db.conn.execute(
+            "SELECT rj_id FROM works WHERE status='prepared'").fetchall()
+        for r in w_rows:
+            if r["rj_id"] not in rj_ids:
+                rj_ids.append(r["rj_id"])
         logger.info(f"pause_all: affecting {len(rj_ids)} works: {rj_ids}")
         for rj_id in rj_ids:
             self.speed.pause_work(rj_id)
@@ -526,8 +532,26 @@ class Orchestrator:
                     rj_id, rj_numeric)
             except Exception as e:
                 logger.error(f"Metadata fetch failed for {rj_id}: {e}")
-                self._emit_work_status(rj_id,
-                    f"Metadata proxy failed: {e}")
+                store = self.db.conn.execute(
+                    "SELECT rj_id FROM works WHERE rj_id=?", (rj_id,)
+                ).fetchone()
+                if not store:
+                    from core.models import WorkMetadata
+                    self.db.register(
+                        WorkMetadata(rj_id=rj_id, title=rj_id, circle="",
+                                     cv=[], tags=[], price=0, source_url="",
+                                     dl_count=0, rating=0.0, release_date="",
+                                     cover_url=""),
+                        0, Path("."), status='metadata_failed')
+                else:
+                    self.db.conn.execute(
+                        "UPDATE works SET status='metadata_failed' WHERE rj_id=?",
+                        (rj_id,))
+                    self.db.conn.commit()
+                self._emit_work_status(
+                    rj_id,
+                    f"Metadata failed: proxy {self.config.metadata_proxy or self.config.proxy or 'off'}"
+                )
                 return None, None, None, False
             if not meta_raw:
                 self._emit_work_status(rj_id, "Failed to fetch metadata")

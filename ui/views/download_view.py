@@ -141,13 +141,20 @@ class DownloadView(ft.Container):
                 print(f"Failed to load queue: {e}")
 
     def _batch_pause(self):
-        self.app_controller.orc.pause_all()
+        ids = self.app_controller.orc.pause_all()
         self._refresh_queue()
+        if not ids:
+            self.app_controller.show_snack("没有可暂停的任务")
+        else:
+            self.app_controller.show_snack(f"已暂停 {len(ids)} 个任务")
 
     def _batch_resume(self):
         orc = self.app_controller.orc
         loop = self.app_controller.loop
         rj_ids = orc.resume_all()
+        if not rj_ids:
+            self.app_controller.show_snack("没有可恢复的任务")
+            return
         for rj_id in rj_ids:
             orc.speed.resume_work(rj_id)
         import asyncio
@@ -278,18 +285,35 @@ class DownloadView(ft.Container):
             value=prog,
             color=SUCCESS if (prog or 0) >= 1.0 else ACCENT_PRIMARY)
 
-        # ── Action buttons (context-aware) ──
+        # ── RC4: Full status-aware button logic ──
         actions = []
 
-        if self._is_terminal(status):
-            # Completed: just clear
-            btn_clear = ft.IconButton(
-                icon=ft.icons.DELETE_OUTLINE, icon_color="grey",
-                tooltip="清除记录",
+        def _is_meta_fail(s):
+            return "metadata_failed" in s.lower() or s.startswith("Metadata failed")
+
+        def _is_dup(s):
+            return "重复" in s or "Duplicate" in s
+
+        def _is_active(s):
+            return s in ("队列中", "队列排队中", "Queued (cached)", "Queued",
+                         "下载中", "Downloading", "已就绪", "Prepared",
+                         "Prepared (cached)", "准备中...", "Preparing",
+                         "Resuming...", "恢复中...",
+                         "已暂停", "Paused")
+
+        if _is_meta_fail(status):
+            btn_retry = ft.IconButton(
+                icon=ft.icons.REFRESH, icon_color=ACCENT_PRIMARY,
+                tooltip="重新准备元数据",
+                on_click=lambda e, r=rj_id: self._retry_prepare(r))
+            btn_remove = ft.IconButton(
+                icon=ft.icons.DELETE_OUTLINE, icon_color=ERROR,
+                tooltip="移除",
                 on_click=lambda e, r=rj_id: self.cancel_item(r))
-            actions.append(btn_clear)
-        elif "重复" in status or "Duplicate" in status:
-            # Duplicate: open dir + force download
+            actions.extend([btn_retry, btn_remove])
+            prog_bar = ft.ProgressBar(value=None, color="grey")  # indeterminate stopped
+
+        elif _is_dup(status):
             btn_open = ft.IconButton(
                 icon=ft.icons.FOLDER_OPEN, icon_color=ACCENT_SECONDARY,
                 tooltip="打开目录",
@@ -303,8 +327,8 @@ class DownloadView(ft.Container):
                 tooltip="清除",
                 on_click=lambda e, r=rj_id: self.cancel_item(r))
             actions.extend([btn_open, btn_force, btn_clear])
+
         elif self._is_failed(status):
-            # Failed: retry + clear + open folder
             btn_retry = ft.IconButton(
                 icon=ft.icons.REPLAY, icon_color=ACCENT_PRIMARY,
                 tooltip="重试下载",
@@ -318,19 +342,19 @@ class DownloadView(ft.Container):
                 tooltip="打开下载目录",
                 on_click=lambda e, r=rj_id: self._open_work_dir(r))
             actions.extend([btn_retry, btn_clear, btn_open])
-        elif status in ("已暂停", "Paused"):
-            # Paused: resume + cancel
-            btn_resume = ft.IconButton(
-                icon=ft.icons.PLAY_ARROW, icon_color=SUCCESS,
-                tooltip="继续下载",
-                on_click=lambda e, r=rj_id: self.toggle_pause(r))
-            btn_cancel = ft.IconButton(
-                icon=ft.icons.CANCEL, icon_color=ERROR,
-                tooltip="取消下载",
-                on_click=lambda e, r=rj_id: self.cancel_item(r))
-            actions.extend([btn_resume, btn_cancel])
-        else:
-                # Active: pause + cancel + reconnect (RC3.1)
+
+        elif _is_active(status):
+            if status in ("已暂停", "Paused"):
+                btn_resume = ft.IconButton(
+                    icon=ft.icons.PLAY_ARROW, icon_color=SUCCESS,
+                    tooltip="继续下载",
+                    on_click=lambda e, r=rj_id: self.toggle_pause(r))
+                btn_cancel = ft.IconButton(
+                    icon=ft.icons.CANCEL, icon_color=ERROR,
+                    tooltip="取消下载",
+                    on_click=lambda e, r=rj_id: self.cancel_item(r))
+                actions.extend([btn_resume, btn_cancel])
+            else:
                 btn_pause = ft.IconButton(
                     icon=ft.icons.PAUSE, icon_color=ACCENT_PRIMARY,
                     tooltip="暂停",
@@ -345,10 +369,10 @@ class DownloadView(ft.Container):
                     on_click=lambda e, r=rj_id: self._reconnect_job(r))
                 actions.extend([btn_pause, btn_cancel, btn_reconnect])
 
-        # Partial status gets a label but same buttons as active
-        if "Partially completed" in status or "部分完成" in status:
-            if "btn_pause" not in dir():
-                pass  # Already has appropriate buttons
+        else:
+            # Terminal / completed / registered / external / verified / indexed
+            # No action buttons, just informational
+            pass
 
         actions_row = ft.Row(actions, spacing=0, alignment=ft.MainAxisAlignment.END)
         actions_container = ft.Container(
@@ -411,6 +435,10 @@ class DownloadView(ft.Container):
             "Resuming...": "恢复中...",
         }
 
+        # RC4: metadata_failed detection
+        is_meta_fail = (status.startswith("Metadata failed") or
+                        "metadata_failed" in status.lower())
+
         # Handle partial / error statuses
         if status.startswith("Partially completed"):
             cn_status = "部分完成" + status[20:]  # e.g. "部分完成 (2/3)"
@@ -434,7 +462,12 @@ class DownloadView(ft.Container):
             if "status_text" in data:
                 data["status_text"].value = cn_status
 
-                if status == "Completed":
+                if is_meta_fail:
+                    data["status_text"].color = ERROR
+                    data["prog_bar"].value = None
+                    data["prog_bar"].color = "grey"
+                    data["speed_text"].value = ""
+                elif status == "Completed":
                     data["status_text"].color = SUCCESS
                     data["prog_bar"].value = 1.0
                     data["prog_bar"].color = SUCCESS
@@ -498,6 +531,17 @@ class DownloadView(ft.Container):
         self.app_controller.resume_download(rj_id)
         self.update_work_status(rj_id, "Resuming...")
         self.app_controller.show_snack(f"{rj_id} 重连中...")
+
+    def _retry_prepare(self, rj_id: str):
+        """Retry metadata preparation."""
+        data = self.active_downloads.get(rj_id)
+        if not data:
+            return
+        data["status"] = "准备中..."
+        data["cache_hit"] = False
+        self.build_queue_item(rj_id)
+        self.app_controller.start_download(rj_id)
+        self.app_controller.show_snack(f"{rj_id} 重新准备元数据中...")
 
     def _open_work_dir(self, rj_id: str):
         """Open the download directory for this work."""
@@ -643,6 +687,17 @@ class DownloadView(ft.Container):
     def refresh_dialog_list(self, rj_id: str):
         data = self.active_downloads.get(rj_id)
         self.dialog_list.controls.clear()
+
+        # Check: is this a metadata_failed entry?
+        status = (data or {}).get("status", "")
+        if "metadata_failed" in str(status).lower() or \
+           status.startswith("Metadata failed"):
+            self.dialog_list.controls.append(
+                ft.Text("元数据未准备成功，请检查 metadata_proxy 后重新准备",
+                        color=ERROR, size=14))
+            try: self.dialog_list.update()
+            except: pass
+            return
 
         # Multi-fallback track detail
         tracks_data = data.get("tracks", {}) if data else {}

@@ -73,21 +73,29 @@ class ToolsView(ft.Container):
         self.log("✓ 缓存清理成功!", SUCCESS)
 
     def test_network(self, e):
-        self.log("> 测试 API 连通性...", "white")
+        self.log("> 检查代理配置...", "white")
         import aiohttp
         from core.config import HOSTNAME_MIRRORS
         cfg = self.app_controller.config
 
+        mp = cfg.metadata_proxy or cfg.proxy
+        self.log(f"  metadata_proxy: {mp or '(无/直连)'}", ACCENT_PRIMARY)
+        self.log(f"  download_proxy: {cfg.download_proxy or '(无/直连)'}", ACCENT_PRIMARY)
+        self.log(f"  cover_proxy: {cfg.cover_proxy or '(无/直连)'}", ACCENT_PRIMARY)
+
         async def _test():
-            # Check metadata proxy
-            mp = cfg.metadata_proxy or cfg.proxy
             if mp:
                 try:
                     async with aiohttp.ClientSession() as s:
                         async with s.get(mp, timeout=5) as resp:
-                            self.log(f"✓ 代理 {mp} 可用", SUCCESS)
-                except Exception:
-                    self.log(f"⚠ 代理 {mp} 不可用 — 请检查端口", WARNING)
+                            self.log(f"✓ 代理 {mp} 可用 (HTTP {resp.status})",
+                                     SUCCESS)
+                except aiohttp.ClientConnectorError:
+                    self.log(
+                        f"✗ 代理 {mp} 拒绝连接 — 代理端口未开启或配置错误",
+                        ERROR)
+                except Exception as ex:
+                    self.log(f"✗ 代理 {mp} 不可用: {ex}", ERROR)
 
             for mirror in HOSTNAME_MIRRORS:
                 try:
@@ -95,15 +103,18 @@ class ToolsView(ft.Container):
                         async with session.get(mirror, timeout=5,
                                                proxy=mp) as resp:
                             if resp.status in (200, 403, 404):
-                                self.log(f"✓ {mirror} 连接正常", SUCCESS)
+                                self.log(
+                                    f"✓ {mirror} 连接正常", SUCCESS)
                             else:
                                 self.log(
-                                    f"⚠ {mirror} 状态异常: {resp.status}",
+                                    f"⚠ {mirror} HTTP {resp.status}",
                                     WARNING)
+                except aiohttp.ClientConnectorError:
+                    self.log(
+                        f"✗ {mirror} 连接拒绝 — 检查 metadata_proxy", ERROR)
                 except Exception:
                     self.log(
-                        f"✗ {mirror} 无法连接 — 请检查 metadata_proxy",
-                        ERROR)
+                        f"✗ {mirror} 无法连接 — 检查网络/代理", ERROR)
         import asyncio
         if hasattr(self, 'app_controller') and \
            hasattr(self.app_controller, 'loop'):
