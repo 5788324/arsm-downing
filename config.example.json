@@ -1,6 +1,10 @@
 {
     "output_dir": "Downloads",
     "max_concurrent": 3,
+    "metadata_proxy": null,
+    "download_proxy": null,
+    "cover_proxy": null,
+    "download_fallback_to_proxy": true,
     "proxy": null,
     "proxy_download": false,
     "mirror": "https://api.asmr-200.com",

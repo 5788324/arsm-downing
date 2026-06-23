@@ -1,8 +1,10 @@
 import json
 import logging
 from pathlib import Path
+from typing import Optional
 
 CONFIG_FILE = Path("config.json")
+CONFIG_EXAMPLE_FILE = Path("config.example.json")
 HOSTNAME_MIRRORS = [
     "https://api.asmr-200.com",
     "https://api.asmr.one",
@@ -10,21 +12,57 @@ HOSTNAME_MIRRORS = [
     "https://api.asmr-300.com"
 ]
 
+
 class ConfigManager:
-    """Manages application configuration."""
+    """Manages application configuration with per-type proxy support."""
+
     def __init__(self):
+        # ── Paths ──
         self.output_dir = Path("Downloads")
         self.max_concurrent = 3
-        self.proxy = None
-        self.proxy_download = False
+
+        # ── Proxy: three-channel split ──
+        self.metadata_proxy: Optional[str] = None   # API metadata requests
+        self.download_proxy: Optional[str] = None   # Audio file downloads
+        self.cover_proxy: Optional[str] = None      # Cover image downloads
+        self.download_fallback_to_proxy: bool = True
+
+        # ── Legacy (kept for backward compat, maps to metadata_proxy) ──
+        self.proxy: Optional[str] = None
+        self.proxy_download: bool = False
+
+        # ── API ──
         self.mirror = HOSTNAME_MIRRORS[0]
+        self.auth_token: Optional[str] = None
+        self.timeout = 60
+        self.dns = "1.1.1.1"
+
+        # ── Features ──
         self.tag_audio = True
         self.sort_files = False
         self.dir_template = "{rj_id} {title}"
-        self.auth_token = None
-        self.timeout = 60
-        self.dns = "1.1.1.1"
-        self.achievements = []
+
+        # ── Game-ish ──
+        self.achievements: list = []
+
+    # ── Proxy helpers ──
+    def get_proxy_for(self, purpose: str) -> Optional[str]:
+        """Return the correct proxy for a request purpose.
+
+        Args:
+            purpose: 'metadata', 'download', or 'cover'
+        """
+        if purpose == 'metadata':
+            return self.metadata_proxy or self.proxy
+        elif purpose == 'download':
+            if self.download_proxy:
+                return self.download_proxy
+            if self.proxy_download:
+                return self.proxy
+            return None
+        elif purpose == 'cover':
+            return self.cover_proxy or self.metadata_proxy or self.proxy
+        return None
 
     @classmethod
     def load(cls) -> 'ConfigManager':
@@ -34,20 +72,42 @@ class ConfigManager:
             try:
                 with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    
-                    config.output_dir = Path(data.get('output_dir', "Downloads"))
-                    config.max_concurrent = int(data.get('max_concurrent', 3))
-                    config.proxy = data.get('proxy')
-                    config.proxy_download = bool(data.get('proxy_download', False))
-                    config.mirror = data.get('mirror', HOSTNAME_MIRRORS[0])
-                    config.tag_audio = bool(data.get('tag_audio', True))
-                    config.sort_files = bool(data.get('sort_files', False))
-                    config.dir_template = data.get('dir_template', "RJ{rj_id} {title}")
-                    config.auth_token = data.get('auth_token')
-                    config.timeout = int(data.get('timeout', 60))
-                    config.dns = data.get('dns', '1.1.1.1')
-                    config.achievements = data.get('achievements', [])
-                    
+
+                config.output_dir = Path(
+                    data.get('output_dir', 'Downloads'))
+                config.max_concurrent = int(
+                    data.get('max_concurrent', 3))
+                config.tag_audio = bool(
+                    data.get('tag_audio', True))
+                config.sort_files = bool(
+                    data.get('sort_files', False))
+                config.mirror = data.get(
+                    'mirror', HOSTNAME_MIRRORS[0])
+                config.dir_template = data.get(
+                    'dir_template', '{rj_id} {title}')
+                config.auth_token = data.get('auth_token')
+                config.timeout = int(data.get('timeout', 60))
+                config.dns = data.get('dns', '1.1.1.1')
+                config.achievements = data.get('achievements', [])
+
+                # ── Proxy: new three-channel, fall back to legacy ──
+                config.metadata_proxy = data.get('metadata_proxy')
+                config.download_proxy = data.get('download_proxy')
+                config.cover_proxy = data.get('cover_proxy')
+                config.download_fallback_to_proxy = bool(
+                    data.get('download_fallback_to_proxy', True))
+
+                # Legacy compat
+                config.proxy = data.get('proxy')
+                config.proxy_download = bool(
+                    data.get('proxy_download', False))
+
+                # Auto-promote: if old proxy is set but new ones aren't
+                if config.proxy and not config.metadata_proxy:
+                    config.metadata_proxy = config.proxy
+                if config.proxy_download and not config.download_proxy:
+                    config.download_proxy = config.proxy
+
             except (json.JSONDecodeError, KeyError, ValueError) as e:
                 logging.warning(f"Config load error: {e}, using defaults")
         return config
@@ -57,6 +117,10 @@ class ConfigManager:
         data = {
             "output_dir": str(self.output_dir),
             "max_concurrent": self.max_concurrent,
+            "metadata_proxy": self.metadata_proxy,
+            "download_proxy": self.download_proxy,
+            "cover_proxy": self.cover_proxy,
+            "download_fallback_to_proxy": self.download_fallback_to_proxy,
             "proxy": self.proxy,
             "proxy_download": self.proxy_download,
             "mirror": self.mirror,
