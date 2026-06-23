@@ -84,6 +84,25 @@ class LibraryVault:
                 ON downloads(rj_id)
             """)
 
+        # ── library_index (P3.3) ──
+        with self.conn:
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS library_index (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    rj_id TEXT NOT NULL,
+                    library_path TEXT NOT NULL,
+                    work_dir TEXT NOT NULL,
+                    status TEXT DEFAULT 'found',
+                    size_bytes INTEGER DEFAULT 0,
+                    file_count INTEGER DEFAULT 0,
+                    scanned_at TIMESTAMP
+                )
+            """)
+            self.conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_library_rj_path
+                ON library_index(rj_id, library_path)
+            """)
+
     def _safe_alter(self, table: str, col_name: str, col_type: str) -> None:
         try:
             self.conn.execute(
@@ -250,3 +269,75 @@ class LibraryVault:
         except sqlite3.Error as e:
             logging.error(f"Database search error: {e}")
             return []
+
+    # ──────────────────────────────────────────────
+    #  Library index (P3.3)
+    # ──────────────────────────────────────────────
+    def upsert_library_entry(self, rj_id: str, library_path: str,
+                             work_dir: str, size_bytes: int = 0,
+                             file_count: int = 0, status: str = 'found'):
+        try:
+            now = datetime.now()
+            with self.conn:
+                self.conn.execute(
+                    """INSERT OR REPLACE INTO library_index
+                       (rj_id, library_path, work_dir, status,
+                        size_bytes, file_count, scanned_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (rj_id, library_path, work_dir, status,
+                     size_bytes, file_count, now))
+        except Exception as e:
+            logging.error(f"Library index write error: {e}")
+
+    def find_in_library(self, rj_id: str) -> List[sqlite3.Row]:
+        """Check if an RJ exists in any library path."""
+        try:
+            return self.conn.execute(
+                "SELECT * FROM library_index WHERE rj_id = ? AND status != 'missing'",
+                (rj_id,)
+            ).fetchall()
+        except Exception as e:
+            logging.error(f"Library lookup error: {e}")
+            return []
+
+    def scan_library_paths(self, paths: List[str]) -> int:
+        """Scan library paths for RJ folders. Returns count found."""
+        import re as _re
+        rj_re = _re.compile(r'RJ(\d{6,})', _re.IGNORECASE)
+        found = 0
+
+        for lib_path in paths:
+            p = Path(lib_path)
+            if not p.exists():
+                continue
+            # Scan 1-2 levels deep
+            for d in p.iterdir():
+                if not d.is_dir():
+                    continue
+                m = rj_re.search(d.name)
+                if m:
+                    rj_id = f"RJ{m.group(1)}"
+                    # Count files
+                    files = list(d.rglob("*"))
+                    file_count = sum(1 for f in files if f.is_file())
+                    size_bytes = sum(f.stat().st_size for f in files if f.is_file())
+                    self.upsert_library_entry(
+                        rj_id, lib_path, str(d),
+                        size_bytes, file_count, 'found')
+                    found += 1
+                else:
+                    # Check one level deeper for RJ folders
+                    for sub in d.iterdir():
+                        if sub.is_dir():
+                            m2 = rj_re.search(sub.name)
+                            if m2:
+                                rj_id = f"RJ{m2.group(1)}"
+                                files = list(sub.rglob("*"))
+                                file_count = sum(1 for f in files if f.is_file())
+                                size_bytes = sum(f.stat().st_size for f in files if f.is_file())
+                                self.upsert_library_entry(
+                                    rj_id, lib_path, str(sub),
+                                    size_bytes, file_count, 'found')
+                                found += 1
+
+        return found

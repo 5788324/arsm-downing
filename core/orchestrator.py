@@ -205,12 +205,11 @@ class Orchestrator:
     #  P1.5-2:  restore on startup
     # ══════════════════════════════════════════════
     async def restore_pending_downloads(self):
-        """Restore all pending downloads from DB on program start."""
+        """Restore pending downloads from DB — network-free, cache-only."""
         pending = self.db.get_pending_downloads()
         if not pending:
             return
 
-        # Group by rj_id
         rj_groups: Dict[str, set] = {}
         for row in pending:
             rj_groups.setdefault(row["rj_id"], set()).add(row["status"])
@@ -218,14 +217,20 @@ class Orchestrator:
         for rj_id in sorted(rj_groups):
             statuses = rj_groups[rj_id]
             if 'downloading' in statuses:
-                # Was interrupted mid-download — mark as paused for safe resume
                 for row in pending:
                     if row["rj_id"] == rj_id and row["status"] == 'downloading':
                         self.db.upsert_download(
                             row["id"], rj_id, row["track_title"],
                             row["local_path"], 'paused',
                             row["downloaded_bytes"], row["total_bytes"])
-            logging.info(f"Restoring pending downloads for {rj_id}: {statuses}")
+
+            # Only restore if metadata_cache exists (no network)
+            if not self.db.get_metadata_cache(rj_id):
+                logging.warning(f"Skip restore {rj_id}: no metadata cache")
+                continue
+
+            logging.info(f"Restoring pending for {rj_id}: {statuses}")
+            self._emit_work_status(rj_id, "Preparing")
             await self.resume_job(rj_id)
 
     # ── utilities ──
@@ -340,10 +345,15 @@ class Orchestrator:
         return meta_raw, tracks_raw
 
     # ══════════════════════════════════════════════
-    #  queue_job — cache-aware
+    #  P3.2: prepare_work — separate metadata from download
     # ══════════════════════════════════════════════
-    async def queue_job(self, rj_id: str, force_refresh: bool = False) -> None:
-        self._emit_work_status(rj_id, "Fetching metadata...")
+    async def prepare_work(self, rj_id: str, force_refresh: bool = False):
+        """Fetch metadata, create folder, write DB state. No download.
+
+        Returns:
+            (meta, targets, root_path, from_cache) or (None, None, None, False)
+        """
+        self._emit_work_status(rj_id, "Preparing")
         if not rj_id.upper().startswith("RJ"):
             rj_id = f"RJ{rj_id}"
         rj_numeric = rj_id[2:]
@@ -368,14 +378,24 @@ class Orchestrator:
                 rj_id, rj_numeric)
             if not meta_raw:
                 self._emit_work_status(rj_id, "Failed to fetch metadata")
-                return
+                return None, None, None, False
 
         if tracks_raw is None:
             self._emit_work_status(rj_id, "Failed to fetch tracks")
-            return
+            return None, None, None, False
 
         meta = self._build_metadata(rj_id, meta_raw)
         root_path = self.get_save_path(meta)
+
+        # Create folder on disk now
+        try:
+            root_path.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            logging.error(f"mkdir failed for {root_path}: {e}")
+
+        # Write works as 'prepared'
+        self.db.register(meta, 0, root_path, status='prepared')
+
         hierarchy = self.parse_hierarchy(tracks_raw, root_path, root_path)
 
         def flatten(nodes):
@@ -390,8 +410,9 @@ class Orchestrator:
         targets = self.deduplicate_tracks(targets)
         if not targets:
             self._emit_work_status(rj_id, "No tracks found")
-            return
+            return None, None, None, False
 
+        # Write downloads as queued
         for t in targets:
             dl_id = self._make_dl_id(rj_id, t.id or t.title,
                                      t.save_path, t.title)
@@ -401,7 +422,21 @@ class Orchestrator:
                 dl_id, rj_id, t.title, str(t.save_path),
                 status='completed' if existing_size == t.size > 0 else 'queued',
                 downloaded_bytes=existing_size, total_bytes=t.size)
-            self._emit_progress(rj_id, t.id or t.title, t.title, existing_size, t.size, "pending")
+            self._emit_progress(rj_id, t.id or t.title, t.title,
+                                existing_size, t.size, "pending")
+
+        status_msg = "Prepared (cached)" if from_cache else "Prepared"
+        self._emit_work_status(rj_id, status_msg)
+        return meta, targets, root_path, from_cache
+
+    # ══════════════════════════════════════════════
+    #  queue_job — uses prepare_work then downloads
+    # ══════════════════════════════════════════════
+    async def queue_job(self, rj_id: str, force_refresh: bool = False) -> None:
+        meta, targets, root_path, from_cache = await self.prepare_work(
+            rj_id, force_refresh)
+        if meta is None:
+            return
 
         status_msg = "Queued (cached)" if from_cache else "Queued"
         self._emit_work_status(rj_id, status_msg)

@@ -320,6 +320,9 @@ class DownloadView(ft.Container):
     # ══════════════════════════════════════════════
     def update_work_status(self, rj_id: str, status: str):
         status_map = {
+            "Preparing": "准备中...",
+            "Prepared": "已就绪",
+            "Prepared (cached)": "已就绪 [缓存]",
             "Fetching metadata...": "获取元数据中...",
             "Failed to fetch metadata": "获取元数据失败",
             "Fetching track list...": "获取文件列表...",
