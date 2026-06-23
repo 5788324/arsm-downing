@@ -275,11 +275,11 @@ class DownloadView(ft.Container):
     def toggle_pause(self, rj_id: str):
         data = self.active_downloads.get(rj_id)
         if not data: return
-        
-        if data["status"] == "已暂停" or data["status"] == "Paused":
+
+        if data["status"] in ("已暂停", "Paused"):
             data["status"] = "队列中"
             self.build_queue_item(rj_id)
-            self.app_controller.start_download(rj_id)
+            self.app_controller.resume_download(rj_id)
         else:
             self.app_controller.pause_download(rj_id)
             self.update_work_status(rj_id, "Paused")

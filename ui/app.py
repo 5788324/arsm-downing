@@ -62,6 +62,10 @@ class AppController:
         # ── Start background workers ──
         asyncio.run_coroutine_threadsafe(self.orc.boot_worker(), self.loop)
 
+        # ── Restore pending downloads from previous session ──
+        asyncio.run_coroutine_threadsafe(
+            self.orc.restore_pending_downloads(), self.loop)
+
         # ── Start UI message queue poller ──
         self._start_ui_poller()
 
@@ -223,6 +227,14 @@ class AppController:
 
     def pause_download(self, rj_id: str):
         self.orc.pause_job(rj_id)
+
+    def resume_download(self, rj_id: str):
+        """Resume a paused/queued download from DB state."""
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self.orc.resume_job(rj_id), self.loop)
+        except Exception as e:
+            self.show_snack(f"恢复失败: {e}")
 
     def cancel_download(self, rj_id: str):
         self.orc.cancel_job(rj_id)
