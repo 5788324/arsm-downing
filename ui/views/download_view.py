@@ -9,6 +9,7 @@ from typing import Dict, Any
 from pathlib import Path
 
 from ui.theme import Styles, ACCENT_PRIMARY, ACCENT_SECONDARY, SUCCESS, WARNING, ERROR, BG_SURFACE_LIGHT
+from core.status import WorkStatus
 
 RJ_PATTERN = re.compile(r"(?:RJ)?(\d{6,})")
 QUEUE_FILE = Path("queue.json")

@@ -19,6 +19,7 @@ from core.database import LibraryVault
 from core.network import NetworkKernel
 from core.audio import AudioProcessor
 from core.speed import SpeedTracker
+from core.status import WorkStatus
 
 logger = logging.getLogger("echovault")
 

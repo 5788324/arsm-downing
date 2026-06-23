@@ -75,6 +75,9 @@ class ConfigManager:
     @classmethod
     def load(cls) -> 'ConfigManager':
         """Load configuration from file or create default."""
+        import shutil
+        if not CONFIG_FILE.exists() and CONFIG_EXAMPLE_FILE.exists():
+            shutil.copy(CONFIG_EXAMPLE_FILE, CONFIG_FILE)
         config = cls()
         if CONFIG_FILE.exists():
             try:
