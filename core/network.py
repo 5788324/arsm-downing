@@ -66,6 +66,9 @@ class NetworkKernel:
 
         url = f"{self.config.mirror}{endpoint}"
         proxy = self.config.get_proxy_for('metadata')
+        logger = logging.getLogger("echovault")
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"FETCH metadata {url} proxy={proxy or 'direct'}")
 
         for attempt in range(3):
             try:

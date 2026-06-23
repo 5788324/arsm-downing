@@ -20,6 +20,7 @@ class ToolsView(ft.Container):
                 ft.ElevatedButton("清理缓存", icon=ft.icons.DELETE_SWEEP, on_click=self.clear_cache),
                 ft.ElevatedButton("测试网络", icon=ft.icons.NETWORK_CHECK, on_click=self.test_network),
                 ft.ElevatedButton("扫描仓库", icon=ft.icons.FOLDER_SPECIAL, on_click=self.scan_library),
+                ft.ElevatedButton("清理无效队列", icon=ft.icons.CLEANING_SERVICES, on_click=self.clean_queue),
             ], spacing=20, wrap=True),
             ft.Divider(height=20, color="transparent"),
             ft.Row([
@@ -58,7 +59,37 @@ class ToolsView(ft.Container):
         asyncio.run_coroutine_threadsafe(
             _enrich_and_verify(), self.app_controller.loop)
 
-    def repair_db(self, e):
+    def clean_queue(self, e):
+        self.log("> 清理无效队列...", "white")
+        db = self.app_controller.db
+        statuses = ("metadata_failed", "completed", "registered")
+        for st in statuses:
+            db.conn.execute("DELETE FROM downloads WHERE status=?", (st,))
+        # Also clean from queue.json
+        from pathlib import Path
+        qf = Path("queue.json")
+        if qf.exists():
+            import json
+            try:
+                with open(qf) as f:
+                    q = json.load(f)
+                clean = {}
+                for k, v in q.items():
+                    if v.get("status") not in ("已完成", "metadata_failed",
+                        "Metadata failed", "Queued", "Downloading",
+                        "Prepared", "Paused", "queued", "downloading",
+                        "prepared", "paused"):
+                        pass  # keep
+                    elif v.get("status") in ("已完成", "metadata_failed",
+                            "Metadata failed"):
+                        continue  # remove
+                    clean[k] = v
+                with open(qf, "w") as f:
+                    json.dump(clean, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+        db.conn.commit()
+        self.log("✓ 队列已清理", SUCCESS)
         self.log("> 开始修复数据库...", "white")
         try:
             self.app_controller.db.conn.execute("VACUUM")

@@ -234,6 +234,46 @@ class DownloadView(ft.Container):
         return status in ("failed", "Failed", "下载失败") or \
                status.startswith("Failed")
 
+    @staticmethod
+    def normalize_status(status: str) -> str:
+        """Normalize status strings to internal keys."""
+        s = status.strip()
+        if not s:
+            return "unknown"
+        # metadata_failed variants
+        if any(k in s.lower() for k in ("metadata_failed", "metadata failed",
+                "metadata proxy failed", "获取元数据失败", "元数据失败",
+                "元数据代理失败")):
+            return "metadata_failed"
+        # no_pending variants
+        if any(k in s.lower() for k in ("no pending", "no_pending",
+                "no pending tracks", "无可恢复")):
+            return "no_pending"
+        # duplicate
+        if "重复" in s or "duplicate" in s.lower():
+            return "duplicate"
+        # failed
+        if s.startswith("Failed") or s.startswith("Error") or \
+           s in ("failed", "下载失败"):
+            return "failed"
+        # active
+        if s in ("队列中", "队列排队中", "Queued", "Queued (cached)",
+                 "下载中", "Downloading", "已就绪", "Prepared",
+                 "Prepared (cached)", "准备中...", "Preparing",
+                 "Resuming...", "恢复中...", "queued", "prepared",
+                 "downloading", "resuming"):
+            return "active"
+        # paused
+        if s in ("已暂停", "Paused", "Paused (partial)"):
+            return "paused"
+        # terminal
+        if s in ("已完成", "Completed", "completed", "registered"):
+            return "terminal"
+        # partial remaining
+        if "Partially completed" in s or "部分完成" in s:
+            return "partial"
+        return "unknown"
+
     def _refresh_queue(self):
         """Rebuild queue list respecting show_completed toggle."""
         self.queue_list.controls.clear()
@@ -285,35 +325,23 @@ class DownloadView(ft.Container):
             value=prog,
             color=SUCCESS if (prog or 0) >= 1.0 else ACCENT_PRIMARY)
 
-        # ── RC4: Full status-aware button logic ──
+        # ── RC5: Unified button logic via normalize_status ──
         actions = []
+        ns = self.normalize_status(status)
 
-        def _is_meta_fail(s):
-            return "metadata_failed" in s.lower() or s.startswith("Metadata failed")
-
-        def _is_dup(s):
-            return "重复" in s or "Duplicate" in s
-
-        def _is_active(s):
-            return s in ("队列中", "队列排队中", "Queued (cached)", "Queued",
-                         "下载中", "Downloading", "已就绪", "Prepared",
-                         "Prepared (cached)", "准备中...", "Preparing",
-                         "Resuming...", "恢复中...",
-                         "已暂停", "Paused")
-
-        if _is_meta_fail(status):
+        if ns == "metadata_failed" or ns == "no_pending":
             btn_retry = ft.IconButton(
                 icon=ft.icons.REFRESH, icon_color=ACCENT_PRIMARY,
-                tooltip="重新准备元数据",
+                tooltip="重新准备",
                 on_click=lambda e, r=rj_id: self._retry_prepare(r))
             btn_remove = ft.IconButton(
                 icon=ft.icons.DELETE_OUTLINE, icon_color=ERROR,
                 tooltip="移除",
                 on_click=lambda e, r=rj_id: self.cancel_item(r))
             actions.extend([btn_retry, btn_remove])
-            prog_bar = ft.ProgressBar(value=None, color="grey")  # indeterminate stopped
+            prog_bar = ft.ProgressBar(value=None, color="grey")
 
-        elif _is_dup(status):
+        elif ns == "duplicate":
             btn_open = ft.IconButton(
                 icon=ft.icons.FOLDER_OPEN, icon_color=ACCENT_SECONDARY,
                 tooltip="打开目录",
@@ -328,7 +356,7 @@ class DownloadView(ft.Container):
                 on_click=lambda e, r=rj_id: self.cancel_item(r))
             actions.extend([btn_open, btn_force, btn_clear])
 
-        elif self._is_failed(status):
+        elif ns == "failed":
             btn_retry = ft.IconButton(
                 icon=ft.icons.REPLAY, icon_color=ACCENT_PRIMARY,
                 tooltip="重试下载",
@@ -343,36 +371,31 @@ class DownloadView(ft.Container):
                 on_click=lambda e, r=rj_id: self._open_work_dir(r))
             actions.extend([btn_retry, btn_clear, btn_open])
 
-        elif _is_active(status):
-            if status in ("已暂停", "Paused"):
-                btn_resume = ft.IconButton(
-                    icon=ft.icons.PLAY_ARROW, icon_color=SUCCESS,
-                    tooltip="继续下载",
-                    on_click=lambda e, r=rj_id: self.toggle_pause(r))
-                btn_cancel = ft.IconButton(
-                    icon=ft.icons.CANCEL, icon_color=ERROR,
-                    tooltip="取消下载",
-                    on_click=lambda e, r=rj_id: self.cancel_item(r))
-                actions.extend([btn_resume, btn_cancel])
-            else:
-                btn_pause = ft.IconButton(
-                    icon=ft.icons.PAUSE, icon_color=ACCENT_PRIMARY,
-                    tooltip="暂停",
-                    on_click=lambda e, r=rj_id: self.toggle_pause(r))
-                btn_cancel = ft.IconButton(
-                    icon=ft.icons.CANCEL, icon_color=ERROR,
-                    tooltip="取消下载",
-                    on_click=lambda e, r=rj_id: self.cancel_item(r))
-                btn_reconnect = ft.IconButton(
-                    icon=ft.icons.REFRESH, icon_color=ACCENT_SECONDARY,
-                    tooltip="重连（暂停后重新连接）",
-                    on_click=lambda e, r=rj_id: self._reconnect_job(r))
-                actions.extend([btn_pause, btn_cancel, btn_reconnect])
+        elif ns == "paused":
+            btn_resume = ft.IconButton(
+                icon=ft.icons.PLAY_ARROW, icon_color=SUCCESS,
+                tooltip="继续下载",
+                on_click=lambda e, r=rj_id: self.toggle_pause(r))
+            btn_cancel = ft.IconButton(
+                icon=ft.icons.CANCEL, icon_color=ERROR,
+                tooltip="取消下载",
+                on_click=lambda e, r=rj_id: self.cancel_item(r))
+            actions.extend([btn_resume, btn_cancel])
 
-        else:
-            # Terminal / completed / registered / external / verified / indexed
-            # No action buttons, just informational
-            pass
+        elif ns == "active":
+            btn_pause = ft.IconButton(
+                icon=ft.icons.PAUSE, icon_color=ACCENT_PRIMARY,
+                tooltip="暂停",
+                on_click=lambda e, r=rj_id: self.toggle_pause(r))
+            btn_cancel = ft.IconButton(
+                icon=ft.icons.CANCEL, icon_color=ERROR,
+                tooltip="取消下载",
+                on_click=lambda e, r=rj_id: self.cancel_item(r))
+            btn_reconnect = ft.IconButton(
+                icon=ft.icons.REFRESH, icon_color=ACCENT_SECONDARY,
+                tooltip="重连（暂停后重新连接）",
+                on_click=lambda e, r=rj_id: self._reconnect_job(r))
+            actions.extend([btn_pause, btn_cancel, btn_reconnect])
 
         actions_row = ft.Row(actions, spacing=0, alignment=ft.MainAxisAlignment.END)
         actions_container = ft.Container(
@@ -454,6 +477,7 @@ class DownloadView(ft.Container):
         if rj_id in self.active_downloads:
             data = self.active_downloads[rj_id]
             data["status"] = cn_status
+            ns = self.normalize_status(status)
 
             # Cache hit detection
             if "cached" in status.lower():
@@ -462,8 +486,13 @@ class DownloadView(ft.Container):
             if "status_text" in data:
                 data["status_text"].value = cn_status
 
-                if is_meta_fail:
+                if ns == "metadata_failed":
                     data["status_text"].color = ERROR
+                    data["prog_bar"].value = None
+                    data["prog_bar"].color = "grey"
+                    data["speed_text"].value = ""
+                elif ns == "no_pending":
+                    data["status_text"].color = WARNING
                     data["prog_bar"].value = None
                     data["prog_bar"].color = "grey"
                     data["speed_text"].value = ""

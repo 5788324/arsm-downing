@@ -1,6 +1,12 @@
 {
     "output_dir": "Downloads",
-    "max_concurrent": 4,
+    "library_paths": [],
+    "max_concurrent": 3,
+    "work_concurrency": 1,
+    "file_concurrency": 4,
+    "chunk_size": 1048576,
+    "retry_count": 5,
+    "retry_backoff": 2,
     "metadata_proxy": null,
     "download_proxy": null,
     "cover_proxy": null,
@@ -14,12 +20,5 @@
     "auth_token": null,
     "timeout": 60,
     "dns": "1.1.1.1",
-    "achievements": [
-        "first_blood"
-    ],
-    "work_concurrency": 1,
-    "file_concurrency": 4,
-    "chunk_size": 1048576,
-    "retry_count": 5,
-    "retry_backoff": 2
+    "achievements": []
 }
