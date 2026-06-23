@@ -53,11 +53,26 @@ class DownloadView(ft.Container):
                 allowed_extensions=["txt"])
         )
 
-        # ── P3: show completed toggle ──
+        # ── P3: show completed toggle + batch buttons ──
         self.show_completed_switch = ft.Switch(
             label="显示已完成", value=False,
             active_color=SUCCESS,
             on_change=lambda e: self._refresh_queue()
+        )
+
+        self.btn_pause_all = ft.ElevatedButton(
+            "全部暂停", icon=ft.icons.PAUSE_CIRCLE,
+            style=ft.ButtonStyle(
+                bgcolor=WARNING, color="white",
+                shape=ft.RoundedRectangleBorder(radius=10)),
+            on_click=lambda e: self._batch_pause()
+        )
+        self.btn_resume_all = ft.ElevatedButton(
+            "全部开始", icon=ft.icons.PLAY_CIRCLE,
+            style=ft.ButtonStyle(
+                bgcolor=SUCCESS, color="white",
+                shape=ft.RoundedRectangleBorder(radius=10)),
+            on_click=lambda e: self._batch_resume()
         )
 
         self.queue_list = ft.ListView(expand=True, spacing=10)
@@ -68,8 +83,9 @@ class DownloadView(ft.Container):
             ft.Text("下载中心", size=32, weight=ft.FontWeight.BOLD),
             ft.Row([self.rj_input, self.download_btn, self.batch_btn],
                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            ft.Row([self.show_completed_switch],
-                   alignment=ft.MainAxisAlignment.END),
+            ft.Row([self.show_completed_switch,
+                     self.btn_pause_all, self.btn_resume_all],
+                   alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             ft.Divider(height=20, color="transparent"),
             ft.Text("当前下载队列", size=20, weight=ft.FontWeight.W_500,
                     color=ACCENT_PRIMARY),
@@ -124,6 +140,15 @@ class DownloadView(ft.Container):
             except Exception as e:
                 print(f"Failed to load queue: {e}")
 
+    def _batch_pause(self):
+        self.app_controller.orc.pause_all()
+        self._refresh_queue()
+
+    def _batch_resume(self):
+        self.app_controller.orc.resume_all()
+        self._refresh_queue()
+        self.app_controller.show_snack("已恢复所有待下载/暂停任务")
+
     def process_input(self, text: str):
         codes = []
         for match in RJ_PATTERN.finditer(text):
@@ -133,6 +158,23 @@ class DownloadView(ft.Container):
 
         for rj_num in codes:
             rj_id = f"RJ{rj_num}"
+
+            # ── P3.4: duplicate detection ──
+            from core.database import LibraryVault
+            dup_entries = self.app_controller.db.find_in_library(rj_id)
+            if dup_entries:
+                dup_paths = ", ".join(e["work_dir"] for e in dup_entries[:3])
+                self.app_controller.show_snack(
+                    f"{rj_id} 已存在于仓库: {dup_paths}")
+                self.active_downloads[rj_id] = {
+                    "status": "重复 (跳过)",
+                    "tracks": {}, "control": None,
+                    "last_time": time.time(), "last_bytes": 0,
+                    "cache_hit": False
+                }
+                self._refresh_queue()
+                continue
+
             if rj_id not in self.active_downloads or \
                self.active_downloads[rj_id]["status"] == "已完成":
                 self.active_downloads[rj_id] = {

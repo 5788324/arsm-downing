@@ -98,9 +98,15 @@ class LibraryVault:
                     scanned_at TIMESTAMP
                 )
             """)
+            # Drop old unique index if it exists (migration from rj_id,library_path)
+            try:
+                self.conn.execute(
+                    "DROP INDEX IF EXISTS idx_library_rj_path")
+            except sqlite3.OperationalError:
+                pass
             self.conn.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_library_rj_path
-                ON library_index(rj_id, library_path)
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_library_rj_workdir
+                ON library_index(rj_id, work_dir)
             """)
 
     def _safe_alter(self, table: str, col_name: str, col_type: str) -> None:
@@ -300,44 +306,73 @@ class LibraryVault:
             logging.error(f"Library lookup error: {e}")
             return []
 
+    @staticmethod
+    def normalize_rj_id(raw: str) -> str:
+        """Normalize a directory name to 'RJxxxxxxxx' format (8 digits)."""
+        import re as _re
+        m = _re.search(r'(?:RJ)?(\d{6,8})', raw, _re.IGNORECASE)
+        if m:
+            return f"RJ{int(m.group(1)):08d}"
+        return ""
+
     def scan_library_paths(self, paths: List[str]) -> int:
         """Scan library paths for RJ folders. Returns count found."""
         import re as _re
-        rj_re = _re.compile(r'RJ(\d{6,})', _re.IGNORECASE)
+        rj_re = _re.compile(r'(?:RJ)?(\d{6,8})', _re.IGNORECASE)
         found = 0
+
+        def _scan_dir(d: Path, lib_path: str):
+            nonlocal found
+            if not d.is_dir():
+                return
+            m = rj_re.search(d.name)
+            if m:
+                rj_id = f"RJ{int(m.group(1)):08d}"
+                files = list(d.rglob("*"))
+                file_count = sum(1 for f in files if f.is_file())
+                size_bytes = sum(f.stat().st_size for f in files if f.is_file())
+                self.upsert_library_entry(
+                    rj_id, lib_path, str(d),
+                    size_bytes, file_count, 'found')
+                found += 1
+                return True
+            return False
 
         for lib_path in paths:
             p = Path(lib_path)
             if not p.exists():
                 continue
-            # Scan 1-2 levels deep
             for d in p.iterdir():
-                if not d.is_dir():
-                    continue
-                m = rj_re.search(d.name)
-                if m:
-                    rj_id = f"RJ{m.group(1)}"
-                    # Count files
-                    files = list(d.rglob("*"))
-                    file_count = sum(1 for f in files if f.is_file())
-                    size_bytes = sum(f.stat().st_size for f in files if f.is_file())
-                    self.upsert_library_entry(
-                        rj_id, lib_path, str(d),
-                        size_bytes, file_count, 'found')
-                    found += 1
-                else:
-                    # Check one level deeper for RJ folders
+                if not _scan_dir(d, lib_path):
                     for sub in d.iterdir():
-                        if sub.is_dir():
-                            m2 = rj_re.search(sub.name)
-                            if m2:
-                                rj_id = f"RJ{m2.group(1)}"
-                                files = list(sub.rglob("*"))
-                                file_count = sum(1 for f in files if f.is_file())
-                                size_bytes = sum(f.stat().st_size for f in files if f.is_file())
-                                self.upsert_library_entry(
-                                    rj_id, lib_path, str(sub),
-                                    size_bytes, file_count, 'found')
-                                found += 1
-
+                        _scan_dir(sub, lib_path)
         return found
+
+    def rebuild_library(self, paths: List[str]) -> dict:
+        """Scan library paths and sync to works table. Returns stats."""
+        result = {"found": 0, "indexed": 0, "errors": 0}
+        _n = self.scan_library_paths(paths)
+        result["found"] = _n
+
+        # Sync to works: add entries if missing
+        rows = self.conn.execute(
+            "SELECT DISTINCT rj_id, work_dir, library_path, size_bytes FROM library_index"
+        ).fetchall()
+        for row in rows:
+            try:
+                existing = self.conn.execute(
+                    "SELECT rj_id FROM works WHERE rj_id=?", (row["rj_id"],)
+                ).fetchone()
+                if not existing:
+                    self.conn.execute(
+                        """INSERT OR IGNORE INTO works
+                           (rj_id, title, circle, size_bytes, local_path, status, downloaded_at)
+                           VALUES (?, ?, ?, ?, ?, 'external', ?)""",
+                        (row["rj_id"], row["rj_id"], "",
+                         row["size_bytes"], row["work_dir"], datetime.now()))
+                    result["indexed"] += 1
+            except Exception as e:
+                logging.error(f"Rebuild sync error {row['rj_id']}: {e}")
+                result["errors"] += 1
+        self.conn.commit()
+        return result

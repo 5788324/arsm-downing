@@ -136,7 +136,33 @@ class Orchestrator:
     def cancel_job(self, rj_id):
         self.pause_job(rj_id)
 
+    # ══════════════════════════════════════════════
+    #  P3.5: batch controls
+    # ══════════════════════════════════════════════
+    def pause_all(self):
+        """Pause all non-terminal works."""
+        rows = self.db.conn.execute(
+            "SELECT DISTINCT rj_id FROM downloads "
+            "WHERE status NOT IN ('completed','registered','failed','paused')"
+        ).fetchall()
+        for row in rows:
+            self.pause_job(row["rj_id"])
+
+    def resume_all(self):
+        """Resume all paused/queued works. Does NOT retry failed."""
+        rows = self.db.conn.execute(
+            "SELECT DISTINCT rj_id FROM downloads "
+            "WHERE status IN ('paused','queued')"
+        ).fetchall()
+        tasks = []
+        for row in rows:
+            tasks.append(asyncio.ensure_future(
+                self.resume_job(row["rj_id"])))
+        return tasks
+
     async def resume_job(self, rj_id: str):
+
+    # ══════════════════════════════════════════════
         """Resume paused/queued downloads from DB state."""
         cached = self.db.get_metadata_cache(rj_id)
         if not cached:
