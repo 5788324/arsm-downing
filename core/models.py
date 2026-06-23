@@ -39,3 +39,18 @@ class SessionStats:
     skipped: int = 0
     bytes_downloaded: int = 0
     start_time: float = field(default_factory=time.time)
+
+@dataclass
+class ProgressEvent:
+    """Structured progress event emitted during download."""
+    rj_id: str
+    track_id: str
+    track_title: str
+    downloaded_bytes: int
+    total_bytes: int
+    percent: float
+    track_speed_bps: float
+    work_speed_bps: float
+    global_speed_bps: float
+    eta_seconds: Optional[float]
+    status: str

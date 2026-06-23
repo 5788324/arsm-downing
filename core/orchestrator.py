@@ -13,7 +13,7 @@ import aiofiles
 import aiohttp
 import yarl
 
-from core.models import WorkMetadata, TrackItem, SessionStats
+from core.models import WorkMetadata, TrackItem, SessionStats, ProgressEvent
 from core.config import ConfigManager
 from core.database import LibraryVault
 from core.network import NetworkKernel
@@ -43,12 +43,33 @@ class Orchestrator:
         self.on_progress = on_progress
         self.on_work_status = on_work_status
 
-    def _emit_progress(self, rj_id, track_title, downloaded, total, status):
-        if self.on_progress:
-            try:
-                self.on_progress(rj_id, track_title, downloaded, total, status)
-            except Exception:
-                pass
+    def _emit_progress(self, rj_id: str, track_id: str, track_title: str,
+                        downloaded: int, total: int, status: str):
+        """Emit a structured progress event with speed/eta fields."""
+        if not self.on_progress:
+            return
+        try:
+            pct = (downloaded / total * 100) if total > 0 else 0.0
+            trk_speed = self.speed.track_speed(rj_id, track_id)
+            wrk_speed = self.speed.work_speed(rj_id)
+            glb_speed = self.speed.global_speed()
+            eta = self.speed.track_eta(rj_id, track_id, downloaded, total)
+            event = ProgressEvent(
+                rj_id=rj_id,
+                track_id=track_id,
+                track_title=track_title,
+                downloaded_bytes=downloaded,
+                total_bytes=total,
+                percent=round(pct, 1),
+                track_speed_bps=round(trk_speed),
+                work_speed_bps=round(wrk_speed),
+                global_speed_bps=round(glb_speed),
+                eta_seconds=round(eta) if eta is not None else None,
+                status=status,
+            )
+            self.on_progress(event)
+        except Exception:
+            pass
 
     def _emit_work_status(self, rj_id, status):
         if self.on_work_status:
@@ -170,7 +191,7 @@ class Orchestrator:
                                     t.save_path.stat().st_size
                                     if t.save_path.exists() else 0,
                                     t.size)
-            self._emit_progress(rj_id, t.title,
+            self._emit_progress(rj_id, t.id or t.title, t.title,
                                 t.save_path.stat().st_size
                                 if t.save_path.exists() else 0,
                                 t.size, "pending")
@@ -380,7 +401,7 @@ class Orchestrator:
                 dl_id, rj_id, t.title, str(t.save_path),
                 status='completed' if existing_size == t.size > 0 else 'queued',
                 downloaded_bytes=existing_size, total_bytes=t.size)
-            self._emit_progress(rj_id, t.title, existing_size, t.size, "pending")
+            self._emit_progress(rj_id, t.id or t.title, t.title, existing_size, t.size, "pending")
 
         status_msg = "Queued (cached)" if from_cache else "Queued"
         self._emit_work_status(rj_id, status_msg)
@@ -411,7 +432,7 @@ class Orchestrator:
             self.stats.failed += 1
             self.db.upsert_download(dl_id, meta.rj_id, track.title,
                                     str(final_path), 'failed', error=str(e))
-            self._emit_progress(meta.rj_id, track.title, 0, track.size, "failed")
+            self._emit_progress(meta.rj_id, track.id or track.title, track.title, 0, track.size, "failed")
             return False
 
         if final_path.exists() and final_path.stat().st_size == track.size:
@@ -419,7 +440,7 @@ class Orchestrator:
             self.db.upsert_download(dl_id, meta.rj_id, track.title,
                                     str(final_path), 'completed',
                                     track.size, track.size)
-            self._emit_progress(meta.rj_id, track.title, track.size, track.size, "completed")
+            self._emit_progress(meta.rj_id, track.id or track.title, track.title, track.size, track.size, "completed")
             if part_path.exists():
                 try: part_path.unlink()
                 except OSError: pass
@@ -441,7 +462,7 @@ class Orchestrator:
             self.db.upsert_download(dl_id, meta.rj_id, track.title,
                                     str(final_path), 'downloading',
                                     existing_size, track.size)
-            self._emit_progress(meta.rj_id, track.title, existing_size, track.size, "downloading")
+            self._emit_progress(meta.rj_id, track.id or track.title, track.title, existing_size, track.size, "downloading")
             try:
                 headers = {}
                 if existing_size > 0:
@@ -459,7 +480,7 @@ class Orchestrator:
                                 dl_id, meta.rj_id, track.title,
                                 str(final_path), 'failed',
                                 error=str(resp_or_err))
-                            self._emit_progress(meta.rj_id, track.title,
+                            self._emit_progress(meta.rj_id, track.id or track.title, track.title,
                                                 existing_size, track.size, "failed")
                             return False
                         existing_size = 0  # reset for retry
@@ -484,7 +505,7 @@ class Orchestrator:
                                     dl_id, meta.rj_id, track.title,
                                     str(final_path), 'failed',
                                     error=f"HTTP {resp.status}")
-                                self._emit_progress(meta.rj_id, track.title,
+                                self._emit_progress(meta.rj_id, track.id or track.title, track.title,
                                                     existing_size, track.size, "failed")
                                 return False
                             existing_size = 0
@@ -514,12 +535,13 @@ class Orchestrator:
                                 await f.write(chunk)
                                 downloaded += len(chunk)
                                 self.stats.bytes_downloaded += len(chunk)
-                                # Update speed meter
+                                # Update speed meter with delta_bytes
                                 self.speed.update(
                                     meta.rj_id, track.id or track.title,
-                                    downloaded)
-                                self._emit_progress(meta.rj_id, track.title,
-                                                    downloaded, track.size, "downloading")
+                                    downloaded, len(chunk))
+                                self._emit_progress(
+                                    meta.rj_id, track.id or track.title, track.title,
+                                    downloaded, track.size, "downloading")
                     finally:
                         if not resp.closed:
                             resp.close()
@@ -541,7 +563,7 @@ class Orchestrator:
                 self.db.upsert_download(dl_id, meta.rj_id, track.title,
                                         str(final_path), 'completed',
                                         track.size, track.size)
-                self._emit_progress(meta.rj_id, track.title, track.size, track.size, "completed")
+                self._emit_progress(meta.rj_id, track.id or track.title, track.title, track.size, track.size, "completed")
                 return True
 
             except asyncio.CancelledError:
@@ -556,7 +578,7 @@ class Orchestrator:
                     self.stats.failed += 1
                     self.db.upsert_download(dl_id, meta.rj_id, track.title,
                                             str(final_path), 'failed', error=str(e))
-                    self._emit_progress(meta.rj_id, track.title, 0, track.size, "failed")
+                    self._emit_progress(meta.rj_id, track.id or track.title, track.title, 0, track.size, "failed")
                     logging.error(f"Error downloading {track.title}: {e}", exc_info=True)
                     return False
                 logging.warning(f"Retry {attempt+1}/3 for {track.title}: {e}")

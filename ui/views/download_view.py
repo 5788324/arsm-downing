@@ -297,57 +297,57 @@ class DownloadView(ft.Container):
         self.queue_list.update()
         self.save_queue()
 
-    def update_track_progress(self, rj_id: str, track_title: str, downloaded: int, total: int, status: str):
+    def update_track_progress(self, event):
+        """Accept a structured ProgressEvent from core."""
+        rj_id = event.rj_id
+        track_title = event.track_title
+        downloaded = event.downloaded_bytes
+        total = event.total_bytes
+        status = event.status
+
         if rj_id not in self.active_downloads:
             return
-            
+
         data = self.active_downloads[rj_id]
         if "tracks" not in data:
             data["tracks"] = {}
-        
+
         data["tracks"][track_title] = {
             "downloaded": downloaded,
             "total": total,
             "status": status
         }
-        
+
         total_bytes = sum(t["total"] for t in data["tracks"].values())
         downloaded_bytes = sum(t["downloaded"] for t in data["tracks"].values())
-        
+
         if total_bytes > 0:
             prog = downloaded_bytes / total_bytes
             if "prog_bar" in data:
                 data["prog_bar"].value = prog
-                
-            now = time.time()
-            if "last_time" in data and "last_bytes" in data:
-                dt = now - data["last_time"]
-                db = downloaded_bytes - data["last_bytes"]
-                if dt > 1.0:  # Update speed every second
-                    if data.get("status") == "下载中" and db >= 0:
-                        speed = db / dt / 1024 / 1024
-                        if "speed_text" in data:
-                            data["speed_text"].value = f"{speed:.2f} MB/s"
-                            try:
-                                data["speed_text"].update()
-                            except Exception:
-                                pass
-                    elif data.get("status") in ["队列排队中", "队列中"]:
-                        if "speed_text" in data:
-                            data["speed_text"].value = ""
-                            try:
-                                data["speed_text"].update()
-                            except Exception:
-                                pass
-                    data["last_time"] = now
-                    data["last_bytes"] = downloaded_bytes
-            else:
-                data["last_time"] = now
-                data["last_bytes"] = downloaded_bytes
+
+            # Use core-calculated speed (P2.1)
+            if data.get("status") == "下载中":
+                gbps = event.global_speed_bps
+                if "speed_text" in data and gbps > 0:
+                    data["speed_text"].value = f"{gbps/1024/1024:.2f} MB/s"
+                    try:
+                        data["speed_text"].update()
+                    except Exception:
+                        pass
+            elif data.get("status") in ("队列排队中", "队列中"):
+                if "speed_text" in data:
+                    data["speed_text"].value = ""
+                    try:
+                        data["speed_text"].update()
+                    except Exception:
+                        pass
 
             try:
                 if "prog_bar" in data:
                     data["prog_bar"].update()
+            except Exception:
+                pass
             except Exception:
                 pass
 

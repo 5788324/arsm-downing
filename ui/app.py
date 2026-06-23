@@ -79,10 +79,9 @@ class AppController:
     # ──────────────────────────────────────────────────────
     #  Thread-safe message enqueue (called from any thread)
     # ──────────────────────────────────────────────────────
-    def _enqueue_progress(self, rj_id: str, track_id: str,
-                          downloaded: int, total: int, status: str):
-        """Called from download thread — puts message in queue."""
-        self.ui_queue.put(("progress", rj_id, track_id, downloaded, total, status))
+    def _enqueue_progress(self, event):
+        """Called from download thread — puts ProgressEvent in queue."""
+        self.ui_queue.put(("progress", event))
 
     def _enqueue_work_status(self, rj_id: str, status: str):
         """Called from download thread — puts message in queue."""
@@ -119,11 +118,9 @@ class AppController:
                     msg_type = msg[0]
 
                     if msg_type == "progress":
-                        _, rj_id, track_id, downloaded, total, status = msg
+                        event = msg[1]  # ProgressEvent
                         try:
-                            self.views[0].update_track_progress(
-                                rj_id, track_id, downloaded, total, status
-                            )
+                            self.views[0].update_track_progress(event)
                         except Exception as e:
                             logging.debug(f"UI progress update error: {e}")
 

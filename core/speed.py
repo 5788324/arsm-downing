@@ -82,7 +82,11 @@ class SpeedMeter:
 
 
 class SpeedTracker:
-    """Manages per-track, per-work, and global SpeedMeters."""
+    """Manages per-track, per-work, and global SpeedMeters.
+
+    Uses internal byte accumulators so that work/global speed reflects
+    true aggregate throughput, not a single track's progress.
+    """
 
     def __init__(self, window_seconds: float = 5.0):
         self.window = window_seconds
@@ -90,6 +94,11 @@ class SpeedTracker:
         self.work_meters: dict = {}   # rj_id → SpeedMeter
         self.track_meters: dict = {}  # (rj_id, track_id) → SpeedMeter
         self._paused_works: set = set()
+
+        # Internal delta accumulators
+        self._global_total: int = 0
+        self._work_totals: dict = {}   # rj_id → int
+        self._track_totals: dict = {}  # (rj_id, track_id) → int
 
     def get_track(self, rj_id: str, track_id: str) -> SpeedMeter:
         key = (rj_id, track_id)
@@ -102,13 +111,30 @@ class SpeedTracker:
             self.work_meters[rj_id] = SpeedMeter(self.window)
         return self.work_meters[rj_id]
 
-    def update(self, rj_id: str, track_id: str, downloaded: int):
-        """Update all three meters from a single byte-count sample."""
+    def update(self, rj_id: str, track_id: str,
+               track_downloaded: int, delta_bytes: int):
+        """Update all three meters.
+
+        Args:
+            rj_id: Work identifier.
+            track_id: Track identifier.
+            track_downloaded: This track's absolute downloaded bytes so far.
+            delta_bytes: Bytes just received in the latest chunk.
+        """
         if rj_id in self._paused_works:
             return
-        self.global_meter.update(downloaded)
-        self.get_work(rj_id).update(downloaded)
-        self.get_track(rj_id, track_id).update(downloaded)
+
+        # Track meter: absolute downloaded for this track
+        self.get_track(rj_id, track_id).update(track_downloaded)
+        self._track_totals[(rj_id, track_id)] = track_downloaded
+
+        # Work meter: cumulative delta for the whole work
+        self._work_totals[rj_id] = self._work_totals.get(rj_id, 0) + delta_bytes
+        self.get_work(rj_id).update(self._work_totals[rj_id])
+
+        # Global meter: cumulative delta across all works
+        self._global_total += delta_bytes
+        self.global_meter.update(self._global_total)
 
     def track_speed(self, rj_id: str, track_id: str) -> float:
         return self.get_track(rj_id, track_id).speed_bps
@@ -122,9 +148,6 @@ class SpeedTracker:
     def track_eta(self, rj_id: str, track_id: str,
                   downloaded: int, total: int) -> Optional[float]:
         return self.get_track(rj_id, track_id).eta_seconds(downloaded, total)
-
-    def work_eta(self, rj_id: str, downloaded: int, total: int) -> Optional[float]:
-        return self.get_work(rj_id).eta_seconds(downloaded, total)
 
     def pause_track(self, rj_id: str, track_id: str):
         self.get_track(rj_id, track_id).pause()
@@ -145,6 +168,9 @@ class SpeedTracker:
 
     def reset_work(self, rj_id: str):
         self._paused_works.discard(rj_id)
+        self._work_totals.pop(rj_id, None)
+        self.work_meters.pop(rj_id, None)
         to_drop = [(r, t) for (r, t) in self.track_meters if r == rj_id]
         for key in to_drop:
             self.track_meters.pop(key, None)
+            self._track_totals.pop(key, None)

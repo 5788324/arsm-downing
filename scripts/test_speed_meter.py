@@ -78,9 +78,9 @@ async def test():
     # ── 5. SpeedTracker multi-level ──
     print("\n── 5. SpeedTracker 多级聚合 ──")
     st = SpeedTracker(window_seconds=5.0)
-    st.update("RJ001", "t1", 0)
+    st.update("RJ001", "t1", 0, 0)      # track_downloaded=0, delta=0
     time.sleep(0.3)
-    st.update("RJ001", "t1", 500_000)
+    st.update("RJ001", "t1", 500_000, 500_000)  # downloaded=500KB, delta=500KB
 
     t_speed = st.track_speed("RJ001", "t1")
     w_speed = st.work_speed("RJ001")
@@ -95,10 +95,10 @@ async def test():
     assert st.track_speed("RJ001", "t1") == 0.0
     assert st.work_speed("RJ001") == 0.0
 
-    # Add another track
-    st.update("RJ001", "t2", 0)
+    # Add another track while paused — should be frozen
+    st.update("RJ001", "t2", 0, 0)
     time.sleep(0.3)
-    st.update("RJ001", "t2", 300_000)
+    st.update("RJ001", "t2", 300_000, 300_000)
     # Still paused so speed should be 0
     assert st.track_speed("RJ001", "t2") == 0.0
     print(f"  ✓ SpeedTracker 多级聚合正确")
