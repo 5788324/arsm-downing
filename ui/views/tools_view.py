@@ -59,6 +59,14 @@ class ToolsView(ft.Container):
         asyncio.run_coroutine_threadsafe(
             _enrich_and_verify(), self.app_controller.loop)
 
+    def repair_db(self, e):
+        self.log("> 开始修复数据库...", "white")
+        try:
+            self.app_controller.db.conn.execute("VACUUM")
+            self.log("✓ 数据库修复/优化成功!", SUCCESS)
+        except Exception as ex:
+            self.log(f"✗ 数据库修复失败: {ex}", ERROR)
+
     def clean_queue(self, e):
         self.log("> 清理无效队列...", "white")
         db = self.app_controller.db
