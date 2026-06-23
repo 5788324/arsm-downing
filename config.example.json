@@ -1,6 +1,6 @@
 {
     "output_dir": "Downloads",
-    "max_concurrent": 4,
+    "max_concurrent": 3,
     "proxy": null,
     "proxy_download": false,
     "mirror": "https://api.asmr-200.com",
@@ -10,7 +10,5 @@
     "auth_token": null,
     "timeout": 60,
     "dns": "1.1.1.1",
-    "achievements": [
-        "first_blood"
-    ]
+    "achievements": []
 }

@@ -20,7 +20,7 @@ class ConfigManager:
         self.mirror = HOSTNAME_MIRRORS[0]
         self.tag_audio = True
         self.sort_files = False
-        self.dir_template = "RJ{rj_id} {title}"
+        self.dir_template = "{rj_id} {title}"
         self.auth_token = None
         self.timeout = 60
         self.dns = "1.1.1.1"

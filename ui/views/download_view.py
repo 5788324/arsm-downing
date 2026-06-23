@@ -86,18 +86,21 @@ class DownloadView(ft.Container):
                     saved = json.load(f)
                 for rj, data in saved.items():
                     try:
+                        # Normalize: ensure RJ prefix for backward compatibility
+                        rj_id = f"RJ{rj}" if not rj.upper().startswith("RJ") else rj
+
                         if data["status"] == "已完成":
                             continue  # Do not load completed tasks, they auto-clear on restart
-                            
-                        self.active_downloads[rj] = {
+
+                        self.active_downloads[rj_id] = {
                             "status": "队列中",
                             "tracks": data.get("tracks", {}),
                             "control": None,
                             "last_time": time.time(),
                             "last_bytes": 0
                         }
-                        self.build_queue_item(rj)
-                        self.app_controller.start_download(rj)
+                        self.build_queue_item(rj_id)
+                        self.app_controller.start_download(rj_id)
                     except Exception as e:
                         print(f"Error loading {rj}: {e}")
             except Exception as e:
@@ -109,8 +112,9 @@ class DownloadView(ft.Container):
             code = match.group(1)
             if code and code not in codes:
                 codes.append(code)
-        
-        for rj_id in codes:
+
+        for rj_num in codes:
+            rj_id = f"RJ{rj_num}"  # normalize to full RJ format
             if rj_id not in self.active_downloads or self.active_downloads[rj_id]["status"] == "已完成":
                 self.active_downloads[rj_id] = {
                     "status": "队列中",
@@ -147,7 +151,7 @@ class DownloadView(ft.Container):
         item_data = self.active_downloads[rj_id]
         status = item_data["status"]
         
-        title_text = ft.Text(f"RJ{rj_id}", weight=ft.FontWeight.BOLD, size=16)
+        title_text = ft.Text(rj_id, weight=ft.FontWeight.BOLD, size=16)
         status_text = ft.Text(status, color=WARNING, size=12)
         speed_text = ft.Text("", color=ACCENT_SECONDARY, size=12)
         
@@ -366,7 +370,7 @@ class DownloadView(ft.Container):
         self.refresh_dialog_list(rj_id)
         
         dlg = ft.AlertDialog(
-            title=ft.Text(f"详细进度 - RJ{rj_id}"),
+            title=ft.Text(f"详细进度 - {rj_id}"),
             content=ft.Container(self.dialog_list, width=600),
             actions=[ft.TextButton("关闭", on_click=lambda e: self.close_dialog(dlg))]
         )

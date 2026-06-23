@@ -1,4 +1,10 @@
 import flet as ft
+import asyncio
+import threading
+import queue
+import time
+import logging
+
 from core.config import ConfigManager
 from core.database import LibraryVault
 from core.network import NetworkKernel
@@ -9,9 +15,11 @@ from ui.views.library_view import LibraryView
 from ui.views.settings_view import SettingsView
 from ui.views.dashboard_view import DashboardView
 from ui.views.tools_view import ToolsView
-import asyncio
+
 
 class AppController:
+    """Main application controller with thread-safe UI updates."""
+
     def __init__(self, page: ft.Page):
         self.page = page
         self.page.title = "EchoVault Premium"
@@ -19,18 +27,21 @@ class AppController:
         self.page.theme_mode = ft.ThemeMode.DARK
         self.page.bgcolor = BG_DARK
         self.page.padding = 0
-        
-        # Initialize Core Backend
+
+        # ── UI message queue for thread-safe cross-thread updates ──
+        self.ui_queue: queue.Queue = queue.Queue()
+
+        # ── Initialize Core Backend ──
         self.config = ConfigManager.load()
         self.db = LibraryVault()
         self.kernel = NetworkKernel(self.config)
         self.orc = Orchestrator(self.kernel, self.config, self.db)
-        
+
+        # ── Async event loop on a dedicated thread ──
         self.loop = asyncio.new_event_loop()
-        import threading
         threading.Thread(target=self._run_loop, daemon=True).start()
-        
-        # Initialize Views
+
+        # ── Initialize Views ──
         self.views = {
             0: DownloadView(self),
             1: LibraryView(self),
@@ -39,20 +50,99 @@ class AppController:
             4: SettingsView(self)
         }
         self.current_view = 0
-        
-        # Callbacks
+
+        # ── Wire callbacks via message queue (NOT direct UI calls) ──
         self.orc.set_callbacks(
-            on_progress=self.on_download_progress,
-            on_work_status=self.on_work_status
+            on_progress=self._enqueue_progress,
+            on_work_status=self._enqueue_work_status
         )
-        
+
         self.setup_ui()
+
+        # ── Start background workers ──
         asyncio.run_coroutine_threadsafe(self.orc.boot_worker(), self.loop)
 
+        # ── Start UI message queue poller ──
+        self._start_ui_poller()
+
+    # ──────────────────────────────────────────────────────
+    #  Event loop thread
+    # ──────────────────────────────────────────────────────
     def _run_loop(self):
         asyncio.set_event_loop(self.loop)
         self.loop.run_forever()
 
+    # ──────────────────────────────────────────────────────
+    #  Thread-safe message enqueue (called from any thread)
+    # ──────────────────────────────────────────────────────
+    def _enqueue_progress(self, rj_id: str, track_id: str,
+                          downloaded: int, total: int, status: str):
+        """Called from download thread — puts message in queue."""
+        self.ui_queue.put(("progress", rj_id, track_id, downloaded, total, status))
+
+    def _enqueue_work_status(self, rj_id: str, status: str):
+        """Called from download thread — puts message in queue."""
+        self.ui_queue.put(("work_status", rj_id, status))
+
+    # ──────────────────────────────────────────────────────
+    #  UI poller: runs on a background thread, schedules
+    #  updates on Flet's main event loop via page.run_task()
+    # ──────────────────────────────────────────────────────
+    def _start_ui_poller(self):
+        """Start a background thread that polls the message queue
+        and dispatches UI updates to Flet's main event loop."""
+
+        def poll_loop():
+            while True:
+                time.sleep(0.1)
+                try:
+                    if not self.ui_queue.empty():
+                        # Schedule async processing on Flet's event loop
+                        self.page.run_task(self._process_ui_queue())
+                except Exception as e:
+                    logging.debug(f"UI poller error: {e}")
+
+        threading.Thread(target=poll_loop, daemon=True).start()
+
+    async def _process_ui_queue(self):
+        """Process all pending UI messages. Runs on Flet's event loop."""
+        processed = False
+        while not self.ui_queue.empty():
+            try:
+                msg = self.ui_queue.get_nowait()
+                msg_type = msg[0]
+
+                if msg_type == "progress":
+                    _, rj_id, track_id, downloaded, total, status = msg
+                    try:
+                        self.views[0].update_track_progress(
+                            rj_id, track_id, downloaded, total, status
+                        )
+                    except Exception as e:
+                        logging.debug(f"UI progress update error: {e}")
+
+                elif msg_type == "work_status":
+                    _, rj_id, status = msg
+                    try:
+                        self.views[0].update_work_status(rj_id, status)
+                    except Exception as e:
+                        logging.debug(f"UI work_status update error: {e}")
+
+                processed = True
+            except queue.Empty:
+                break
+            except Exception as e:
+                logging.debug(f"UI queue processing error: {e}")
+
+        if processed:
+            try:
+                self.page.update()
+            except Exception:
+                pass
+
+    # ──────────────────────────────────────────────────────
+    #  UI setup
+    # ──────────────────────────────────────────────────────
     def setup_ui(self):
         self.nav_rail = ft.NavigationRail(
             selected_index=0,
@@ -90,13 +180,13 @@ class AppController:
             ],
             on_change=self.on_nav_change,
         )
-        
+
         self.views_container = ft.Container(
             content=self.views[0],
             expand=True,
             padding=40
         )
-        
+
         self.page.add(
             ft.Row(
                 [
@@ -113,38 +203,39 @@ class AppController:
         if idx in self.views:
             self.views_container.content = self.views[idx]
             self.views_container.update()
-            
+
             if idx == 1:
                 self.views[1].load_library()
             elif idx == 2:
                 self.views[2].load_data()
 
+    # ──────────────────────────────────────────────────────
+    #  Actions (called from UI thread / Flet event loop)
+    # ──────────────────────────────────────────────────────
     def start_download(self, rj_id: str):
+        """Queue a download. Called from UI thread."""
         try:
-            asyncio.run_coroutine_threadsafe(self.orc.queue_job(rj_id), self.loop)
+            asyncio.run_coroutine_threadsafe(
+                self.orc.queue_job(rj_id), self.loop
+            )
         except Exception as e:
-            self.page.run_task(lambda: self.show_snack(f"Failed to queue download: {str(e)}"))
+            self.show_snack(f"排队失败: {e}")
 
-    def on_download_progress(self, rj_id: str, track_id: str, downloaded: int, total: int, status: str):
-        self.views[0].update_track_progress(rj_id, track_id, downloaded, total, status)
-
-    def on_work_status(self, rj_id: str, status: str):
-        self.views[0].update_work_status(rj_id, status)
-        
     def pause_download(self, rj_id: str):
         self.orc.pause_job(rj_id)
-        
+
     def cancel_download(self, rj_id: str):
         self.orc.cancel_job(rj_id)
-        
+
     def show_snack(self, message: str):
         self.page.snack_bar = ft.SnackBar(ft.Text(message))
         self.page.snack_bar.open = True
         self.page.update()
-        
+
     def check_achievements(self):
         if 2 in self.views:
             self.views[2].load_data()
+
 
 def start_app(page: ft.Page):
     AppController(page)

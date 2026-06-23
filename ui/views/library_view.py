@@ -51,7 +51,7 @@ class LibraryView(ft.Container):
             
             card_content = ft.Column([
                 image_control,
-                ft.Text(f"RJ{rj_id}", weight=ft.FontWeight.BOLD),
+                ft.Text(rj_id, weight=ft.FontWeight.BOLD),
                 ft.Text(title, size=12, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
                 ft.Text(circle, size=10, color="grey", max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
             ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER)

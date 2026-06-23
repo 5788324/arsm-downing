@@ -61,3 +61,11 @@ python main.py
 
 ## 📄 免责声明
 本程序仅作为学习 Python 异步编程及 Flet UI 框架的技术交流产物。请尊重原作者版权，请勿用于任何商业或非法传播用途。
+
+## 📝 License
+
+Based on [takoyune/asmr.one-downloader](https://github.com/takoyune/asmr.one-downloader), MIT License.
+
+Original author: Takoyune. Modified by: 5788324.
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
