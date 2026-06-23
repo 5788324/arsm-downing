@@ -247,15 +247,21 @@ class DownloadView(ft.Container):
 
         title_text = ft.Text(rj_id, weight=ft.FontWeight.BOLD, size=16)
 
+        # Current track name (RC3.1)
+        cur_track = item_data.get("current_track", "")
+        cur_title = ft.Text(cur_track, size=11, color=ACCENT_SECONDARY,
+                            max_lines=1, overflow=ft.TextOverflow.ELLIPSIS) if cur_track else ft.Text("")
+
         # Status with cache hint
         cache_label = " [缓存]" if item_data.get("cache_hit") else ""
         status_text = ft.Text(
             status + cache_label, color=WARNING, size=12)
 
-        # Speed / ETA from last progress data
+        # Speed / ETA (track + global)
         speed_info = item_data.get("last_speed_bps", 0)
+        track_speed = item_data.get("last_track_speed", 0)
         eta_info = item_data.get("last_eta", None)
-        speed_str = f"{speed_info/1024/1024:.1f} MB/s" if speed_info > 0 else ""
+        speed_str = f"文件 {track_speed/1024:.0f} KB/s 全局 {speed_info/1024/1024:.1f} MB/s" if speed_info > 0 else ""
         eta_str = f" ETA {eta_info:.0f}s" if eta_info else ""
         detail_str = (speed_str + eta_str).strip()
         speed_text = ft.Text(detail_str, color=ACCENT_SECONDARY, size=11)
@@ -324,16 +330,20 @@ class DownloadView(ft.Container):
                 on_click=lambda e, r=rj_id: self.cancel_item(r))
             actions.extend([btn_resume, btn_cancel])
         else:
-            # Active: pause + cancel
-            btn_pause = ft.IconButton(
-                icon=ft.icons.PAUSE, icon_color=ACCENT_PRIMARY,
-                tooltip="暂停",
-                on_click=lambda e, r=rj_id: self.toggle_pause(r))
-            btn_cancel = ft.IconButton(
-                icon=ft.icons.CANCEL, icon_color=ERROR,
-                tooltip="取消下载",
-                on_click=lambda e, r=rj_id: self.cancel_item(r))
-            actions.extend([btn_pause, btn_cancel])
+                # Active: pause + cancel + reconnect (RC3.1)
+                btn_pause = ft.IconButton(
+                    icon=ft.icons.PAUSE, icon_color=ACCENT_PRIMARY,
+                    tooltip="暂停",
+                    on_click=lambda e, r=rj_id: self.toggle_pause(r))
+                btn_cancel = ft.IconButton(
+                    icon=ft.icons.CANCEL, icon_color=ERROR,
+                    tooltip="取消下载",
+                    on_click=lambda e, r=rj_id: self.cancel_item(r))
+                btn_reconnect = ft.IconButton(
+                    icon=ft.icons.REFRESH, icon_color=ACCENT_SECONDARY,
+                    tooltip="重连（暂停后重新连接）",
+                    on_click=lambda e, r=rj_id: self._reconnect_job(r))
+                actions.extend([btn_pause, btn_cancel, btn_reconnect])
 
         # Partial status gets a label but same buttons as active
         if "Partially completed" in status or "部分完成" in status:
@@ -348,10 +358,11 @@ class DownloadView(ft.Container):
             leading=ft.Icon(ft.icons.CLOUD_DOWNLOAD, color=ACCENT_PRIMARY, size=40),
             title=title_text,
             subtitle=ft.Column([
+                cur_title,
                 ft.Row([status_text, speed_text],
                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                 prog_bar
-            ], spacing=5),
+            ], spacing=3),
             trailing=actions_container,
             on_click=lambda e, r=rj_id: self.show_detailed_progress(r)
         )
@@ -478,6 +489,16 @@ class DownloadView(ft.Container):
         self.build_queue_item(rj_id)
         self.app_controller.start_download(rj_id)
 
+    def _reconnect_job(self, rj_id: str):
+        """Pause → resume to force CDN reconnection."""
+        data = self.active_downloads.get(rj_id)
+        if not data:
+            return
+        self.app_controller.pause_download(rj_id)
+        self.app_controller.resume_download(rj_id)
+        self.update_work_status(rj_id, "Resuming...")
+        self.app_controller.show_snack(f"{rj_id} 重连中...")
+
     def _open_work_dir(self, rj_id: str):
         """Open the download directory for this work."""
         from core.config import ConfigManager
@@ -546,8 +567,10 @@ class DownloadView(ft.Container):
             "status": status
         }
 
-        # Store latest speed/eta from core
+        # Store latest speed/eta from core (RC3.1)
+        data["current_track"] = event.track_title
         data["last_speed_bps"] = event.global_speed_bps
+        data["last_track_speed"] = event.track_speed_bps
         data["last_eta"] = event.eta_seconds
 
         total_bytes = sum(t["total"] for t in data["tracks"].values())

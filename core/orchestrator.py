@@ -608,6 +608,16 @@ class Orchestrator:
         dl_id = self._make_dl_id(meta.rj_id, track.id or track.title,
                                  track.save_path, track.title)
 
+        # ── RC3.1: start diagnostic log ──
+        import urllib.parse as _up
+        host = _up.urlparse(track.url).hostname or "unknown"
+        is_resume = part_path.exists() or (
+            final_path.exists() and final_path.stat().st_size < track.size)
+        logger.info(
+            f"DOWNLOAD_START rj={meta.rj_id} track={track.title[:50]} "
+            f"host={host} size={track.size} exist={is_resume} "
+            f"path={final_path}")
+
         if sys.platform == "win32" and len(str(final_path.absolute())) > 255:
             stem = self.sanitize(track.title)[:30]
             final_path = final_path.parent / f"{stem}{final_path.suffix}"
@@ -652,6 +662,14 @@ class Orchestrator:
                                     str(final_path), 'downloading',
                                     existing_size, track.size)
             self._emit_progress(meta.rj_id, track.id or track.title, track.title, existing_size, track.size, "downloading")
+            # ── RC3.1: per-attempt diag ──
+            is_resume = existing_size > 0
+            rng = f"bytes={existing_size}-" if existing_size else "none"
+            d_proxy = self.config.get_proxy_for('download') or "direct"
+            logger.info(
+                f"DOWNLOAD_ATTEMPT rj={meta.rj_id} track={track.title[:40]} "
+                f"attempt={attempt+1}/{self.config.retry_count} "
+                f"resume={is_resume} range={rng} download_proxy={d_proxy}")
             try:
                 headers = {}
                 if existing_size > 0:
@@ -703,6 +721,13 @@ class Orchestrator:
                             continue
 
                         is_partial = resp.status == 206
+                        # ── RC3.1: response diagnostic ──
+                        clen = resp.headers.get("Content-Length", "?")
+                        cr = resp.headers.get("Content-Range", "none")
+                        logger.info(
+                            f"DOWNLOAD_RESP rj={meta.rj_id} track={track.title[:40]} "
+                            f"http={resp.status} partial={is_partial} "
+                            f"content_len={clen} content_range={cr}")
                         if is_partial:
                             cr = resp.headers.get("Content-Range", "")
                             m = re.match(r"bytes\s+(\d+)-\d+/(\d+)", cr)
@@ -784,11 +809,16 @@ class Orchestrator:
         """Stream with fallback: direct → proxy on failure."""
         # Try direct first (purpose='download' = no proxy unless configured)
         direct_error = None
+        dproxy = self.config.get_proxy_for('download') or "direct"
         try:
             resp = await self.kernel.stream(url, headers, purpose='download')
             return True, resp
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
             direct_error = e
+
+        import urllib.parse as _up
+        host = _up.urlparse(url).hostname or "?"
+        logger.info(f"DOWNLOAD_DIRECT_FAIL host={host} proxy={dproxy} err={direct_error}")
 
         if not self.config.download_fallback_to_proxy:
             return False, f"Direct failed, fallback disabled: {direct_error}"
@@ -799,7 +829,7 @@ class Orchestrator:
         if not fallback_proxy:
             return False, f"Direct failed, no proxy configured: {direct_error}"
 
-        logging.info(f"Download fallback via proxy for {url[:80]}...")
+        logger.info(f"DOWNLOAD_FALLBACK host={host} proxy={fallback_proxy}")
         try:
             await self.kernel.boot()
             resp = await self.kernel.session.get(

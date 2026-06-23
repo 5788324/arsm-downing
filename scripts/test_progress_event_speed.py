@@ -73,6 +73,7 @@ async def test():
 
     class FakeResponse:
         status = 200
+        headers = {"Content-Length": "500"}
 
         def __init__(self, chunks):
             self.content = FakeStreamReader(chunks)
