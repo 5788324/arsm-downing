@@ -158,11 +158,26 @@ class DownloadView(ft.Container):
         for rj_id in rj_ids:
             orc.speed.resume_work(rj_id)
         import asyncio
-        asyncio.run_coroutine_threadsafe(
-            orc._resume_all_async(), loop)
-        self._refresh_queue()
+
+        async def _resume_all():
+            results = []
+            for rj_id in rj_ids:
+                r = await orc.resume_job(rj_id)
+                results.append((rj_id, r))
+            # Update UI with results
+            for rj_id, r in results:
+                st = r.get("status", "unknown")
+                if st == "resumed":
+                    self.update_work_status(rj_id, "Resuming...")
+                elif st == "no_pending":
+                    self.update_work_status(rj_id, "No pending tracks")
+                else:
+                    self.update_work_status(rj_id, f"恢复失败: {st}")
+            self._refresh_queue()
+
+        asyncio.run_coroutine_threadsafe(_resume_all(), loop)
         self.app_controller.show_snack(
-            f"已恢复 {len(rj_ids)} 个任务")
+            f"正在恢复 {len(rj_ids)} 个任务...")
 
     def process_input(self, text: str):
         codes = []
@@ -434,7 +449,7 @@ class DownloadView(ft.Container):
 
         try:
             if self.queue_list.page:
-                self.queue_list.update()
+                if self.queue_list.page: self.queue_list.update()
         except Exception:
             pass
 
@@ -611,7 +626,7 @@ class DownloadView(ft.Container):
             self.queue_list.controls.remove(data["control"])
         self.active_downloads.pop(rj_id, None)
         try:
-            self.queue_list.update()
+            if self.queue_list.page: self.queue_list.update()
         except Exception:
             pass
         self.save_queue()

@@ -544,10 +544,9 @@ class Orchestrator:
                                      cover_url=""),
                         0, Path("."), status='metadata_failed')
                 else:
-                    self.db.conn.execute(
+                    self.db.execute_write(
                         "UPDATE works SET status='metadata_failed' WHERE rj_id=?",
                         (rj_id,))
-                    self.db.conn.commit()
                 self._emit_work_status(
                     rj_id,
                     f"Metadata failed: proxy {self.config.metadata_proxy or self.config.proxy or 'off'}"

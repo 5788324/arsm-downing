@@ -19,6 +19,15 @@ STATUS_LABELS = {
 }
 
 
+def safe_update(control):
+    """Update a Flet control only if it's mounted on a page."""
+    try:
+        if control and hasattr(control, 'page') and control.page:
+            control.update()
+    except Exception:
+        pass
+
+
 class LibraryView(ft.Container):
     def __init__(self, app_controller):
         super().__init__()
@@ -105,7 +114,7 @@ class LibraryView(ft.Container):
             container.on_click = lambda e, p=local_path: self.open_folder(p)
             self.grid.controls.append(container)
 
-        self.grid.update()
+        safe_update(self.grid)
 
     def on_search(self, e):
         self.load_library(self.search_input.value)

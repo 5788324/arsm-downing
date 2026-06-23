@@ -1,6 +1,7 @@
 import json
 import logging
 import sqlite3
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict
@@ -14,15 +15,68 @@ CACHE_TTL_HOURS = 168
 
 
 class LibraryVault:
-    """Manages download history, metadata cache, and download state."""
+    """Manages download history, metadata cache, and download state.
+
+    All writes are protected by a global threading.RLock to prevent
+    concurrent-transaction errors from multiple threads/coroutines.
+    Reads use the shared connection (check_same_thread=False) for speed.
+    """
 
     def __init__(self):
-        self.conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
+        self.db_path = str(DB_FILE)
+        self._lock = threading.RLock()
+        # Shared read-only connection
+        with self._lock:
+            self.conn = sqlite3.connect(self.db_path,
+                                        check_same_thread=False)
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            self.conn.execute("PRAGMA busy_timeout=5000")
+            self.conn.row_factory = sqlite3.Row
         self._init_schema()
 
-    # ──────────────────────────────────────────────
-    #  Schema & migration
+    def _write_conn(self):
+        """Return a new connection for a write, with lock held by caller."""
+        c = sqlite3.connect(self.db_path, timeout=10)
+        c.row_factory = sqlite3.Row
+        return c
+
+    def _execute_write(self, sql: str, params=()):
+        """Execute a write statement under lock with automatic commit."""
+        with self._lock:
+            conn = self._write_conn()
+            try:
+                conn.execute(sql, params)
+                conn.commit()
+            except sqlite3.Error as e:
+                logging.error(f"DB write error: {e} sql={sql[:80]}")
+                raise
+            finally:
+                conn.close()
+
+    def _write(self, fn):
+        """Execute fn(conn) under lock with new connection + commit."""
+        with self._lock:
+            conn = self._write_conn()
+            try:
+                result = fn(conn)
+                conn.commit()
+                return result
+            except sqlite3.Error as e:
+                logging.error(f"DB write error: {e}")
+                raise
+            finally:
+                conn.close()
+
+    def commit(self):
+        """Thread-safe commit."""
+        with self._lock:
+            self.conn.commit()
+
+    def execute_write(self, sql: str, params=()):
+        """Execute a write statement under lock."""
+        with self._lock:
+            self.conn.execute(sql, params)
+            self.conn.commit()
     # ──────────────────────────────────────────────
     def _init_schema(self) -> None:
         with self.conn:
@@ -150,10 +204,10 @@ class LibraryVault:
                            cover_url: str, metadata_raw: dict,
                            tracks_raw: list) -> None:
         """Store metadata and tracks in cache."""
-        try:
-            import json as _json
-            now = datetime.now()
-            with self.conn:
+        with self._lock:
+            try:
+                import json as _json
+                now = datetime.now()
                 self.conn.execute(
                     """INSERT OR REPLACE INTO metadata_cache
                        (rj_id, title, circle, cover_url, metadata_json,
@@ -164,18 +218,19 @@ class LibraryVault:
                      _json.dumps(tracks_raw, ensure_ascii=False),
                      now, now)
                 )
-        except Exception as e:
-            logging.error(f"Metadata cache write error: {e}")
+                self.conn.commit()
+            except Exception as e:
+                logging.error(f"Metadata cache write error: {e}")
 
     def invalidate_cache(self, rj_id: str) -> None:
         """Force next lookup to fetch fresh data."""
-        try:
-            self.conn.execute(
-                "DELETE FROM metadata_cache WHERE rj_id = ?", (rj_id,)
-            )
-            self.conn.commit()
-        except Exception as e:
-            logging.error(f"Cache invalidation error: {e}")
+        with self._lock:
+            try:
+                self.conn.execute(
+                    "DELETE FROM metadata_cache WHERE rj_id = ?", (rj_id,))
+                self.conn.commit()
+            except Exception as e:
+                logging.error(f"Cache invalidation error: {e}")
 
     # ──────────────────────────────────────────────
     #  Download state (P1-2)
@@ -184,9 +239,10 @@ class LibraryVault:
                         track_title: str, local_path: str,
                         status: str, downloaded_bytes: int = 0,
                         total_bytes: int = 0, error: str = "") -> None:
-        try:
-            now = datetime.now()
-            with self.conn:
+        """Write download state under lock."""
+        with self._lock:
+            try:
+                now = datetime.now()
                 self.conn.execute(
                     """INSERT OR REPLACE INTO downloads
                        (id, rj_id, track_title, local_path, status,
@@ -195,8 +251,9 @@ class LibraryVault:
                     (download_id, rj_id, track_title, local_path,
                      status, downloaded_bytes, total_bytes, error, now)
                 )
-        except Exception as e:
-            logging.error(f"Download state write error: {e}")
+                self.conn.commit()
+            except Exception as e:
+                logging.error(f"Download state write error: {e}")
 
     def get_downloads_by_rj(self, rj_id: str) -> List[sqlite3.Row]:
         try:
@@ -223,8 +280,9 @@ class LibraryVault:
     def clear_terminal_downloads(self, rj_id: str) -> None:
         """Remove completed/failed/registered downloads for a work."""
         try:
-            self.conn.execute(
-                """DELETE FROM downloads
+            with self._lock:
+                self.conn.execute(
+                    """DELETE FROM downloads
                    WHERE rj_id = ? AND status IN ('completed','registered','failed')""",
                 (rj_id,)
             )
