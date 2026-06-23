@@ -55,13 +55,19 @@ class ToolsView(ft.Container):
                 try:
                     async with aiohttp.ClientSession() as session:
                         async with session.get(mirror, timeout=5) as resp:
-                            if resp.status in (200, 403, 404):  # Any valid HTTP response
+                            if resp.status in (200, 403, 404):
                                 self.log(f"✓ {mirror} 连接正常", SUCCESS)
                             else:
                                 self.log(f"⚠ {mirror} 状态异常: {resp.status}", WARNING)
                 except Exception:
                     self.log(f"✗ {mirror} 无法连接", ERROR)
-        asyncio.create_task(_test())
+        import asyncio
+        if hasattr(self, 'app_controller') and \
+           hasattr(self.app_controller, 'loop'):
+            asyncio.run_coroutine_threadsafe(
+                _test(), self.app_controller.loop)
+        else:
+            asyncio.create_task(_test())
 
     def run_diagnostic(self, e):
         self.log_area.controls.clear()

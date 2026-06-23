@@ -102,7 +102,7 @@ class AppController:
                 try:
                     if not self.ui_processing and not self.ui_queue.empty():
                         self.ui_processing = True
-                        self.page.run_task(self._process_ui_queue())
+                        self.page.run_task(self._process_ui_queue)
                 except Exception as e:
                     logging.debug(f"UI poller error: {e}")
 
