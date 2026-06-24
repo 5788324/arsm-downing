@@ -156,20 +156,14 @@ class DownloadView(ft.Container):
         if not rj_ids:
             self.app_controller.show_snack("没有可恢复的任务")
             return
-        for rj_id in rj_ids:
-            orc.speed.resume_work(rj_id)
         import asyncio
 
         async def _resume_all():
-            results = []
             for rj_id in rj_ids:
-                r = await orc.resume_job(rj_id)
-                results.append((rj_id, r))
-            # Update UI with results
-            for rj_id, r in results:
+                r = await orc._resume_one(rj_id)
                 st = r.get("status", "unknown")
                 if st == "resumed":
-                    self.update_work_status(rj_id, "Resuming...")
+                    self.update_work_status(rj_id, "Downloading")
                 elif st == "no_pending":
                     self.update_work_status(rj_id, "No pending tracks")
                 else:

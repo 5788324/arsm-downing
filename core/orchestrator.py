@@ -269,13 +269,20 @@ class Orchestrator:
         ).fetchall()
         return [row["rj_id"] for row in rows]
 
+    async def _resume_one(self, rj_id: str) -> dict:
+        """Unified resume for single-task and batch. Resumes speed + job."""
+        self.speed.resume_work(rj_id)
+        result = await self.resume_job(rj_id)
+        if result.get("status") == "resumed":
+            self._emit_work_status(rj_id, "Downloading")
+        return result
+
     async def _resume_all_async(self):
         """Internal: actually resume all paused/queued works."""
         rj_ids = self.resume_all()
         logger.info(f"resume_all: {len(rj_ids)} works: {rj_ids}")
         for rj_id in rj_ids:
-            self.speed.resume_work(rj_id)
-            await self.resume_job(rj_id)
+            await self._resume_one(rj_id)
 
     async def resume_job(self, rj_id: str) -> dict:
 

@@ -244,10 +244,15 @@ class AppController:
         self.orc.pause_job(rj_id)
 
     def resume_download(self, rj_id: str):
-        """Resume a paused/queued download from DB state."""
+        """Resume a single download — unified _resume_one path."""
+        async def _do_resume():
+            result = await self.orc._resume_one(rj_id)
+            self.views[0].update_work_status(
+                rj_id,
+                "Downloading" if result.get("status") == "resumed"
+                else result.get("status", "unknown"))
         try:
-            asyncio.run_coroutine_threadsafe(
-                self.orc.resume_job(rj_id), self.loop)
+            asyncio.run_coroutine_threadsafe(_do_resume(), self.loop)
         except Exception as e:
             self.show_snack(f"恢复失败: {e}")
 
