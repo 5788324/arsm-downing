@@ -127,10 +127,11 @@ class WorkStatus(Enum):
         if s in ("已完成", "Completed", "completed", "registered"):
             return WorkStatus.COMPLETED
 
-        if "Partially completed" in s or "部分完成" in s:
+        if "Partially completed" in s or "部分完成" in s or \
+           s in ("partial",):
             return WorkStatus.PARTIAL
 
-        if s in ("已暂停", "Paused", "Paused (partial)"):
+        if s in ("已暂停", "Paused", "Paused (partial)", "paused"):
             return WorkStatus.PAUSED
 
         if s in ("Preparing", "准备中..."):
@@ -155,6 +156,5 @@ class WorkStatus(Enum):
             return WorkStatus.QUEUED
         if s in ("already_running",):
             return WorkStatus.DOWNLOADING
-            return WorkStatus.INDEXED
 
         return WorkStatus.QUEUED  # default

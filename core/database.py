@@ -296,19 +296,52 @@ class LibraryVault:
             logging.error(f"Database get_summary error: {e}")
             return 0, 0
 
-    def search(self, query: str = "") -> List[sqlite3.Row]:
+    def search(self, query: str = "", offset: int = 0,
+               limit: int = 0, status_filter: str = "") -> List[sqlite3.Row]:
+        """Search works with optional pagination and status filter.
+
+        - limit=0 means no limit (return all)
+        - status_filter='' means all statuses
+        """
         try:
-            if not query:
-                sql = "SELECT * FROM works ORDER BY downloaded_at DESC LIMIT 50"
-                return self.conn.execute(sql).fetchall()
-            q = f"%{query}%"
-            sql = """SELECT * FROM works
-                     WHERE title LIKE ? OR rj_id LIKE ? OR circle LIKE ?
-                     ORDER BY downloaded_at DESC LIMIT 50"""
-            return self.conn.execute(sql, (q, q, q)).fetchall()
+            conditions = []
+            params = []
+            if query:
+                q = f"%{query}%"
+                conditions.append(
+                    "(title LIKE ? OR rj_id LIKE ? OR circle LIKE ?)")
+                params.extend([q, q, q])
+            if status_filter:
+                conditions.append("status = ?")
+                params.append(status_filter)
+
+            where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+            sql = f"SELECT * FROM works {where} ORDER BY downloaded_at DESC"
+            if limit > 0:
+                sql += f" LIMIT {limit} OFFSET {offset}"
+
+            return self.conn.execute(sql, params).fetchall()
         except sqlite3.Error as e:
             logging.error(f"Database search error: {e}")
             return []
+
+    def count_library_by_status(self) -> dict:
+        """Return counts of works grouped by status.
+
+        Includes all statuses: completed, partial, missing,
+        external, verified, indexed, metadata_failed, prepared.
+        """
+        try:
+            rows = self.conn.execute(
+                "SELECT status, COUNT(*) as cnt FROM works GROUP BY status"
+            ).fetchall()
+            counts = {row["status"]: row["cnt"] for row in rows}
+            total = sum(counts.values())
+            counts["__total__"] = total
+            return counts
+        except sqlite3.Error as e:
+            logging.error(f"count_library_by_status error: {e}")
+            return {"__total__": 0}
 
     # ──────────────────────────────────────────────
     #  Library index (P3.3)

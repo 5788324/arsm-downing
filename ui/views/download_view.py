@@ -1,4 +1,5 @@
 import flet as ft
+import logging
 import os
 import platform
 import subprocess
@@ -164,10 +165,14 @@ class DownloadView(ft.Container):
                 st = r.get("status", "unknown")
                 if st == "resumed":
                     self.update_work_status(rj_id, "Downloading")
+                elif st == "already_queued":
+                    pass  # silently skip, already in queue
+                elif st == "already_running":
+                    pass  # silently skip, already active
                 elif st == "no_pending":
                     self.update_work_status(rj_id, "No pending tracks")
                 else:
-                    self.update_work_status(rj_id, f"恢复失败: {st}")
+                    self.update_work_status(rj_id, f"恢复失败: {r.get('message', st)}")
             self._refresh_queue()
 
         asyncio.run_coroutine_threadsafe(_resume_all(), loop)
@@ -237,7 +242,13 @@ class DownloadView(ft.Container):
     # ══════════════════════════════════════════════
     @staticmethod
     def _is_terminal(status):
-        return status in ("已完成", "Completed", "completed", "registered")
+        """Check if status is terminal (hidden when show_completed=False).
+
+        Must stay aligned with WorkStatus.is_terminal:
+        completed, registered, verified, external.
+        """
+        ns = WorkStatus.normalize(status)
+        return ns.is_terminal
 
     @staticmethod
     def _is_failed(status):
@@ -245,20 +256,34 @@ class DownloadView(ft.Container):
                status.startswith("Failed")
 
     @staticmethod
-    @staticmethod
     def normalize_status(status: str) -> str:
         """Normalize via WorkStatus enum (single source of truth)."""
         return WorkStatus.normalize(status).value
 
     def _refresh_queue(self):
-        """Rebuild queue list respecting show_completed toggle."""
+        """Rebuild queue list respecting show_completed toggle.
+
+        Only filters display — never modifies DB or active_downloads.
+        """
         self.queue_list.controls.clear()
-        for rj_id in self.active_downloads:
-            data = self.active_downloads[rj_id]
-            if self._is_terminal(data["status"]) and \
-               not self.show_completed_switch.value:
-                continue
-            self.build_queue_item(rj_id)
+        for rj_id in list(self.active_downloads.keys()):
+            try:
+                data = self.active_downloads.get(rj_id)
+                if not data:
+                    continue
+                if self._is_terminal(data.get("status", "")) and \
+                   not self.show_completed_switch.value:
+                    continue
+                self.build_queue_item(rj_id)
+            except Exception as e:
+                logging.warning(f"_refresh_queue skip {rj_id}: {e}")
+
+        # Always call update to ensure list renders
+        try:
+            if self.queue_list.page:
+                self.queue_list.update()
+        except Exception:
+            pass
 
     def build_queue_item(self, rj_id: str):
         item_data = self.active_downloads[rj_id]
@@ -438,6 +463,12 @@ class DownloadView(ft.Container):
         is_meta_fail = (status.startswith("Metadata failed") or
                         "metadata_failed" in status.lower())
 
+        # RC7.3: already_queued / already_running must never display as status
+        if "already_queued" in status.lower():
+            return  # silently ignore, toast is handled by caller
+        if "already_running" in status.lower():
+            return  # silently ignore
+
         # Handle partial / error statuses
         if status.startswith("Partially completed"):
             cn_status = "部分完成" + status[20:]  # e.g. "部分完成 (2/3)"
@@ -486,6 +517,11 @@ class DownloadView(ft.Container):
                      status.startswith("Paused"):
                     data["status_text"].color = WARNING
                     data["speed_text"].value = ""
+                    # RC7.3: keep progress bar static at current value
+                    try:
+                        data["speed_text"].update()
+                    except Exception:
+                        pass
                 elif status.startswith("Partially completed"):
                     data["status_text"].color = WARNING
                     data["speed_text"].value = ""
@@ -596,7 +632,11 @@ class DownloadView(ft.Container):
     #  Track progress (P3: store speed/eta)
     # ══════════════════════════════════════════════
     def update_track_progress(self, event):
-        """Accept ProgressEvent — display speed/eta from core."""
+        """Accept ProgressEvent — display speed/eta from core.
+
+        When paused: update downloaded/total data but do NOT
+        animate progress bar or show speed changes.
+        """
         rj_id = event.rj_id
         track_title = event.track_title
         downloaded = event.downloaded_bytes
@@ -616,11 +656,30 @@ class DownloadView(ft.Container):
             "status": status
         }
 
-        # Store latest speed/eta from core (RC3.1)
+        # Store latest speed/eta from core (data only)
         data["current_track"] = event.track_title
         data["last_speed_bps"] = event.global_speed_bps
         data["last_track_speed"] = event.track_speed_bps
         data["last_eta"] = event.eta_seconds
+
+        # ── RC7.3: paused items — update data ONLY, no visual animation ──
+        ui_status = data.get("status", "")
+        is_paused = (
+            ui_status in ("已暂停", "Paused (partial)") or
+            ui_status.startswith("Paused") or
+            "paused" in str(ui_status).lower())
+
+        if is_paused:
+            # Update downloaded/total in data but NOT visual controls
+            # The progress bar stays at last known static value
+            # Speed stays at 0 / empty
+            if "speed_text" in data:
+                data["speed_text"].value = ""
+                try:
+                    data["speed_text"].update()
+                except Exception:
+                    pass
+            return
 
         total_bytes = sum(t["total"] for t in data["tracks"].values())
         downloaded_bytes = sum(t["downloaded"] for t in data["tracks"].values())
