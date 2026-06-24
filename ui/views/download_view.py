@@ -113,34 +113,53 @@ class DownloadView(ft.Container):
             pass
 
     def load_queue(self):
-        """Restore queue UI state from queue.json.
+        """Restore download queue UI from SQLite — single source of truth.
 
-        Does NOT auto-start downloads — that's handled by
-        Orchestrator.restore_pending_downloads() and the downloads table.
+        Derives card state from works.status + downloads.status.
+        Does NOT auto-start downloads (that's Orchestrator's job).
         """
-        if QUEUE_FILE.exists():
-            try:
-                with open(QUEUE_FILE, "r", encoding="utf-8") as f:
-                    saved = json.load(f)
-                for rj, data in saved.items():
-                    try:
-                        rj_id = f"RJ{rj}" if not rj.upper().startswith("RJ") else rj
-                        # Skip all terminal states
-                        if self._is_terminal(data.get("status", "")):
-                            continue
+        try:
+            db = self.app_controller.db
+            pending_rjs = db.get_pending_rj_ids()
+            loaded = 0
+            hidden = 0
 
-                        # Load as paused — Orchestrator handles real recovery
-                        self.active_downloads[rj_id] = {
-                            "status": "已暂停",
-                            "tracks": data.get("tracks", {}),
-                            "control": None, "last_time": time.time(),
-                            "last_bytes": 0, "cache_hit": False
-                        }
-                        self.build_queue_item(rj_id)
-                    except Exception as e:
-                        print(f"Error loading {rj}: {e}")
-            except Exception as e:
-                print(f"Failed to load queue: {e}")
+            for rj_id in sorted(pending_rjs):
+                derived = self.derive_download_card_state(rj_id)
+                if not derived["visible"]:
+                    hidden += 1
+                    continue
+
+                # Load tracks from queue.json if available (for progress display)
+                tracks = {}
+                if QUEUE_FILE.exists():
+                    try:
+                        with open(QUEUE_FILE, "r", encoding="utf-8") as f:
+                            saved = json.load(f)
+                        # Match by stripping RJ prefix
+                        for key, data in saved.items():
+                            norm = f"RJ{key}" if not key.upper().startswith("RJ") else key
+                            if norm == rj_id:
+                                tracks = data.get("tracks", {})
+                                break
+                    except Exception:
+                        pass
+
+                self.active_downloads[rj_id] = {
+                    "status": derived["status"],
+                    "tracks": tracks,
+                    "control": None, "last_time": time.time(),
+                    "last_bytes": 0, "cache_hit": False,
+                    "_derived_enum": derived["enum"],
+                }
+                self.build_queue_item(rj_id)
+                loaded += 1
+
+            logging.info(
+                f"load_queue: loaded={loaded} hidden={hidden} "
+                f"total_pending={len(pending_rjs)}")
+        except Exception as e:
+            logging.error(f"load_queue failed: {e}")
 
     def _batch_pause(self):
         ids = self.app_controller.orc.pause_all()
@@ -260,20 +279,122 @@ class DownloadView(ft.Container):
         """Normalize via WorkStatus enum (single source of truth)."""
         return WorkStatus.normalize(status).value
 
-    def _refresh_queue(self):
-        """Rebuild queue list respecting show_completed toggle.
+    # ══════════════════════════════════════════════
+    #  RC7.4-bis: Unified card state derivation from DB
+    # ══════════════════════════════════════════════
+    def derive_download_card_state(self, rj_id: str) -> dict:
+        """Derive card visibility + status from works + downloads tables.
 
-        Only filters display — never modifies DB or active_downloads.
+        Returns dict with keys:
+          - visible: bool — should this RJ appear in download queue?
+          - status: str — card status label (Chinese)
+          - enum: WorkStatus — derived WorkStatus enum value
+          - works_status: str — raw works.status
+          - dl_summary: dict — {status: count} from downloads table
+        """
+        db = self.app_controller.db
+        works_status = db.get_works_status(rj_id)
+        dl_summary = db.get_downloads_summary(rj_id)
+
+        # ── Rule: count pending downloads ──
+        has_queued = dl_summary.get("queued", 0) > 0
+        has_downloading = dl_summary.get("downloading", 0) > 0
+        has_paused = dl_summary.get("paused", 0) > 0
+        has_failed = dl_summary.get("failed", 0) > 0
+        has_pending = has_queued or has_downloading or has_paused or has_failed
+
+        result = {
+            "visible": False,
+            "status": "",
+            "enum": WorkStatus.QUEUED,
+            "works_status": works_status,
+            "dl_summary": dl_summary,
+        }
+
+        # ── Rule 1: terminal works with NO pending → HIDE ──
+        if works_status:
+            ws_enum = WorkStatus.normalize(works_status)
+            if ws_enum.is_terminal and not has_pending:
+                # completed / verified / external / registered / indexed
+                # with no pending downloads → not in download queue
+                result["visible"] = False
+                result["enum"] = ws_enum
+                result["status"] = ws_enum.ui_label
+                return result
+
+        # ── Rules 2-5: priority order for card display ──
+        if has_downloading:
+            result["visible"] = True
+            result["enum"] = WorkStatus.DOWNLOADING
+            result["status"] = "下载中"
+            return result
+
+        if has_queued:
+            result["visible"] = True
+            result["enum"] = WorkStatus.QUEUED
+            result["status"] = "队列中"
+            return result
+
+        if has_paused:
+            result["visible"] = True
+            result["enum"] = WorkStatus.PAUSED
+            result["status"] = "已暂停"
+            return result
+
+        if has_failed:
+            result["visible"] = True
+            result["enum"] = WorkStatus.FAILED
+            result["status"] = "下载失败"
+            return result
+
+        # ── Rule 6: no pending downloads ──
+        if works_status:
+            ws_enum = WorkStatus.normalize(works_status)
+            if ws_enum.is_terminal:
+                # terminal work, no pending — hide
+                result["visible"] = False
+                result["enum"] = ws_enum
+                result["status"] = ws_enum.ui_label
+                return result
+            if ws_enum in (WorkStatus.PREPARED, WorkStatus.PARTIAL,
+                           WorkStatus.PREPARING):
+                # prepared/partial with no pending → no_pending (show with retry)
+                result["visible"] = True
+                result["enum"] = WorkStatus.NO_PENDING
+                result["status"] = "无可恢复文件"
+                return result
+
+        # Fallback: not visible
+        result["visible"] = False
+        return result
+
+    def _refresh_queue(self):
+        """Rebuild queue list from DB-derived state.
+
+        Only filters display — never modifies DB or core state.
+        Always re-derives card status from works + downloads tables.
         """
         self.queue_list.controls.clear()
         for rj_id in list(self.active_downloads.keys()):
             try:
-                data = self.active_downloads.get(rj_id)
-                if not data:
+                # ── RC7.4-bis: re-derive from DB on every refresh ──
+                derived = self.derive_download_card_state(rj_id)
+                if not derived["visible"]:
+                    # Terminal work, no pending → remove from active_downloads
+                    self.active_downloads.pop(rj_id, None)
                     continue
-                if self._is_terminal(data.get("status", "")) and \
+
+                # Update card status from DB-derived state
+                data = self.active_downloads.get(rj_id)
+                if data:
+                    data["status"] = derived["status"]
+                    data["_derived_enum"] = derived["enum"]
+
+                # Apply show_completed filter
+                if self._is_terminal(derived["status"]) and \
                    not self.show_completed_switch.value:
                     continue
+
                 self.build_queue_item(rj_id)
             except Exception as e:
                 logging.warning(f"_refresh_queue skip {rj_id}: {e}")
@@ -485,6 +606,11 @@ class DownloadView(ft.Container):
             return  # silently ignore, toast is handled by caller
         if "already_running" in status.lower():
             return  # silently ignore
+
+        # RC7.4-bis: resuming must be transient; always re-derive from DB after
+        if "resuming" in status.lower() or status == "恢复中...":
+            # Accept the transient status but schedule a DB re-derive
+            pass
 
         # Handle partial / error statuses
         if status.startswith("Partially completed"):

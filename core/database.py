@@ -264,6 +264,45 @@ class LibraryVault:
             logging.error(f"Pending downloads read error: {e}")
             return []
 
+    def get_works_status(self, rj_id: str) -> str:
+        """Return works.status for a given rj_id, or empty string if missing."""
+        try:
+            row = self.conn.execute(
+                "SELECT status FROM works WHERE rj_id = ?", (rj_id,)
+            ).fetchone()
+            return row["status"] if row else ""
+        except Exception as e:
+            logging.error(f"get_works_status error for {rj_id}: {e}")
+            return ""
+
+    def get_pending_rj_ids(self) -> set:
+        """Return set of rj_ids that have non-terminal downloads.
+
+        Includes: queued, paused, downloading, failed.
+        Excludes: completed, registered.
+        """
+        try:
+            rows = self.conn.execute(
+                """SELECT DISTINCT rj_id FROM downloads
+                   WHERE status IN ('queued','paused','downloading','failed')"""
+            ).fetchall()
+            return {row["rj_id"] for row in rows}
+        except Exception as e:
+            logging.error(f"get_pending_rj_ids error: {e}")
+            return set()
+
+    def get_downloads_summary(self, rj_id: str) -> dict:
+        """Return {status: count} for all downloads of this rj_id."""
+        try:
+            rows = self.conn.execute(
+                "SELECT status, COUNT(*) as cnt FROM downloads "
+                "WHERE rj_id = ? GROUP BY status", (rj_id,)
+            ).fetchall()
+            return {row["status"]: row["cnt"] for row in rows}
+        except Exception as e:
+            logging.error(f"get_downloads_summary error for {rj_id}: {e}")
+            return {}
+
     def clear_terminal_downloads(self, rj_id: str) -> None:
         """Remove completed/failed/registered downloads. Raises on failure."""
         self._execute_write(

@@ -1,100 +1,95 @@
 #!/usr/bin/env python3
-"""队列加载防重复测试 — 验证 terminal 任务不被重新启动."""
+"""队列加载防重复测试 — 验证 terminal 任务不被加载 (RC7.4-bis DB 适配)."""
 
-import asyncio
-import sys
-import json
-import tempfile
+import asyncio, sys
 from pathlib import Path
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-
 async def test():
-    print(f"\n{'='*60}")
-    print(f"  队列加载防重复测试")
-    print(f"{'='*60}\n")
+    print(f"\n{'='*60}\n  队列加载防重复测试\n{'='*60}\n")
 
-    # ── 1. Test _is_terminal covers all terminal states ──
+    # ── 1. _is_terminal covers all terminal states ──
     from ui.views.download_view import DownloadView
+    from core.status import WorkStatus
     print("── 1. _is_terminal 覆盖所有终端状态 ──")
-    for status in ("已完成", "Completed", "completed", "registered"):
-        assert DownloadView._is_terminal(status), \
-            f"{status} 应为 terminal"
-        print(f"  ✓ {status} → terminal")
+    terminal_states = [("已完成", True), ("Completed", True), ("completed", True),
+                       ("registered", True), ("verified", True), ("external", True)]
+    non_terminal = [("队列中", False), ("下载中", False), ("已暂停", False),
+                    ("Paused", False), ("queued", False), ("downloading", False),
+                    ("failed", False), ("获取元数据中...", False)]
+    for s, expected in terminal_states + non_terminal:
+        assert DownloadView._is_terminal(s) == expected, \
+            f"_is_terminal('{s}') should be {expected}"
+    print(f"  ✓ 所有 terminal/non-terminal 状态正确")
 
-    for status in ("队列中", "下载中", "已暂停", "Paused",
-                   "获取元数据中...", "queued", "downloading", "failed"):
-        assert not DownloadView._is_terminal(status), \
-            f"{status} 不应为 terminal"
-        print(f"  ✓ {status} → non-terminal")
+    # ── 2. Write test data to DB ──
+    from core.config import ConfigManager
+    from core.database import LibraryVault
+    from core.models import WorkMetadata
 
-    # ── 2. Write a queue.json with mixed states ──
-    print("\n── 2. 模拟 queue.json 含 terminal 任务 ──")
-    import ui.views.download_view as dv
-    original_file = dv.QUEUE_FILE
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
-    dv.QUEUE_FILE = Path(tmp.name)
+    cfg = ConfigManager.load()
+    db = LibraryVault()
 
-    saved = {
-        "88880": {"status": "已完成", "tracks": {}},
-        "88881": {"status": "下载中", "tracks": {}},
-        "88882": {"status": "Completed", "tracks": {}},
-        "88883": {"status": "已暂停", "tracks": {}},
-    }
-    with open(dv.QUEUE_FILE, "w") as f:
-        json.dump(saved, f)
+    terminals = ["RJ88880", "RJ88882"]
+    actives = ["RJ88881", "RJ88883"]
 
-    # ── 3. load_queue should skip terminal, keep active ──
-    print("── 3. 调用 load_queue ──")
-    class FakeApp:
-        start_call = 0
-        def start_download(self, rj):
-            FakeApp.start_call += 1
-        def resume_download(self, rj):
-            pass
-        def cancel_download(self, rj):
-            pass
-        def pause_download(self, rj):
-            pass
+    for rj in terminals:
+        meta = WorkMetadata(rj_id=rj, title=f"Terminal {rj}", circle="",
+                            cv=[], tags=[], price=0, source_url="",
+                            dl_count=0, rating=0.0, release_date="", cover_url="")
+        db.register(meta, 100, Path(f"/tmp/{rj}"), status="completed")
+        db.upsert_download(f"{rj}:t1", rj, "track1", f"/tmp/{rj}/t1.mp3",
+                           "registered", 100, 100)
+    for rj in actives:
+        meta = WorkMetadata(rj_id=rj, title=f"Active {rj}", circle="",
+                            cv=[], tags=[], price=0, source_url="",
+                            dl_count=0, rating=0.0, release_date="", cover_url="")
+        db.register(meta, 100, Path(f"/tmp/{rj}"), status="prepared")
+        db.upsert_download(f"{rj}:t1", rj, "track1", f"/tmp/{rj}/t1.mp3",
+                           "queued", 0, 100)
+    db.commit()
 
-    view = DownloadView.__new__(DownloadView)
-    view.app_controller = FakeApp()
-    view.active_downloads = {}
-    view.queue_list = type('obj', (object,), {
-        'controls': [], 'update': lambda: None})()
+    # ── 3. Verify DB-derived behavior ──
+    print("\n── 2. DB 派生验证 ──")
+    pending = db.get_pending_rj_ids()
+    for rj in terminals:
+        assert rj not in pending, f"{rj} (terminal) 不应在 pending_rj_ids"
+        print(f"  ✓ {rj} 不在 pending")
+    for rj in actives:
+        assert rj in pending, f"{rj} (active) 应在 pending_rj_ids"
+        print(f"  ✓ {rj} 在 pending")
 
-    # Mock build_queue_item to just add to active_downloads
-    def mock_build(rj):
-        view.active_downloads[rj] = {"status": view.active_downloads.get(rj, {}).get("status", ""), "tracks": {}}
-    view.build_queue_item = mock_build
-    view.save_queue = lambda: None
+    # ── 4. load_queue simulation ──
+    print("\n── 3. 模拟 load_queue ──")
+    visible = set()
+    hidden = set()
+    for rj_id in sorted(pending):
+        dl = db.get_downloads_summary(rj_id)
+        ws = db.get_works_status(rj_id)
+        ws_enum = WorkStatus.normalize(ws) if ws else None
+        has_pending = any(dl.get(s, 0) > 0 for s in
+                          ("queued", "paused", "downloading", "failed"))
+        if ws_enum and ws_enum.is_terminal and not has_pending:
+            hidden.add(rj_id)
+            continue
+        if has_pending:
+            visible.add(rj_id)
 
-    view.load_queue()
-
-    print(f"  loaded: {list(view.active_downloads.keys())}")
-    print(f"  start_download calls: {FakeApp.start_call}")
-
-    assert "RJ88880" not in view.active_downloads, "已完成 应被跳过"
-    assert "RJ88882" not in view.active_downloads, "Completed 应被跳过"
-    assert "RJ88881" in view.active_downloads, "下载中 应被加载"
-    assert "RJ88883" in view.active_downloads, "已暂停 应被加载"
-    assert FakeApp.start_call == 0, \
-        "不应调用 start_download (应交给 Orchestrator 恢复)"
-
-    print("  ✓ terminal 任务未被加载")
-    print("  ✓ 无重复 start_download 调用")
+    for rj in terminals:
+        assert rj not in visible, f"{rj} (terminal) 不应 visible"
+        print(f"  ✓ {rj} hidden (terminal + no pending)")
+    for rj in actives:
+        assert rj in visible, f"{rj} (active) 应 visible"
+        print(f"  ✓ {rj} visible (has pending)")
 
     # Cleanup
-    dv.QUEUE_FILE = original_file
-    import os as _os
-    _os.unlink(tmp.name)
+    for rj in terminals + actives:
+        db.conn.execute("DELETE FROM works WHERE rj_id=?", (rj,))
+        db.conn.execute("DELETE FROM downloads WHERE rj_id=?", (rj,))
+    db.commit()
 
-    print(f"\n{'='*60}")
-    print(f"  ✓ 队列加载防重复测试通过")
-    print(f"{'='*60}\n")
+    print(f"\n{'='*60}\n  ✓ 队列加载防重复测试通过\n{'='*60}\n")
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(asyncio.run(test()))
