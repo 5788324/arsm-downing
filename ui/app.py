@@ -263,10 +263,15 @@ class AppController:
         """Resume a single download — unified _resume_one path."""
         async def _do_resume():
             result = await self.orc._resume_one(rj_id)
-            self.views[0].update_work_status(
-                rj_id,
-                "Downloading" if result.get("status") == "resumed"
-                else result.get("status", "unknown"))
+            st = result.get("status", "")
+            if st == "already_queued":
+                self.show_snack(f"{rj_id} 已在队列中")
+            elif st == "already_running":
+                pass  # already active, no update needed
+            elif st == "resumed":
+                self.views[0].update_work_status(rj_id, "Downloading")
+            else:
+                self.views[0].update_work_status(rj_id, st)
         try:
             asyncio.run_coroutine_threadsafe(_do_resume(), self.loop)
         except Exception as e:

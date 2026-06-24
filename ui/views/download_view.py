@@ -245,44 +245,10 @@ class DownloadView(ft.Container):
                status.startswith("Failed")
 
     @staticmethod
+    @staticmethod
     def normalize_status(status: str) -> str:
-        """Normalize status strings to internal keys."""
-        s = status.strip()
-        if not s:
-            return "unknown"
-        # metadata_failed variants
-        if any(k in s.lower() for k in ("metadata_failed", "metadata failed",
-                "metadata proxy failed", "获取元数据失败", "元数据失败",
-                "元数据代理失败")):
-            return "metadata_failed"
-        # no_pending variants
-        if any(k in s.lower() for k in ("no pending", "no_pending",
-                "no pending tracks", "无可恢复")):
-            return "no_pending"
-        # duplicate
-        if "重复" in s or "duplicate" in s.lower():
-            return "duplicate"
-        # failed
-        if s.startswith("Failed") or s.startswith("Error") or \
-           s in ("failed", "下载失败"):
-            return "failed"
-        # active
-        if s in ("队列中", "队列排队中", "Queued", "Queued (cached)",
-                 "下载中", "Downloading", "已就绪", "Prepared",
-                 "Prepared (cached)", "准备中...", "Preparing",
-                 "Resuming...", "恢复中...", "queued", "prepared",
-                 "downloading", "resuming"):
-            return "active"
-        # paused
-        if s in ("已暂停", "Paused", "Paused (partial)"):
-            return "paused"
-        # terminal
-        if s in ("已完成", "Completed", "completed", "registered"):
-            return "terminal"
-        # partial remaining
-        if "Partially completed" in s or "部分完成" in s:
-            return "partial"
-        return "unknown"
+        """Normalize via WorkStatus enum (single source of truth)."""
+        return WorkStatus.normalize(status).value
 
     def _refresh_queue(self):
         """Rebuild queue list respecting show_completed toggle."""

@@ -395,7 +395,11 @@ class Orchestrator:
     #  P1.5-2:  restore on startup
     # ══════════════════════════════════════════════
     async def restore_pending_downloads(self):
-        """Restore pending downloads from DB — network-free, cache-only."""
+        """Fast restore: mark downloading→paused. Do NOT block on resume_job.
+
+        After startup, auto_resume_on_start (default False) controls
+        whether the first work_concurrency paused jobs are resumed.
+        """
         pending = self.db.get_pending_downloads()
         if not pending:
             return
@@ -404,8 +408,11 @@ class Orchestrator:
         for row in pending:
             rj_groups.setdefault(row["rj_id"], set()).add(row["status"])
 
+        paused_rj_ids = []
+
         for rj_id in sorted(rj_groups):
             statuses = rj_groups[rj_id]
+            # downloading → paused (interrupted)
             if 'downloading' in statuses:
                 for row in pending:
                     if row["rj_id"] == rj_id and row["status"] == 'downloading':
@@ -414,14 +421,28 @@ class Orchestrator:
                             row["local_path"], 'paused',
                             row["downloaded_bytes"], row["total_bytes"])
 
-            # Only restore if metadata_cache exists (no network)
-            if not self.db.get_metadata_cache(rj_id):
-                logging.warning(f"Skip restore {rj_id}: no metadata cache")
-                continue
+            # Only collect RJs that have metadata_cache
+            if self.db.get_metadata_cache(rj_id):
+                paused_rj_ids.append(rj_id)
+            else:
+                logger.warning(f"Skip restore {rj_id}: no metadata cache")
 
-            logging.info(f"Restoring pending for {rj_id}: {statuses}")
-            self._emit_work_status(rj_id, "Preparing")
-            await self.resume_job(rj_id)
+        logger.info(
+            f"restore_pending: {len(paused_rj_ids)} restorable RJs "
+            f"(auto_resume={getattr(self.config, 'auto_resume_on_start', False)})")
+
+        # Schedule resume asynchronously: post-restore, let workers consume
+        async def _delayed_resume():
+            await asyncio.sleep(0.5)  # let UI render
+            limit = self.config.work_concurrency if \
+                getattr(self.config, 'auto_resume_on_start', False) else 0
+            for i, rj_id in enumerate(paused_rj_ids):
+                if limit > 0 and i >= limit:
+                    break
+                await self._resume_one(rj_id)
+
+        if paused_rj_ids:
+            asyncio.create_task(_delayed_resume())
 
     # ── utilities ──
     @staticmethod

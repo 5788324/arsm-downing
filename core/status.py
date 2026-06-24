@@ -33,6 +33,10 @@ class WorkStatus(Enum):
     MISSING = "missing"           # directory not found
     INDEXED = "indexed"           # scanned but not enriched
 
+    # ── Internal transient — not persisted to DB ──
+    ALREADY_QUEUED = "already_queued"
+    ALREADY_RUNNING = "already_running"
+
     @property
     def is_active(self) -> bool:
         """Is the work actively in the download pipeline?"""
@@ -146,6 +150,11 @@ class WorkStatus(Enum):
         if s in ("missing", "文件缺失"):
             return WorkStatus.MISSING
         if s in ("indexed", "已索引"):
+            return WorkStatus.INDEXED
+        if s in ("already_queued",):
+            return WorkStatus.QUEUED
+        if s in ("already_running",):
+            return WorkStatus.DOWNLOADING
             return WorkStatus.INDEXED
 
         return WorkStatus.QUEUED  # default
