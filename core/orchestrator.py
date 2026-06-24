@@ -36,8 +36,10 @@ class Orchestrator:
         self.speed = SpeedTracker(window_seconds=5.0)
         self.sem = asyncio.Semaphore(config.file_concurrency)
         self.download_queue: asyncio.Queue = asyncio.Queue()
+        self.queued_rj_ids: set = set()       # RC7: prevent duplicate enqueue
         self.active_tasks: Dict[str, asyncio.Task] = {}
         self.cancelled_rjs: set = set()
+        self._shutting_down: bool = False
         self.on_progress: Optional[Callable] = None
         self.on_work_status: Optional[Callable] = None
 
@@ -92,8 +94,13 @@ class Orchestrator:
 
     # ── worker loop ──
     async def boot_worker(self):
-        while True:
-            rj_id, job_coro = await self.download_queue.get()
+        while not self._shutting_down:
+            try:
+                rj_id, job_coro = await asyncio.wait_for(
+                    self.download_queue.get(), timeout=1.0)
+            except asyncio.TimeoutError:
+                continue
+            self.queued_rj_ids.discard(rj_id)
             if rj_id in self.cancelled_rjs:
                 self.cancelled_rjs.discard(rj_id)
                 self.download_queue.task_done()
@@ -111,6 +118,32 @@ class Orchestrator:
             finally:
                 self.active_tasks.pop(rj_id, None)
                 self.download_queue.task_done()
+
+    async def boot_workers(self):
+        """Start work_concurrency worker tasks."""
+        n = max(1, min(self.config.work_concurrency, 4))
+        logger.info(f"Starting {n} download workers")
+        tasks = [asyncio.create_task(self.boot_worker()) for _ in range(n)]
+        return tasks
+
+    async def pause_job_async(self, rj_id: str):
+        """Async-safe pause: runs on background loop."""
+        return self.pause_job(rj_id)
+
+    async def shutdown(self):
+        """Graceful shutdown: pause all, flush DB, stop workers."""
+        self._shutting_down = True
+        logger.info("Shutdown: pausing all active tasks")
+        self.pause_all()
+        # Cancel all active tasks
+        for rj_id, task in list(self.active_tasks.items()):
+            task.cancel()
+        # Wait briefly for cancellations
+        await asyncio.sleep(0.5)
+        # Flush DB
+        self.db.commit()
+        await self.kernel.shutdown()
+        logger.info("Shutdown complete")
 
     # ══════════════════════════════════════════════
     #  P1.5-5:  pause / resume with DB state
@@ -242,13 +275,11 @@ class Orchestrator:
     #  P3.5: batch controls
     # ══════════════════════════════════════════════
     def pause_all(self):
-        """Pause all non-terminal, non-metadata_failed works."""
+        """Pause all pausable works (queued/downloading, NOT already paused)."""
         rows = self.db.conn.execute(
             "SELECT DISTINCT rj_id FROM downloads "
-            "WHERE status IN ('queued','downloading','paused')"
-        ).fetchall()
+            "WHERE status IN ('queued','downloading')").fetchall()
         rj_ids = [row["rj_id"] for row in rows]
-        # Also check works table for prepared status
         w_rows = self.db.conn.execute(
             "SELECT rj_id FROM works WHERE status='prepared'").fetchall()
         for r in w_rows:
@@ -262,15 +293,22 @@ class Orchestrator:
         return rj_ids
 
     def resume_all(self):
-        """Return RJs that need resuming. Caller must schedule async resume."""
+        """Return paused or queued RJs. Exclude already active/queued."""
         rows = self.db.conn.execute(
             "SELECT DISTINCT rj_id FROM downloads "
-            "WHERE status IN ('paused','queued')"
-        ).fetchall()
-        return [row["rj_id"] for row in rows]
+            "WHERE status IN ('paused','queued')").fetchall()
+        # Filter out already queued/active
+        return [row["rj_id"] for row in rows
+                if row["rj_id"] not in self.queued_rj_ids
+                and row["rj_id"] not in self.active_tasks]
 
     async def _resume_one(self, rj_id: str) -> dict:
-        """Unified resume for single-task and batch. Resumes speed + job."""
+        """Unified resume for single-task and batch."""
+        # Guard against duplicate enqueue
+        if rj_id in self.active_tasks:
+            return {"status": "already_running", "message": "Already active"}
+        if rj_id in self.queued_rj_ids:
+            return {"status": "already_queued", "message": "Already in queue"}
         self.speed.resume_work(rj_id)
         result = await self.resume_job(rj_id)
         if result.get("status") == "resumed":
@@ -349,6 +387,7 @@ class Orchestrator:
             (rj_id, self._process_download(rj_id, meta,
                                            resume_targets, root_path))
         )
+        self.queued_rj_ids.add(rj_id)
         return {"status": "resumed", "message": "Resumed",
                 "count": len(resume_targets)}
 
@@ -625,6 +664,7 @@ class Orchestrator:
 
         status_msg = "Queued (cached)" if from_cache else "Queued"
         self._emit_work_status(rj_id, status_msg)
+        self.queued_rj_ids.add(rj_id)
         await self.download_queue.put(
             (rj_id, self._process_download(rj_id, meta, targets, root_path)))
 

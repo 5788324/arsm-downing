@@ -42,6 +42,9 @@ class AppController:
         self.page.bgcolor = BG_DARK
         self.page.padding = 0
 
+        # ── RC7: graceful shutdown on window close ──
+        self.page.on_window_event = self._on_window_event
+
         # ── UI message queue for thread-safe cross-thread updates ──
         self.ui_queue: queue.Queue = queue.Queue()
 
@@ -74,7 +77,10 @@ class AppController:
         self.setup_ui()
 
         # ── Start background workers ──
-        asyncio.run_coroutine_threadsafe(self.orc.boot_worker(), self.loop)
+        # ── Start background workers (work_concurrency) ──
+        async def _start_workers():
+            self.worker_tasks = await self.orc.boot_workers()
+        asyncio.run_coroutine_threadsafe(_start_workers(), self.loop)
 
         # ── Restore pending downloads from previous session ──
         asyncio.run_coroutine_threadsafe(
@@ -89,6 +95,14 @@ class AppController:
     def _run_loop(self):
         asyncio.set_event_loop(self.loop)
         self.loop.run_forever()
+
+    def _on_window_event(self, e):
+        """Graceful shutdown on window close."""
+        if e.data == "close":
+            async def _do_shutdown():
+                await self.orc.shutdown()
+                self.loop.stop()
+            asyncio.run_coroutine_threadsafe(_do_shutdown(), self.loop)
 
     # ──────────────────────────────────────────────────────
     #  Thread-safe message enqueue (called from any thread)
@@ -241,7 +255,9 @@ class AppController:
             self.show_snack(f"排队失败: {e}")
 
     def pause_download(self, rj_id: str):
-        self.orc.pause_job(rj_id)
+        """Pause via background loop — thread-safe."""
+        asyncio.run_coroutine_threadsafe(
+            self.orc.pause_job_async(rj_id), self.loop)
 
     def resume_download(self, rj_id: str):
         """Resume a single download — unified _resume_one path."""
@@ -257,7 +273,10 @@ class AppController:
             self.show_snack(f"恢复失败: {e}")
 
     def cancel_download(self, rj_id: str):
-        self.orc.cancel_job(rj_id)
+        """Cancel via background loop — thread-safe."""
+        async def _do_cancel():
+            self.orc.cancel_job(rj_id)
+        asyncio.run_coroutine_threadsafe(_do_cancel(), self.loop)
 
     def show_snack(self, message: str):
         self.page.snack_bar = ft.SnackBar(ft.Text(message))
