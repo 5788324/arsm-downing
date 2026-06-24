@@ -163,8 +163,8 @@ class DownloadView(ft.Container):
             for rj_id in rj_ids:
                 r = await orc._resume_one(rj_id)
                 st = r.get("status", "unknown")
-                if st == "resumed":
-                    self.update_work_status(rj_id, "Downloading")
+                if st == "queued":
+                    self.update_work_status(rj_id, "Queued")
                 elif st == "already_queued":
                     pass  # silently skip, already in queue
                 elif st == "already_running":
@@ -335,11 +335,16 @@ class DownloadView(ft.Container):
                 icon=ft.icons.REFRESH, icon_color=ACCENT_PRIMARY,
                 tooltip="重新准备",
                 on_click=lambda e, r=rj_id: self._retry_prepare(r))
+            btn_open = ft.IconButton(
+                icon=ft.icons.FOLDER_OPEN, icon_color=ACCENT_SECONDARY,
+                tooltip="打开目录",
+                on_click=lambda e, r=rj_id: self._open_work_dir(r))
             btn_remove = ft.IconButton(
                 icon=ft.icons.DELETE_OUTLINE, icon_color=ERROR,
                 tooltip="移除",
                 on_click=lambda e, r=rj_id: self.cancel_item(r))
-            actions.extend([btn_retry, btn_remove])
+            actions.extend([btn_retry, btn_open, btn_remove])
+            # RC7.4: no progress bar animation for no_pending / metadata_failed
             prog_bar = ft.ProgressBar(value=None, color="grey")
 
         elif ns == "duplicate":
@@ -383,7 +388,18 @@ class DownloadView(ft.Container):
                 on_click=lambda e, r=rj_id: self.cancel_item(r))
             actions.extend([btn_resume, btn_cancel])
 
-        elif ns == "active":
+        elif ns == "queued" or ns == "resuming":
+            btn_pause = ft.IconButton(
+                icon=ft.icons.PAUSE, icon_color=ACCENT_PRIMARY,
+                tooltip="暂停",
+                on_click=lambda e, r=rj_id: self.toggle_pause(r))
+            btn_cancel = ft.IconButton(
+                icon=ft.icons.CANCEL, icon_color=ERROR,
+                tooltip="取消下载",
+                on_click=lambda e, r=rj_id: self.cancel_item(r))
+            actions.extend([btn_pause, btn_cancel])
+
+        elif ns == "downloading":
             btn_pause = ft.IconButton(
                 icon=ft.icons.PAUSE, icon_color=ACCENT_PRIMARY,
                 tooltip="暂停",
@@ -457,6 +473,7 @@ class DownloadView(ft.Container):
             "Downloading": "下载中",
             "Completed": "已完成",
             "Resuming...": "恢复中...",
+            "No pending tracks": "无可恢复文件",
         }
 
         # RC4: metadata_failed detection
@@ -500,7 +517,8 @@ class DownloadView(ft.Container):
                     data["speed_text"].value = ""
                 elif ns == "no_pending":
                     data["status_text"].color = WARNING
-                    data["prog_bar"].value = None
+                    # RC7.4: no progress animation for no_pending
+                    data["prog_bar"].value = 0.0
                     data["prog_bar"].color = "grey"
                     data["speed_text"].value = ""
                 elif status == "Completed":

@@ -32,7 +32,7 @@ async def test():
     # ── 2. First resume → should succeed ──
     print("── 2. 首次 resume ──")
     r1 = await orc._resume_one(rj)
-    assert r1["status"] == "resumed", f"expected resumed, got {r1}"
+    assert r1["status"] == "queued", f"expected queued, got {r1}"
     # (immediately pause to clean up)
     orc.pause_job(rj)
     print(f"  ✓ 首次 resume: {r1['status']}")
@@ -46,7 +46,7 @@ async def test():
     meta = orc._build_metadata(rj, meta_raw)
     root_path = orc.get_save_path(meta)
     r2 = await orc._resume_one(rj)
-    # Note: may be "already_queued" if still in queue, or "resumed" if cleaned
+    # Note: may be "already_queued" if still in queue, or "queued" if cleaned
     print(f"  ✓ 二次 resume: {r2['status']}")
 
     # ── 4. Check DB: NEVER contains already_queued or already_running ──

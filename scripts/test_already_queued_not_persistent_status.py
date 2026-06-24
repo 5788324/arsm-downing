@@ -11,7 +11,7 @@ async def test():
     db.upsert_download(f"{rj}:t",rj,"t",f"/tmp/{rj}/t.mp3","paused",0,100)
     db.set_metadata_cache(rj,"T","C","",{"title":"T"},
         [{"type":"audio","title":"t","id":"1","mediaDownloadUrl":"http://x/t.mp3","size":100}])
-    r1=await orc._resume_one(rj);assert r1["status"]=="resumed"
+    r1=await orc._resume_one(rj);assert r1["status"]=="queued"
     r2=await orc._resume_one(rj);assert r2["status"]=="already_queued"
     # Check DB: no already_queued status
     rows=db.get_downloads_by_rj(rj)

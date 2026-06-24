@@ -12,7 +12,7 @@ async def test():
     db.set_metadata_cache(rj,"T","C","",{"title":"T"},
         [{"type":"audio","title":"t","id":"1","mediaDownloadUrl":"http://x/t.mp3","size":100}])
     r1=await orc._resume_one(rj)
-    assert r1["status"]=="resumed",f"first: {r1}"
+    assert r1["status"]=="queued",f"first: {r1}"
     assert rj in orc.queued_rj_ids,"入队后应在 queued_rj_ids"
     # Second resume should be blocked
     r2=await orc._resume_one(rj)

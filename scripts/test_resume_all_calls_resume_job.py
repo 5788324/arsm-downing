@@ -20,8 +20,8 @@ async def test():
     results=await _batch()
     assert len(results)==2
     for rj_id,r in results:
-        assert r["status"]=="resumed",f"{rj_id}: {r}"
-    print(f"  ✓ 2/2 resumed")
+        assert r["status"]=="queued",f"{rj_id}: {r}"
+    print(f"  ✓ 2/2 queued")
     for rj in ("RJ99991","RJ99992"):
         db.conn.execute("DELETE FROM downloads WHERE rj_id=?",(rj,))
         db.conn.execute("DELETE FROM metadata_cache WHERE rj_id=?",(rj,))

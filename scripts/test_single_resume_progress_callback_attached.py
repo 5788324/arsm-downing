@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""resume 后 progress callback 触发测试 — speed unpaused + emit Downloading."""
+"""resume 后 progress callback 触发测试 — speed unpaused + emit Queued."""
 import asyncio, sys, time; from pathlib import Path; sys.path.insert(0,str(Path(__file__).resolve().parent.parent))
 async def test():
     print(f"\n{'='*60}\n  resume progress callback 测试\n{'='*60}\n")
@@ -19,7 +19,7 @@ async def test():
     ws=orc.speed.work_speed(rj);assert ws>0,f"speed={ws}"
     print(f"  ✓ resume 后 speed: {ws:.0f} B/s")
     dl=[s for _,s in work_events if s=="Downloading"]
-    assert dl,f"应有 Downloading work event: {work_events}"
+    assert dl,f"应有 Queued work event: {work_events}"
     print(f"  ✓ Downloading event: {dl}")
     db.conn.execute("DELETE FROM downloads WHERE rj_id=?",(rj,))
     db.conn.execute("DELETE FROM metadata_cache WHERE rj_id=?",(rj,))

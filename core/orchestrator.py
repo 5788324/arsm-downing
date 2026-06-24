@@ -105,6 +105,12 @@ class Orchestrator:
                 self.cancelled_rjs.discard(rj_id)
                 self.download_queue.task_done()
                 continue
+            # ── RC7.4: emit Downloading only when worker actually starts ──
+            self._emit_work_status(rj_id, "Downloading")
+            logger.info(
+                f"WORKER_START rj={rj_id} "
+                f"queued_remaining={len(self.queued_rj_ids)} "
+                f"active={len(self.active_tasks)}")
             task = asyncio.create_task(job_coro)
             self.active_tasks[rj_id] = task
             try:
@@ -123,8 +129,27 @@ class Orchestrator:
         """Start work_concurrency worker tasks."""
         n = max(1, min(self.config.work_concurrency, 4))
         logger.info(f"Starting {n} download workers")
+        self._log_concurrency_state("boot_workers")
         tasks = [asyncio.create_task(self.boot_worker()) for _ in range(n)]
         return tasks
+
+    def _log_concurrency_state(self, label: str = ""):
+        """Diagnostic: log current concurrency / queue state."""
+        d_proxy = self.config.get_proxy_for('download') or "direct"
+        active_rjs = list(self.active_tasks.keys())
+        logger.info(
+            f"CONCURRENCY_STATE [{label}] "
+            f"work_concurrency={self.config.work_concurrency} "
+            f"file_concurrency={self.config.file_concurrency} "
+            f"queued_rj_ids={len(self.queued_rj_ids)} "
+            f"active_tasks={len(self.active_tasks)} "
+            f"active_rjs={active_rjs[:6]} "
+            f"download_proxy={d_proxy}")
+        # Also log individual worker state
+        if active_rjs:
+            logger.info(
+                f"CONCURRENCY_ACTIVE [{label}] "
+                f"downloading_rj_ids={active_rjs}")
 
     async def pause_job_async(self, rj_id: str):
         """Async-safe pause: runs on background loop."""
@@ -303,7 +328,11 @@ class Orchestrator:
                 and row["rj_id"] not in self.active_tasks]
 
     async def _resume_one(self, rj_id: str) -> dict:
-        """Unified resume for single-task and batch."""
+        """Unified resume for single-task and batch.
+
+        Handles already_queued / already_running guards.
+        resume_job emits work_status internally — caller does NOT emit again.
+        """
         # Guard against duplicate enqueue
         if rj_id in self.active_tasks:
             return {"status": "already_running", "message": "Already active"}
@@ -311,16 +340,45 @@ class Orchestrator:
             return {"status": "already_queued", "message": "Already in queue"}
         self.speed.resume_work(rj_id)
         result = await self.resume_job(rj_id)
-        if result.get("status") == "resumed":
-            self._emit_work_status(rj_id, "Downloading")
+        # resume_job emits Queued / No pending tracks / etc. internally
         return result
 
     async def _resume_all_async(self):
-        """Internal: actually resume all paused/queued works."""
+        """Internal: actually resume all paused/queued works.
+
+        RC7.4: Collect stats, log diagnostic summary.
+        Each task emits Queued/No pending/Failed internally.
+        """
         rj_ids = self.resume_all()
-        logger.info(f"resume_all: {len(rj_ids)} works: {rj_ids}")
+        stats = {
+            "resumed_to_queue": 0, "already_queued": 0,
+            "already_running": 0, "no_pending": 0,
+            "no_cache": 0, "cache_corrupt": 0, "failed": 0,
+        }
+        logger.info(f"resume_all: starting {len(rj_ids)} works")
+        self._log_concurrency_state("resume_all_start")
+
         for rj_id in rj_ids:
-            await self._resume_one(rj_id)
+            result = await self._resume_one(rj_id)
+            st = result.get("status", "unknown")
+            if st == "queued":
+                stats["resumed_to_queue"] += 1
+            elif st in stats:
+                stats[st] += 1
+            else:
+                stats["failed"] += 1
+
+        logger.info(
+            f"resume_all DONE: total={len(rj_ids)} "
+            f"resumed_to_queue={stats['resumed_to_queue']} "
+            f"already_queued={stats['already_queued']} "
+            f"already_running={stats['already_running']} "
+            f"no_pending={stats['no_pending']} "
+            f"no_cache={stats['no_cache']} "
+            f"cache_corrupt={stats['cache_corrupt']} "
+            f"failed={stats['failed']}")
+        self._log_concurrency_state("resume_all_done")
+        return stats
 
     async def resume_job(self, rj_id: str) -> dict:
 
@@ -388,7 +446,9 @@ class Orchestrator:
                                            resume_targets, root_path))
         )
         self.queued_rj_ids.add(rj_id)
-        return {"status": "resumed", "message": "Resumed",
+        # ── RC7.4: emit "Queued" here — worker emits "Downloading" later ──
+        self._emit_work_status(rj_id, "Queued")
+        return {"status": "queued", "message": "Queued for download",
                 "count": len(resume_targets)}
 
     # ══════════════════════════════════════════════

@@ -13,8 +13,8 @@ async def test():
     db.set_metadata_cache(rj,"T","C","",{"title":"T"},
         [{"type":"audio","title":"t","id":"1","mediaDownloadUrl":"http://x/t.mp3","size":100}])
     r=await orc._resume_one(rj)
-    assert r["status"]=="resumed"
-    assert emitted.get(rj)=="Downloading",f"应在 resume 后 emit Downloading, 实际: {emitted.get(rj)}"
+    assert r["status"]=="queued"
+    assert emitted.get(rj)=="Downloading",f"应在 resume 后 emit Queued, 实际: {emitted.get(rj)}"
     print(f"  ✓ emit: {emitted[rj]}")
     db.conn.execute("DELETE FROM downloads WHERE rj_id=?",(rj,))
     db.conn.execute("DELETE FROM metadata_cache WHERE rj_id=?",(rj,))

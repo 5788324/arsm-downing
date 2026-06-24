@@ -268,8 +268,8 @@ class AppController:
                 self.show_snack(f"{rj_id} 已在队列中")
             elif st == "already_running":
                 pass  # already active, no update needed
-            elif st == "resumed":
-                self.views[0].update_work_status(rj_id, "Downloading")
+            elif st == "queued":
+                self.views[0].update_work_status(rj_id, "Queued")
             else:
                 self.views[0].update_work_status(rj_id, st)
         try:

@@ -33,9 +33,9 @@ async def test():
     # With pending → resumed (same dl_id, different status)
     db.upsert_download(dl_id, "RJ99999", "t", str(spath), "paused", 0, 200)
     r3 = await orc.resume_job("RJ99999")
-    assert r3["status"] == "resumed", f"got {r3}"
+    assert r3["status"] == "queued", f"got {r3}"
     assert r3["count"] >= 1
-    print(f"  ✓ resumed: {r3}")
+    print(f"  ✓ queued: {r3}")
 
     db.conn.execute("DELETE FROM downloads WHERE rj_id='RJ99999'"); db.conn.commit()
     db.conn.execute("DELETE FROM metadata_cache WHERE rj_id='RJ99999'"); db.conn.commit()
