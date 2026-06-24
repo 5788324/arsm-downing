@@ -571,7 +571,10 @@ class Orchestrator:
                     from_cache = True
                     logging.info(f"Metadata cache HIT for {rj_id}")
                 except Exception:
-                    self.db.invalidate_cache(rj_id)
+                    try:
+                        self.db.invalidate_cache(rj_id)
+                    except Exception:
+                        pass
 
         if meta_raw is None:
             try:

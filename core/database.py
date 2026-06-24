@@ -28,7 +28,8 @@ class LibraryVault:
         # Shared read-only connection
         with self._lock:
             self.conn = sqlite3.connect(self.db_path,
-                                        check_same_thread=False)
+                                        check_same_thread=False,
+                                        isolation_level=None)  # RC7.1: autocommit reads
             self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.execute("PRAGMA busy_timeout=5000")
             self.conn.row_factory = sqlite3.Row
@@ -73,15 +74,23 @@ class LibraryVault:
             self.conn.commit()
 
     def execute_write(self, sql: str, params=()):
-        """Execute a write statement under lock."""
+        """Execute a write under lock with new connection. Raises on error."""
         with self._lock:
-            self.conn.execute(sql, params)
-            self.conn.commit()
+            conn = self._write_conn()
+            try:
+                conn.execute(sql, params)
+                conn.commit()
+            except sqlite3.Error:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
     # ──────────────────────────────────────────────
     def _init_schema(self) -> None:
-        with self.conn:
-            # ── works table (P0) ──
-            self.conn.execute("""
+        conn = self.conn
+        conn.execute("BEGIN")
+        # ── works table (P0) ──
+        conn.execute("""
                 CREATE TABLE IF NOT EXISTS works (
                     rj_id TEXT PRIMARY KEY,
                     title TEXT,
@@ -101,11 +110,10 @@ class LibraryVault:
             ("cover_url", "TEXT"),
             ("status", "TEXT DEFAULT 'completed'"),
         ]:
-            self._safe_alter("works", col_name, col_type)
+            self._safe_alter(conn, "works", col_name, col_type)
 
         # ── metadata_cache (P1-1) ──
-        with self.conn:
-            self.conn.execute("""
+        conn.execute("""
                 CREATE TABLE IF NOT EXISTS metadata_cache (
                     rj_id TEXT PRIMARY KEY,
                     title TEXT,
@@ -119,8 +127,7 @@ class LibraryVault:
             """)
 
         # ── downloads (P1-2) ──
-        with self.conn:
-            self.conn.execute("""
+        conn.execute("""
                 CREATE TABLE IF NOT EXISTS downloads (
                     id TEXT PRIMARY KEY,
                     rj_id TEXT NOT NULL,
@@ -133,14 +140,13 @@ class LibraryVault:
                     updated_at TIMESTAMP
                 )
             """)
-            self.conn.execute("""
+        conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_downloads_rj
                 ON downloads(rj_id)
             """)
 
         # ── library_index (P3.3) ──
-        with self.conn:
-            self.conn.execute("""
+        conn.execute("""
                 CREATE TABLE IF NOT EXISTS library_index (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     rj_id TEXT NOT NULL,
@@ -152,20 +158,19 @@ class LibraryVault:
                     scanned_at TIMESTAMP
                 )
             """)
-            # Drop old unique index if it exists (migration from rj_id,library_path)
-            try:
-                self.conn.execute(
-                    "DROP INDEX IF EXISTS idx_library_rj_path")
-            except sqlite3.OperationalError:
-                pass
-            self.conn.execute("""
+        try:
+            conn.execute("DROP INDEX IF EXISTS idx_library_rj_path")
+        except sqlite3.OperationalError:
+            pass
+        conn.execute("""
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_library_rj_workdir
                 ON library_index(rj_id, work_dir)
             """)
+        conn.commit()
 
-    def _safe_alter(self, table: str, col_name: str, col_type: str) -> None:
+    def _safe_alter(self, conn, table: str, col_name: str, col_type: str) -> None:
         try:
-            self.conn.execute(
+            conn.execute(
                 f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}"
             )
             logging.info(f"DB migration: added {col_name} to {table}")
@@ -203,34 +208,23 @@ class LibraryVault:
     def set_metadata_cache(self, rj_id: str, title: str, circle: str,
                            cover_url: str, metadata_raw: dict,
                            tracks_raw: list) -> None:
-        """Store metadata and tracks in cache."""
-        with self._lock:
-            try:
-                import json as _json
-                now = datetime.now()
-                self.conn.execute(
-                    """INSERT OR REPLACE INTO metadata_cache
-                       (rj_id, title, circle, cover_url, metadata_json,
-                        tracks_json, fetched_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (rj_id, title, circle, cover_url,
-                     _json.dumps(metadata_raw, ensure_ascii=False),
-                     _json.dumps(tracks_raw, ensure_ascii=False),
-                     now, now)
-                )
-                self.conn.commit()
-            except Exception as e:
-                logging.error(f"Metadata cache write error: {e}")
+        """Store metadata and tracks in cache. Raises on write failure."""
+        import json as _json
+        now = datetime.now()
+        self._execute_write(
+            """INSERT OR REPLACE INTO metadata_cache
+               (rj_id, title, circle, cover_url, metadata_json,
+                tracks_json, fetched_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (rj_id, title, circle, cover_url,
+             _json.dumps(metadata_raw, ensure_ascii=False),
+             _json.dumps(tracks_raw, ensure_ascii=False),
+             now, now))
 
     def invalidate_cache(self, rj_id: str) -> None:
-        """Force next lookup to fetch fresh data."""
-        with self._lock:
-            try:
-                self.conn.execute(
-                    "DELETE FROM metadata_cache WHERE rj_id = ?", (rj_id,))
-                self.conn.commit()
-            except Exception as e:
-                logging.error(f"Cache invalidation error: {e}")
+        """Force next lookup to fetch fresh data. Raises on failure."""
+        self._execute_write(
+            "DELETE FROM metadata_cache WHERE rj_id = ?", (rj_id,))
 
     # ──────────────────────────────────────────────
     #  Download state (P1-2)
@@ -239,21 +233,14 @@ class LibraryVault:
                         track_title: str, local_path: str,
                         status: str, downloaded_bytes: int = 0,
                         total_bytes: int = 0, error: str = "") -> None:
-        """Write download state under lock."""
-        with self._lock:
-            try:
-                now = datetime.now()
-                self.conn.execute(
-                    """INSERT OR REPLACE INTO downloads
-                       (id, rj_id, track_title, local_path, status,
-                        downloaded_bytes, total_bytes, error, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (download_id, rj_id, track_title, local_path,
-                     status, downloaded_bytes, total_bytes, error, now)
-                )
-                self.conn.commit()
-            except Exception as e:
-                logging.error(f"Download state write error: {e}")
+        """Write download state. Raises on failure (RC7.1)."""
+        self._execute_write(
+            """INSERT OR REPLACE INTO downloads
+               (id, rj_id, track_title, local_path, status,
+                downloaded_bytes, total_bytes, error, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (download_id, rj_id, track_title, local_path,
+             status, downloaded_bytes, total_bytes, error, datetime.now()))
 
     def get_downloads_by_rj(self, rj_id: str) -> List[sqlite3.Row]:
         try:
@@ -278,36 +265,25 @@ class LibraryVault:
             return []
 
     def clear_terminal_downloads(self, rj_id: str) -> None:
-        """Remove completed/failed/registered downloads for a work."""
-        try:
-            with self._lock:
-                self.conn.execute(
-                    """DELETE FROM downloads
-                   WHERE rj_id = ? AND status IN ('completed','registered','failed')""",
-                (rj_id,)
-            )
-            self.conn.commit()
-        except Exception as e:
-            logging.error(f"Clear terminal downloads error: {e}")
+        """Remove completed/failed/registered downloads. Raises on failure."""
+        self._execute_write(
+            """DELETE FROM downloads
+               WHERE rj_id = ? AND status IN ('completed','registered','failed')""",
+            (rj_id,))
 
     # ──────────────────────────────────────────────
     #  Works library (P0, unchanged logic)
     # ──────────────────────────────────────────────
     def register(self, meta: WorkMetadata, size: int, path: Path,
                  status: str = 'completed') -> None:
-        """Register a work in the library with a given status."""
-        try:
-            with self.conn:
-                self.conn.execute(
-                    """INSERT OR REPLACE INTO works
-                       (rj_id, title, circle, downloaded_at, size_bytes,
-                        local_path, cover_url, status)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (meta.rj_id, meta.title, meta.circle,
-                     datetime.now(), size, str(path), meta.cover_url, status)
-                )
-        except sqlite3.Error as e:
-            logging.error(f"Database register error for {meta.rj_id}: {e}")
+        """Register a work. Raises on failure (RC7.1)."""
+        self._execute_write(
+            """INSERT OR REPLACE INTO works
+               (rj_id, title, circle, downloaded_at, size_bytes,
+                local_path, cover_url, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (meta.rj_id, meta.title, meta.circle,
+             datetime.now(), size, str(path), meta.cover_url, status))
 
     def get_summary(self) -> Tuple[int, int]:
         try:
@@ -340,18 +316,14 @@ class LibraryVault:
     def upsert_library_entry(self, rj_id: str, library_path: str,
                              work_dir: str, size_bytes: int = 0,
                              file_count: int = 0, status: str = 'found'):
-        try:
-            now = datetime.now()
-            with self.conn:
-                self.conn.execute(
-                    """INSERT OR REPLACE INTO library_index
-                       (rj_id, library_path, work_dir, status,
-                        size_bytes, file_count, scanned_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (rj_id, library_path, work_dir, status,
-                     size_bytes, file_count, now))
-        except Exception as e:
-            logging.error(f"Library index write error: {e}")
+        """Upsert library index entry. Raises on failure (RC7.1)."""
+        self._execute_write(
+            """INSERT OR REPLACE INTO library_index
+               (rj_id, library_path, work_dir, status,
+                size_bytes, file_count, scanned_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (rj_id, library_path, work_dir, status,
+             size_bytes, file_count, datetime.now()))
 
     def find_in_library(self, rj_id: str) -> List[sqlite3.Row]:
         """Check if an RJ exists in any library path."""
@@ -412,82 +384,80 @@ class LibraryVault:
         _n = self.scan_library_paths(paths)
         result["found"] = _n
 
-        # Sync to works: add entries if missing
-        rows = self.conn.execute(
-            "SELECT DISTINCT rj_id, work_dir, library_path, size_bytes FROM library_index"
-        ).fetchall()
-        for row in rows:
-            try:
-                existing = self.conn.execute(
-                    "SELECT rj_id FROM works WHERE rj_id=?", (row["rj_id"],)
-                ).fetchone()
-                if not existing:
-                    self.conn.execute(
-                        """INSERT OR IGNORE INTO works
-                           (rj_id, title, circle, size_bytes, local_path, status, downloaded_at)
-                           VALUES (?, ?, ?, ?, ?, 'external', ?)""",
-                        (row["rj_id"], row["rj_id"], "",
-                         row["size_bytes"], row["work_dir"], datetime.now()))
-                    result["indexed"] += 1
-            except Exception as e:
-                logging.error(f"Rebuild sync error {row['rj_id']}: {e}")
-                result["errors"] += 1
-        self.conn.commit()
+        def _sync(conn):
+            rows = conn.execute(
+                "SELECT DISTINCT rj_id, work_dir, library_path, size_bytes FROM library_index"
+            ).fetchall()
+            for row in rows:
+                try:
+                    existing = conn.execute(
+                        "SELECT rj_id FROM works WHERE rj_id=?", (row["rj_id"],)
+                    ).fetchone()
+                    if not existing:
+                        conn.execute(
+                            """INSERT OR IGNORE INTO works
+                               (rj_id, title, circle, size_bytes, local_path, status, downloaded_at)
+                               VALUES (?, ?, ?, ?, ?, 'external', ?)""",
+                            (row["rj_id"], row["rj_id"], "",
+                             row["size_bytes"], row["work_dir"], datetime.now()))
+                        result["indexed"] += 1
+                except Exception as e:
+                    logging.error(f"Rebuild sync error {row['rj_id']}: {e}")
+                    result["errors"] += 1
+        self._write(_sync)
         return result
 
     def enrich_external_metadata(self, rj_id: str, meta_raw: dict,
                                   cover_url: str, title: str, circle: str):
-        """Update works table with metadata for an external entry."""
-        try:
-            self.conn.execute(
-                """UPDATE works SET title=?, circle=?, cover_url=?, status='external'
-                   WHERE rj_id=? AND status IN ('external','indexed','prepared')""",
-                (title, circle, cover_url, rj_id))
-            self.conn.commit()
-        except Exception as e:
-            logging.error(f"Enrich error {rj_id}: {e}")
+        """Update works table. Raises on failure (RC7.1)."""
+        self._execute_write(
+            """UPDATE works SET title=?, circle=?, cover_url=?, status='external'
+               WHERE rj_id=? AND status IN ('external','indexed','prepared')""",
+            (title, circle, cover_url, rj_id))
 
     def verify_library_item(self, rj_id: str, work_dir: str,
                             metadata_tracks: list) -> str:
         """Compare metadata tracks with local files. Returns status."""
         import os as _os
         d = Path(work_dir)
-        if not d.exists():
-            self.conn.execute(
-                "UPDATE works SET status='missing' WHERE rj_id=? AND local_path=?",
-                (rj_id, work_dir))
-            self.conn.commit()
-            return "missing"
+        result_status = "missing"
 
-        has_part = any(f.suffix == ".part" for f in d.rglob("*.part"))
-        if has_part:
-            self.conn.execute(
-                "UPDATE works SET status='partial' WHERE rj_id=? AND local_path=?",
-                (rj_id, work_dir))
-            self.conn.commit()
-            return "partial"
+        def _verify(conn):
+            nonlocal result_status
+            if not d.exists():
+                conn.execute(
+                    "UPDATE works SET status='missing' WHERE rj_id=? AND local_path=?",
+                    (rj_id, work_dir))
+                result_status = "missing"
+                return
 
-        # Check track-level completeness
-        missing_count = 0
-        for track in metadata_tracks:
-            if track.get("type") == "folder":
-                continue
-            tname = track.get("title", "")
-            found = any(
-                f.name.startswith(Path(tname).stem)
-                for f in d.rglob("*") if f.is_file())
-            if not found:
-                missing_count += 1
+            has_part = any(f.suffix == ".part" for f in d.rglob("*.part"))
+            if has_part:
+                conn.execute(
+                    "UPDATE works SET status='partial' WHERE rj_id=? AND local_path=?",
+                    (rj_id, work_dir))
+                result_status = "partial"
+                return
 
-        if missing_count > 0:
-            status = "partial"
-        else:
-            status = "verified"
-        self.conn.execute(
-            "UPDATE works SET status=? WHERE rj_id=? AND local_path=?",
-            (status, rj_id, work_dir))
-        self.conn.commit()
-        return status
+            missing_count = 0
+            for track in metadata_tracks:
+                if track.get("type") == "folder":
+                    continue
+                tname = track.get("title", "")
+                found = any(
+                    f.name.startswith(Path(tname).stem)
+                    for f in d.rglob("*") if f.is_file())
+                if not found:
+                    missing_count += 1
+
+            s = "partial" if missing_count > 0 else "verified"
+            conn.execute(
+                "UPDATE works SET status=? WHERE rj_id=? AND local_path=?",
+                (s, rj_id, work_dir))
+            result_status = s
+
+        self._write(_verify)
+        return result_status
 
     def get_external_works(self) -> List[sqlite3.Row]:
         """Get works needing metadata enrichment."""
