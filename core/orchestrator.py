@@ -39,7 +39,8 @@ class Orchestrator:
         self._global_inflight_lock = asyncio.Lock()
         self._per_rj_inflight: Dict[str, int] = {}
         self.download_queue: asyncio.Queue = asyncio.Queue()
-        self.queued_rj_ids: set = set()       # RC7: prevent duplicate enqueue
+        self._queued_work_data: Dict[str, dict] = {}  # RC7.7: rj_id→{meta,targets,root_path}
+        self.queued_rj_ids: set = set()
         self.active_tasks: Dict[str, asyncio.Task] = {}
         self.cancelled_rjs: set = set()
         self._shutting_down: bool = False
@@ -99,22 +100,42 @@ class Orchestrator:
     async def boot_worker(self):
         while not self._shutting_down:
             try:
-                rj_id, job_coro = await asyncio.wait_for(
+                rj_id = await asyncio.wait_for(
                     self.download_queue.get(), timeout=1.0)
             except asyncio.TimeoutError:
                 continue
+
+            # ── RC7.7: get work data, cleanup if not found ──
+            work_data = self._queued_work_data.pop(rj_id, None)
             self.queued_rj_ids.discard(rj_id)
+
             if rj_id in self.cancelled_rjs:
                 self.cancelled_rjs.discard(rj_id)
                 self.download_queue.task_done()
                 continue
+
+            # ── RC7.7: pre-flight DB status check ──
+            if not self._is_ready_to_download(rj_id):
+                logger.info(f"WORKER_SKIP rj={rj_id} (paused/completed/cancelled)")
+                self.download_queue.task_done()
+                continue
+
+            if not work_data:
+                logger.warning(f"WORKER_SKIP rj={rj_id} (no work_data)")
+                self.download_queue.task_done()
+                continue
+
             # ── RC7.4: emit Downloading only when worker actually starts ──
             self._emit_work_status(rj_id, "Downloading")
             logger.info(
                 f"WORKER_START rj={rj_id} "
                 f"queued_remaining={len(self.queued_rj_ids)} "
                 f"active={len(self.active_tasks)}")
-            task = asyncio.create_task(job_coro)
+            task = asyncio.create_task(
+                self._process_download(rj_id,
+                                       work_data["meta"],
+                                       work_data["targets"],
+                                       work_data["root_path"]))
             self.active_tasks[rj_id] = task
             try:
                 await task
@@ -173,6 +194,8 @@ class Orchestrator:
             task.cancel()
         # Wait briefly for cancellations
         await asyncio.sleep(0.5)
+        # ── RC7.7: final cleanup ──
+        self._queued_work_data.clear()
         # Flush DB
         self.db.commit()
         await self.kernel.shutdown()
@@ -307,8 +330,30 @@ class Orchestrator:
     # ══════════════════════════════════════════════
     #  P3.5: batch controls
     # ══════════════════════════════════════════════
+    def _is_ready_to_download(self, rj_id: str) -> bool:
+        """Check DB and in-memory state: should this RJ be processed?"""
+        # Already being processed → skip
+        if rj_id in self.active_tasks:
+            return False
+        # Cancelled
+        if rj_id in self.cancelled_rjs:
+            return False
+        # Check downloads table for paused/completed
+        rows = self.db.get_downloads_by_rj(rj_id)
+        # If all downloads are terminal → skip
+        all_terminal = all(
+            row["status"] in ('completed', 'registered', 'failed')
+            for row in rows)
+        if all_terminal and rows:
+            return False
+        # If all queued/downloading are now paused → skip
+        has_pending = any(
+            row["status"] in ('queued', 'downloading')
+            for row in rows)
+        return has_pending
+
     def pause_all(self):
-        """Pause all pausable works (queued/downloading, NOT already paused)."""
+        """Pause all pausable works + drain queue (RC7.7)."""
         rows = self.db.conn.execute(
             "SELECT DISTINCT rj_id FROM downloads "
             "WHERE status IN ('queued','downloading')").fetchall()
@@ -323,6 +368,22 @@ class Orchestrator:
             self.speed.pause_work(rj_id)
             self.pause_job(rj_id)
             self._emit_work_status(rj_id, "Paused")
+
+        # ── RC7.7: drain download_queue (no coroutines!) ──
+        drained = 0
+        while not self.download_queue.empty():
+            try:
+                item = self.download_queue.get_nowait()
+                self.download_queue.task_done()
+                if isinstance(item, str):
+                    self.queued_rj_ids.discard(item)
+                drained += 1
+            except asyncio.QueueEmpty:
+                break
+        # Clear work_data for safety
+        self._queued_work_data.clear()
+        if drained:
+            logger.info(f"pause_all: drained {drained} items from download_queue")
         return rj_ids
 
     def resume_all(self):
@@ -449,10 +510,11 @@ class Orchestrator:
                                 if t.save_path.exists() else 0,
                                 t.size, "pending")
 
-        await self.download_queue.put(
-            (rj_id, self._process_download(rj_id, meta,
-                                           resume_targets, root_path))
-        )
+        # ── RC7.7: store only rj_id + work_data, NOT coroutine ──
+        self._queued_work_data[rj_id] = {
+            "meta": meta, "targets": resume_targets,
+            "root_path": root_path}
+        await self.download_queue.put(rj_id)
         self.queued_rj_ids.add(rj_id)
         # ── RC7.4: emit "Queued" here — worker emits "Downloading" later ──
         self._emit_work_status(rj_id, "Queued")
@@ -756,9 +818,12 @@ class Orchestrator:
 
         status_msg = "Queued (cached)" if from_cache else "Queued"
         self._emit_work_status(rj_id, status_msg)
+        # ── RC7.7: store only rj_id + work_data, NOT coroutine ──
+        self._queued_work_data[rj_id] = {
+            "meta": meta, "targets": targets,
+            "root_path": root_path}
         self.queued_rj_ids.add(rj_id)
-        await self.download_queue.put(
-            (rj_id, self._process_download(rj_id, meta, targets, root_path)))
+        await self.download_queue.put(rj_id)
 
     # ══════════════════════════════════════════════
     #  download_file — returns bool
@@ -825,7 +890,7 @@ class Orchestrator:
                 if existing_size > 0:
                     headers["Range"] = f"bytes={existing_size}-"
 
-                # ── RC7.6: per-RJ file slot — acquire before any log or request ──
+                # ── RC7.6/RC7.7: per-RJ file slot with try/finally ──
                 async with file_sem:
                     # Track in-flight
                     async with self._global_inflight_lock:
@@ -835,35 +900,45 @@ class Orchestrator:
                         self._per_rj_inflight.get(meta.rj_id, 0) + 1
                     work_inflight = self._per_rj_inflight[meta.rj_id]
 
-                    import urllib.parse as _up
-                    host = _up.urlparse(track.url).hostname or "unknown"
-                    is_resume = existing_size > 0
-                    logger.info(
-                        f"FILE_SLOT_ACQUIRE rj={meta.rj_id} "
-                        f"track={track.title[:50]} "
-                        f"host={host} size={track.size} resume={is_resume} "
-                        f"work_inflight={work_inflight} global_inflight={global_inflight} "
-                        f"file_concurrency={self.config.file_concurrency} "
-                        f"work_concurrency={self.config.work_concurrency}")
-                    logger.info(
-                        f"DOWNLOAD_START rj={meta.rj_id} track={track.title[:50]} "
-                        f"host={host} size={track.size} exist={is_resume} "
-                        f"path={final_path}")
-                    logger.info(
-                        f"DOWNLOAD_ATTEMPT rj={meta.rj_id} track={track.title[:40]} "
-                        f"attempt={attempt+1}/{self.config.retry_count} "
-                        f"resume={is_resume} range={rng} download_proxy={d_proxy}")
+                    try:
+                        import urllib.parse as _up
+                        host = _up.urlparse(track.url).hostname or "unknown"
+                        is_resume = existing_size > 0
+                        logger.info(
+                            f"FILE_SLOT_ACQUIRE rj={meta.rj_id} "
+                            f"track={track.title[:50]} "
+                            f"host={host} size={track.size} resume={is_resume} "
+                            f"work_inflight={work_inflight} global_inflight={global_inflight} "
+                            f"file_concurrency={self.config.file_concurrency} "
+                            f"work_concurrency={self.config.work_concurrency}")
+                        logger.info(
+                            f"DOWNLOAD_START rj={meta.rj_id} track={track.title[:50]} "
+                            f"host={host} size={track.size} exist={is_resume} "
+                            f"path={final_path}")
+                        logger.info(
+                            f"DOWNLOAD_ATTEMPT rj={meta.rj_id} track={track.title[:40]} "
+                            f"attempt={attempt+1}/{self.config.retry_count} "
+                            f"resume={is_resume} range={rng} download_proxy={d_proxy}")
 
-                    success, resp_or_err = await self._stream_with_fallback(
-                        track.url, headers)
+                        success, resp_or_err = await self._stream_with_fallback(
+                            track.url, headers)
 
-                    if not success:
-                        # Release in-flight before handling error
-                        self._per_rj_inflight[meta.rj_id] = max(
-                            0, self._per_rj_inflight.get(meta.rj_id, 1) - 1)
-                        async with self._global_inflight_lock:
-                            self._global_inflight = max(0, self._global_inflight - 1)
-                    else:
+                        if not success:
+                            last_attempt = attempt == self.config.retry_count - 1
+                            if last_attempt:
+                                self.stats.failed += 1
+                                self.db.upsert_download(
+                                    dl_id, meta.rj_id, track.title,
+                                    str(final_path), 'failed',
+                                    error=str(resp_or_err))
+                                self._emit_progress(meta.rj_id, track.id or track.title, track.title,
+                                                    existing_size, track.size, "failed")
+                                return False
+                            existing_size = 0
+                            await asyncio.sleep(
+                                    self.config.retry_backoff ** attempt)
+                            continue
+
                         resp = resp_or_err
                         try:
                             if resp.status == 416:
@@ -871,18 +946,9 @@ class Orchestrator:
                                 self.db.upsert_download(
                                     dl_id, meta.rj_id, track.title,
                                     str(final_path), 'completed', track.size, track.size)
-                                # release in-flight (will also release below)
-                                self._per_rj_inflight[meta.rj_id] = max(
-                                    0, self._per_rj_inflight.get(meta.rj_id, 1) - 1)
-                                async with self._global_inflight_lock:
-                                    self._global_inflight = max(0, self._global_inflight - 1)
                                 return True
 
                             if resp.status not in (200, 206):
-                                self._per_rj_inflight[meta.rj_id] = max(
-                                    0, self._per_rj_inflight.get(meta.rj_id, 1) - 1)
-                                async with self._global_inflight_lock:
-                                    self._global_inflight = max(0, self._global_inflight - 1)
                                 last_attempt = attempt == self.config.retry_count - 1
                                 if last_attempt:
                                     self.stats.failed += 1
@@ -936,7 +1002,6 @@ class Orchestrator:
                             if not resp.closed:
                                 resp.close()
 
-                            # ── Post-download processing ──
                             actual = target.stat().st_size
                             if actual != track.size:
                                 logging.warning(f"Size mismatch {track.title}: {actual} vs {track.size}")
@@ -956,19 +1021,19 @@ class Orchestrator:
                                                     track.size, track.size)
                             self._emit_progress(meta.rj_id, track.id or track.title, track.title,
                                                 track.size, track.size, "completed")
-
-                    # ── Release in-flight (normal exit path) ──
-                    self._per_rj_inflight[meta.rj_id] = max(
-                        0, self._per_rj_inflight.get(meta.rj_id, 1) - 1)
-                    work_inflight_after = self._per_rj_inflight.get(meta.rj_id, 0)
-                    async with self._global_inflight_lock:
-                        self._global_inflight = max(0, self._global_inflight - 1)
-                        global_inflight_after = self._global_inflight
-                    logger.info(
-                        f"FILE_SLOT_RELEASE rj={meta.rj_id} "
-                        f"track={track.title[:50]} "
-                        f"work_inflight={work_inflight_after} "
-                        f"global_inflight={global_inflight_after}")
+                    finally:
+                        # ── RC7.7: ALWAYS release (even on CancelledError) ──
+                        self._per_rj_inflight[meta.rj_id] = max(
+                            0, self._per_rj_inflight.get(meta.rj_id, 1) - 1)
+                        work_inflight_after = self._per_rj_inflight.get(meta.rj_id, 0)
+                        async with self._global_inflight_lock:
+                            self._global_inflight = max(0, self._global_inflight - 1)
+                            global_inflight_after = self._global_inflight
+                        logger.info(
+                            f"FILE_SLOT_RELEASE rj={meta.rj_id} "
+                            f"track={track.title[:50]} "
+                            f"work_inflight={work_inflight_after} "
+                            f"global_inflight={global_inflight_after}")
 
                     return True
 
