@@ -36,3 +36,15 @@ dl_input.txt
 build/
 Downloads/
 logs/
+.local_backups/
+backup_*.db
+backup_*.db-wal
+backup_*.db-shm
+*.db-wal
+*.db-shm
+*.tmp_migrating/
+tmp_hotfix_*/
+tmp_test_*/
+config.local.backup.json
+backup_rc7_1/
+arsm-downing/
