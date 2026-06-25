@@ -181,35 +181,47 @@ class ToolsView(ft.Container):
             asyncio.create_task(_test())
 
     def migrate_completed(self, e):
-        """Dry-run then execute migration of completed/verified works."""
+        """RC8: Dry-run migration candidates with detailed output."""
+        from core.migration import MigrationEngine
         db = self.app_controller.db
+        cfg = self.app_controller.config
+        engine = MigrationEngine(db)
 
-        # ── Step 1: Find safe-to-move works ──
-        self.log("> 查找可安全迁移的作品...", "white")
-        safe_ids = db.get_safe_migratable_works()
-        if not safe_ids:
+        # Use first library_path as target, or output_dir
+        target = str(cfg.output_dir)
+        if cfg.library_paths:
+            target = cfg.library_paths[0]
+
+        self.log("> 迁移候选扫描 (dry-run)...", "white")
+        dry = engine.dry_run(target)
+        self.log(f"  MIGRATION_DRY_RUN candidate_count={dry['candidate_count']} "
+                 f"total_size={dry['total_size_mb']}MB", ACCENT_PRIMARY)
+
+        if dry["candidate_count"] == 0:
             self.log("  无可迁移作品（需要 works.status in completed/verified", WARNING)
-            self.log("  且 downloads 中无 queued/paused/downloading/failed）", WARNING)
+            self.log("  且 downloads 中无 pending，无 .part 文件）", WARNING)
             return
 
-        total_size = sum(item["size_bytes"] for item in safe_ids)
-        self.log(f"  发现 {len(safe_ids)} 个可迁移作品", SUCCESS)
-        self.log(f"  预计可释放空间: {total_size / 1024 / 1024:.1f} MB", ACCENT_PRIMARY)
         self.log(f"")
-        for item in safe_ids[:10]:
-            self.log(f"    {item['rj_id']}: {item.get('title','?')[:40]} → {item.get('local_path','?')[:60]}", "white")
-        if len(safe_ids) > 10:
-            self.log(f"    ... 还有 {len(safe_ids) - 10} 个", "grey")
+        for item in dry["candidates"][:20]:
+            self.log(
+                f"  {item['rj_id']}: {item.get('title','?')[:35]} "
+                f"[{item['status']}] {item['size_mb']}MB "
+                f"→ {item.get('target','?')[:50]}", "white")
+        if dry["candidate_count"] > 20:
+            self.log(f"  ... 还有 {dry['candidate_count'] - 20} 个", "grey")
 
-        # ── Step 2: Dry-run only — user should move manually then re-scan ──
         self.log("")
-        self.log("> 迁移操作说明:", ACCENT_PRIMARY)
-        self.log("  1. 关闭程序", WARNING)
-        self.log("  2. 手动将上面列出的 RJ 文件夹移动到新磁盘", "white")
-        self.log("  3. 在设置中添加新磁盘路径到 library_paths", "white")
+        self.log("> 执行迁移:", ACCENT_PRIMARY)
+        self.log("  菜单栏 → 设置 → 修改 output_dir 为目标盘路径", "white")
+        self.log("  然后手动迁移 1-3 个小作品:", WARNING)
+        self.log("  1. 关闭程序", "white")
+        self.log("  2. 复制 RJ 文件夹到新盘", "white")
+        self.log("  3. 在设置中添加新路径到 library_paths", "white")
         self.log("  4. 启动程序后执行「扫描仓库」重新索引", "white")
         self.log("")
-        self.log("  ⚠ 不要移动含 .part 文件或未完成的任务!", WARNING)
+        self.log("  ⚠ 不要移动含 .part 文件或 pending 的作品!", WARNING)
+        self.log("  ⚠ 建议: 先迁移 1 个作品，扫描验证成功后再批量", WARNING)
 
     def diagnose_failed(self, e):
         """RC7.10: Diagnose failed downloads — categories + write report."""
