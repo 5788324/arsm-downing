@@ -25,6 +25,7 @@ class ConfigManager:
         # ── Download concurrency (P2) ──
         self.work_concurrency: int = 1
         self.file_concurrency: int = 4
+        self.auto_resume_on_start: bool = False  # RC7.9: default OFF
         self.chunk_size: int = 1048576  # 1 MB
         self.retry_count: int = 5
         self.retry_backoff: int = 2    # exponential base seconds

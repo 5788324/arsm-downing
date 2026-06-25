@@ -443,19 +443,29 @@ class Orchestrator:
             f"queue_size={self.download_queue.qsize()} "
             f"queued_rj_ids={len(self.queued_rj_ids)} "
             f"active_tasks={len(self.active_tasks)} "
-            f"global_paused={self.global_paused}")
+            f"global_paused={self.global_paused} "
+            f"global_inflight={self._global_inflight}")
 
         return rj_ids
 
     def resume_all(self):
-        """Return paused or queued RJs. Exclude already active/queued."""
+        """Return paused/queued/failed/partial RJs with pending downloads.
+
+        RC7.9: Include failed downloads that have partial local files (resumable).
+        Exclude already active/queued.
+        """
         rows = self.db.conn.execute(
             "SELECT DISTINCT rj_id FROM downloads "
-            "WHERE status IN ('paused','queued')").fetchall()
+            "WHERE status IN ('paused','queued','failed','downloading','resuming')"
+        ).fetchall()
         # Filter out already queued/active
-        return [row["rj_id"] for row in rows
-                if row["rj_id"] not in self.queued_rj_ids
-                and row["rj_id"] not in self.active_tasks]
+        result = [row["rj_id"] for row in rows
+                  if row["rj_id"] not in self.queued_rj_ids
+                  and row["rj_id"] not in self.active_tasks]
+        logger.info(f"RESUME_ALL_ENQUEUED count={len(result)}")
+        if not result:
+            logger.info("RESUME_ALL_NONE reason=no_pending_restorable")
+        return result
 
     async def _resume_one(self, rj_id: str) -> dict:
         """Unified resume for single-task and batch.
@@ -589,14 +599,18 @@ class Orchestrator:
     #  P1.5-2:  restore on startup
     # ══════════════════════════════════════════════
     async def restore_pending_downloads(self):
-        """Fast restore: mark downloading→paused. Do NOT block on resume_job.
+        """Cold-start: normalize interrupted states → paused. Do NOT enqueue.
 
-        After startup, auto_resume_on_start (default False) controls
-        whether the first work_concurrency paused jobs are resumed.
+        RC7.9: When auto_resume_on_start is False, NO work is enqueued.
+        Only mark downloading/queued/resuming → paused so UI shows correctly.
         """
         pending = self.db.get_pending_downloads()
         if not pending:
             return
+
+        auto_resume = getattr(self.config, 'auto_resume_on_start', False)
+        normalized_downloads = 0
+        normalized_works = set()
 
         rj_groups: Dict[str, set] = {}
         for row in pending:
@@ -606,32 +620,53 @@ class Orchestrator:
 
         for rj_id in sorted(rj_groups):
             statuses = rj_groups[rj_id]
-            # downloading → paused (interrupted)
-            if 'downloading' in statuses:
-                for row in pending:
-                    if row["rj_id"] == rj_id and row["status"] == 'downloading':
-                        self.db.upsert_download(
-                            row["id"], rj_id, row["track_title"],
-                            row["local_path"], 'paused',
-                            row["downloaded_bytes"], row["total_bytes"])
 
-            # Only collect RJs that have metadata_cache
+            # ── RC7.9: normalize ALL non-terminal → paused ──
+            for row in pending:
+                if row["rj_id"] != rj_id:
+                    continue
+                if row["status"] in ('downloading', 'queued', 'resuming'):
+                    self.db.upsert_download(
+                        row["id"], rj_id, row["track_title"],
+                        row["local_path"], 'paused',
+                        row["downloaded_bytes"], row["total_bytes"])
+                    normalized_downloads += 1
+                    normalized_works.add(rj_id)
+
             if self.db.get_metadata_cache(rj_id):
                 paused_rj_ids.append(rj_id)
             else:
                 logger.warning(f"Skip restore {rj_id}: no metadata cache")
 
+        # ── RC7.9: normalize works.status for interrupted works ──
+        for rj_id in normalized_works:
+            ws = self.db.get_works_status(rj_id)
+            if ws in ('queued', 'downloading', 'resuming'):
+                self.db.execute_write(
+                    "UPDATE works SET status='paused' WHERE rj_id=?", (rj_id,))
+            elif ws == 'prepared':
+                # prepared but interrupted → mark so UI knows it's restorable
+                pass
+
+        logger.info(
+            f"STARTUP_PASSIVE_MODE auto_resume={auto_resume} "
+            f"normalized_downloads={normalized_downloads} "
+            f"normalized_works={len(normalized_works)}")
         logger.info(
             f"restore_pending: {len(paused_rj_ids)} restorable RJs "
-            f"(auto_resume={getattr(self.config, 'auto_resume_on_start', False)})")
+            f"(auto_resume={auto_resume}, enqueued=0)")
 
-        # Schedule resume asynchronously: post-restore, let workers consume
+        # ── RC7.9: only enqueue when explicitly auto_resume=True ──
+        if not auto_resume:
+            # Do NOT enqueue anything. UI will show paused status.
+            return
+
+        # Auto-resume: limit to work_concurrency
         async def _delayed_resume():
-            await asyncio.sleep(0.5)  # let UI render
-            limit = self.config.work_concurrency if \
-                getattr(self.config, 'auto_resume_on_start', False) else 0
+            await asyncio.sleep(0.5)
+            limit = self.config.work_concurrency
             for i, rj_id in enumerate(paused_rj_ids):
-                if limit > 0 and i >= limit:
+                if i >= limit:
                     break
                 await self._resume_one(rj_id)
 

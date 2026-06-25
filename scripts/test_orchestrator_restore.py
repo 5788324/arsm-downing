@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""Orchestrator 恢复测试 — 验证 restore_pending_downloads 重建任务并入队。
-
-测试流程:
-1. 写入 metadata_cache + downloads (1 paused, 1 completed, 1 failed)
-2. monkeypatch _process_download 记录被传入的 targets
-3. await orc.restore_pending_downloads()
-4. 验证: 只恢复 paused, 不恢复 completed/failed
-5. 验证: download_queue 收到任务
-"""
+"""Orchestrator 恢复测试 — 验证 restore_pending_downloads 重建任务并入队 (auto_resume=True)."""
 
 import asyncio
 import sys
@@ -29,6 +21,8 @@ async def test():
 
     rj_code = "RJ99997"
     cfg = ConfigManager.load()
+    # RC7.9: must set auto_resume_on_start=True for this test
+    cfg.auto_resume_on_start = True
     db = LibraryVault()
     kernel = NetworkKernel(cfg)
     orc = Orchestrator(kernel, cfg, db)
