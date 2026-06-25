@@ -33,7 +33,7 @@ class ConfigManager:
         self.metadata_proxy: Optional[str] = None   # API metadata requests
         self.download_proxy: Optional[str] = None   # Audio file downloads
         self.cover_proxy: Optional[str] = None      # Cover image downloads
-        self.download_fallback_to_proxy: bool = True
+        self.download_fallback_to_proxy: bool = False  # RC7.5: default OFF
 
         # ── Legacy (kept for backward compat, maps to metadata_proxy) ──
         self.proxy: Optional[str] = None
@@ -117,7 +117,7 @@ class ConfigManager:
                 config.download_proxy = data.get('download_proxy')
                 config.cover_proxy = data.get('cover_proxy')
                 config.download_fallback_to_proxy = bool(
-                    data.get('download_fallback_to_proxy', True))
+                    data.get('download_fallback_to_proxy', False))  # RC7.5: default OFF
 
                 # Legacy compat
                 config.proxy = data.get('proxy')

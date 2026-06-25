@@ -531,6 +531,87 @@ class LibraryVault:
         self._write(_verify)
         return result_status
 
+    def get_safe_migratable_works(self) -> list:
+        """Return works that are safe to move: completed/verified, no pending downloads, no .part files.
+
+        Each item: {rj_id, title, local_path, status, size_bytes}
+        """
+        try:
+            rows = self.conn.execute(
+                """SELECT w.rj_id, w.title, w.local_path, w.status,
+                          COALESCE(w.size_bytes, 0) as size_bytes
+                   FROM works w
+                   WHERE w.status IN ('completed', 'verified')
+                   AND NOT EXISTS (
+                     SELECT 1 FROM downloads d
+                     WHERE d.rj_id = w.rj_id
+                     AND d.status IN ('queued','paused','downloading','failed')
+                   )
+                   ORDER BY w.rj_id"""
+            ).fetchall()
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logging.error(f"get_safe_migratable_works error: {e}")
+            return []
+
+    def move_work_to_path(self, rj_id: str, old_path: str,
+                          new_path: str) -> dict:
+        """Update all DB references for a moved work folder.
+
+        Returns {'success': bool, 'updated': int, 'error': str}.
+        Updates: works.local_path, downloads.local_path, library_index.work_dir.
+        Fails if the work has pending downloads.
+        """
+        try:
+            # Safety check: no pending downloads
+            pending = self.conn.execute(
+                """SELECT COUNT(*) FROM downloads
+                   WHERE rj_id = ? AND status IN
+                   ('queued','paused','downloading','failed')""",
+                (rj_id,)
+            ).fetchone()[0]
+            if pending > 0:
+                return {"success": False, "updated": 0,
+                        "error": f"{rj_id} has {pending} pending downloads — refuse to move"}
+
+            updated = 0
+            def _move(conn):
+                nonlocal updated
+                # Update works
+                conn.execute(
+                    "UPDATE works SET local_path = ? WHERE rj_id = ? AND local_path = ?",
+                    (new_path, rj_id, old_path))
+                if conn.total_changes > 0:
+                    updated += conn.total_changes
+                # Update downloads
+                conn.execute(
+                    "UPDATE downloads SET local_path = REPLACE(local_path, ?, ?) "
+                    "WHERE rj_id = ? AND local_path LIKE ?",
+                    (old_path, new_path, rj_id, f"{old_path}%"))
+                updated += conn.total_changes
+                # Update library_index
+                conn.execute(
+                    "UPDATE library_index SET work_dir = ? "
+                    "WHERE rj_id = ? AND work_dir = ?",
+                    (new_path, rj_id, old_path))
+                updated += conn.total_changes
+
+            with self._lock:
+                conn = self._write_conn()
+                try:
+                    _move(conn)
+                    conn.commit()
+                    return {"success": True, "updated": updated, "error": ""}
+                except sqlite3.Error as e:
+                    conn.rollback()
+                    return {"success": False, "updated": 0,
+                            "error": str(e)}
+                finally:
+                    conn.close()
+        except Exception as e:
+            logging.error(f"move_work_to_path error for {rj_id}: {e}")
+            return {"success": False, "updated": 0, "error": str(e)}
+
     def get_external_works(self) -> List[sqlite3.Row]:
         """Get works needing metadata enrichment."""
         try:

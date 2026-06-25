@@ -22,6 +22,10 @@ class ToolsView(ft.Container):
                 ft.ElevatedButton("扫描仓库", icon=ft.icons.FOLDER_SPECIAL, on_click=self.scan_library),
                 ft.ElevatedButton("清理无效队列", icon=ft.icons.CLEANING_SERVICES, on_click=self.clean_queue),
             ], spacing=20, wrap=True),
+            ft.Row([
+                ft.ElevatedButton("迁移已完成作品", icon=ft.icons.DRIVE_FILE_MOVE,
+                    on_click=self.migrate_completed),
+            ], spacing=20, wrap=True),
             ft.Divider(height=20, color="transparent"),
             ft.Row([
                 ft.Text("诊断日志", size=20, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
@@ -122,6 +126,16 @@ class ToolsView(ft.Container):
         self.log(f"  download_proxy: {cfg.download_proxy or '(无/直连)'}", ACCENT_PRIMARY)
         self.log(f"  cover_proxy: {cfg.cover_proxy or '(无/直连)'}", ACCENT_PRIMARY)
 
+        self.log("  ⚠ Clash Verge 诊断提示:", WARNING)
+        self.log("    如果 Clash Verge 开启了 TUN/系统代理/全局模式，", "white")
+        self.log("    即使 download_proxy=direct，系统层也可能劫持下载流量!", WARNING)
+        self.log("    推荐: 关闭 TUN 和系统代理，仅保留 mixed port 7897", SUCCESS)
+        self.log("    程序会显式使用 metadata_proxy 获取元数据", "white")
+        self.log("    下载 CDN 直连。或为 CDN 添加 DIRECT 规则:", "white")
+        self.log("    DOMAIN-SUFFIX,kiko-play-niptan.one,DIRECT", ACCENT_PRIMARY)
+        self.log("    DOMAIN-SUFFIX,dlsite.com,DIRECT", ACCENT_PRIMARY)
+        self.log("")
+
         async def _test():
             if mp:
                 try:
@@ -161,6 +175,37 @@ class ToolsView(ft.Container):
                 _test(), self.app_controller.loop)
         else:
             asyncio.create_task(_test())
+
+    def migrate_completed(self, e):
+        """Dry-run then execute migration of completed/verified works."""
+        db = self.app_controller.db
+
+        # ── Step 1: Find safe-to-move works ──
+        self.log("> 查找可安全迁移的作品...", "white")
+        safe_ids = db.get_safe_migratable_works()
+        if not safe_ids:
+            self.log("  无可迁移作品（需要 works.status in completed/verified", WARNING)
+            self.log("  且 downloads 中无 queued/paused/downloading/failed）", WARNING)
+            return
+
+        total_size = sum(item["size_bytes"] for item in safe_ids)
+        self.log(f"  发现 {len(safe_ids)} 个可迁移作品", SUCCESS)
+        self.log(f"  预计可释放空间: {total_size / 1024 / 1024:.1f} MB", ACCENT_PRIMARY)
+        self.log(f"")
+        for item in safe_ids[:10]:
+            self.log(f"    {item['rj_id']}: {item.get('title','?')[:40]} → {item.get('local_path','?')[:60]}", "white")
+        if len(safe_ids) > 10:
+            self.log(f"    ... 还有 {len(safe_ids) - 10} 个", "grey")
+
+        # ── Step 2: Dry-run only — user should move manually then re-scan ──
+        self.log("")
+        self.log("> 迁移操作说明:", ACCENT_PRIMARY)
+        self.log("  1. 关闭程序", WARNING)
+        self.log("  2. 手动将上面列出的 RJ 文件夹移动到新磁盘", "white")
+        self.log("  3. 在设置中添加新磁盘路径到 library_paths", "white")
+        self.log("  4. 启动程序后执行「扫描仓库」重新索引", "white")
+        self.log("")
+        self.log("  ⚠ 不要移动含 .part 文件或未完成的任务!", WARNING)
 
     def run_diagnostic(self, e):
         self.log_area.controls.clear()

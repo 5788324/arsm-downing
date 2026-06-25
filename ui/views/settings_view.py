@@ -19,8 +19,11 @@ class SettingsView(ft.Container):
             label="封面代理 (cover_proxy, 同元数据代理或留空)",
             value=config.cover_proxy or "", expand=True)
         self.download_proxy_input = ft.TextField(
-            label="下载代理 (download_proxy, 默认留空走直连)",
+            label="下载代理 (download_proxy, 默认留空直连 — 走代理会大量消耗流量)",
             value=config.download_proxy or "", expand=True)
+        self.download_fallback_switch = ft.Switch(
+            label="下载直连失败后回退到代理 (download_fallback_to_proxy, 关闭以严格直连)",
+            value=config.download_fallback_to_proxy)
         self.concurrent_slider = ft.Slider(
             min=1, max=10, divisions=9,
             value=config.max_concurrent, label="{value}")
@@ -41,6 +44,7 @@ class SettingsView(ft.Container):
             ft.Row([self.metadata_proxy_input]),
             ft.Row([self.cover_proxy_input]),
             ft.Row([self.download_proxy_input]),
+            ft.Row([self.download_fallback_switch]),
             ft.Text("最大并发下载数"),
             self.concurrent_slider,
             self.tag_audio_switch,
@@ -64,6 +68,7 @@ class SettingsView(ft.Container):
         config.cover_proxy = cp if cp else None
         dp = self.download_proxy_input.value.strip()
         config.download_proxy = dp if dp else None
+        config.download_fallback_to_proxy = self.download_fallback_switch.value
         # Legacy compat
         config.proxy = config.metadata_proxy
         config.max_concurrent = int(self.concurrent_slider.value)

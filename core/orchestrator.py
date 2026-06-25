@@ -128,7 +128,12 @@ class Orchestrator:
     async def boot_workers(self):
         """Start work_concurrency worker tasks."""
         n = max(1, min(self.config.work_concurrency, 4))
-        logger.info(f"Starting {n} download workers")
+        mp = self.config.metadata_proxy or "off"
+        dp = self.config.download_proxy or "direct"
+        fb = self.config.download_fallback_to_proxy
+        logger.info(f"Starting {n} download workers | "
+                    f"metadata_proxy={mp} download_proxy={dp} "
+                    f"download_fallback_to_proxy={fb}")
         self._log_concurrency_state("boot_workers")
         tasks = [asyncio.create_task(self.boot_worker()) for _ in range(n)]
         return tasks
