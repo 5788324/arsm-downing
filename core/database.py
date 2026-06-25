@@ -622,3 +622,82 @@ class LibraryVault:
         except Exception as e:
             logging.error(f"Get external works error: {e}")
             return []
+
+    def diagnose_failed_downloads(self) -> dict:
+        """RC7.10: Categorize failed/paused downloads for diagnostic.
+
+        Returns dict with categories and per-error-prefix counts.
+        """
+        import os as _os
+        result = {
+            "failed_total": 0,
+            "failed_resumable_partial_file": 0,
+            "failed_retry_from_zero": 0,
+            "failed_missing_file": 0,
+            "failed_missing_url_or_metadata": 0,
+            "failed_complete_but_db_failed": 0,
+            "paused_resumable": 0,
+            "paused_missing_file": 0,
+            "registered_count": 0,
+            "per_error_prefix": {},
+            "per_root_path": {},
+        }
+
+        # Analyse failed downloads
+        failed_rows = self.conn.execute(
+            "SELECT d.*, w.title as work_title FROM downloads d "
+            "LEFT JOIN works w ON d.rj_id = w.rj_id "
+            "WHERE d.status = 'failed'").fetchall()
+        result["failed_total"] = len(failed_rows)
+
+        for row in failed_rows:
+            lp = row["local_path"]
+            has_file = lp and _os.path.exists(lp)
+            part_path = lp + ".part" if lp else ""
+            has_part_file = part_path and _os.path.exists(part_path)
+            file_size = (_os.path.getsize(lp) if has_file else
+                         _os.path.getsize(part_path) if has_part_file else 0)
+            has_url = bool(row["error"] is None or "url" not in str(row["error"]).lower())
+
+            if (has_file or has_part_file) and file_size > 0 and file_size < (row["total_bytes"] or 1):
+                result["failed_resumable_partial_file"] += 1
+            elif not has_file and not has_part_file:
+                # Check if metadata exists for retry
+                cached = self.get_metadata_cache(row["rj_id"])
+                if cached:
+                    result["failed_retry_from_zero"] += 1
+                else:
+                    result["failed_missing_url_or_metadata"] += 1
+            elif file_size >= (row["total_bytes"] or 0) and row["total_bytes"] > 0:
+                result["failed_complete_but_db_failed"] += 1
+            else:
+                result["failed_missing_file"] += 1
+
+            # Per-error-prefix
+            err = row["error"] or "unknown"
+            prefix = err[:30].split(":")[0].strip()
+            result["per_error_prefix"][prefix] = \
+                result["per_error_prefix"].get(prefix, 0) + 1
+
+            # Per-root-path
+            if lp:
+                root = str(Path(lp).parent.parent) if "/" in lp else str(Path(lp).parent)
+                result["per_root_path"][root] = result["per_root_path"].get(root, 0) + 1
+
+        # Analyse paused
+        paused_rows = self.conn.execute(
+            "SELECT * FROM downloads WHERE status = 'paused'").fetchall()
+        for row in paused_rows:
+            lp = row["local_path"]
+            has_file = lp and _os.path.exists(lp)
+            if has_file:
+                result["paused_resumable"] += 1
+            else:
+                result["paused_missing_file"] += 1
+
+        # Registered count
+        result["registered_count"] = self.conn.execute(
+            "SELECT COUNT(*) FROM downloads WHERE status = 'registered'"
+        ).fetchone()[0]
+
+        return result

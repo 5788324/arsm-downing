@@ -23,6 +23,10 @@ class ToolsView(ft.Container):
                 ft.ElevatedButton("清理无效队列", icon=ft.icons.CLEANING_SERVICES, on_click=self.clean_queue),
             ], spacing=20, wrap=True),
             ft.Row([
+                ft.ElevatedButton("诊断失败任务", icon=ft.icons.BUG_REPORT,
+                    on_click=self.diagnose_failed),
+            ], spacing=20, wrap=True),
+            ft.Row([
                 ft.ElevatedButton("迁移已完成作品", icon=ft.icons.DRIVE_FILE_MOVE,
                     on_click=self.migrate_completed),
             ], spacing=20, wrap=True),
@@ -206,6 +210,41 @@ class ToolsView(ft.Container):
         self.log("  4. 启动程序后执行「扫描仓库」重新索引", "white")
         self.log("")
         self.log("  ⚠ 不要移动含 .part 文件或未完成的任务!", WARNING)
+
+    def diagnose_failed(self, e):
+        """RC7.10: Diagnose failed downloads — categories + write report."""
+        self.log("> 诊断失败下载任务...", "white")
+        db = self.app_controller.db
+        d = db.diagnose_failed_downloads()
+
+        self.log(f"  failed_total: {d['failed_total']}", ERROR)
+        self.log(f"  failed_resumable_partial_file: {d['failed_resumable_partial_file']}", WARNING)
+        self.log(f"  failed_retry_from_zero: {d['failed_retry_from_zero']}", ACCENT_PRIMARY)
+        self.log(f"  failed_missing_file: {d['failed_missing_file']}", "grey")
+        self.log(f"  failed_missing_url_or_metadata: {d['failed_missing_url_or_metadata']}", "grey")
+        self.log(f"  failed_complete_but_db_failed: {d['failed_complete_but_db_failed']}", WARNING)
+        self.log(f"  paused_resumable: {d['paused_resumable']}", SUCCESS)
+        self.log(f"  paused_missing_file: {d['paused_missing_file']}", "grey")
+        self.log(f"  registered_count: {d['registered_count']}", ACCENT_PRIMARY)
+
+        if d["per_error_prefix"]:
+            self.log("  错误前缀分布:", "white")
+            for prefix, cnt in sorted(d["per_error_prefix"].items(), key=lambda x: -x[1])[:10]:
+                self.log(f"    {prefix[:50]}: {cnt}", "grey")
+
+        # Write report
+        try:
+            import os, json, datetime
+            os.makedirs("logs", exist_ok=True)
+            report = dict(d)
+            report["generated_at"] = datetime.datetime.now().isoformat()
+            report["per_error_prefix"] = dict(sorted(
+                d["per_error_prefix"].items(), key=lambda x: -x[1]))
+            with open("logs/failed_diagnosis.txt", "w", encoding="utf-8") as f:
+                json.dump(report, f, indent=2, ensure_ascii=False, default=str)
+            self.log("  ✓ 报告已写入 logs/failed_diagnosis.txt", SUCCESS)
+        except Exception as ex:
+            self.log(f"  ✗ 写入报告失败: {ex}", ERROR)
 
     def run_diagnostic(self, e):
         self.log_area.controls.clear()

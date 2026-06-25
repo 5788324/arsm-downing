@@ -451,17 +451,58 @@ class Orchestrator:
     def resume_all(self):
         """Return paused/queued/failed/partial RJs with pending downloads.
 
-        RC7.9: Include failed downloads that have partial local files (resumable).
+        RC7.10: Classify by status for diagnostic logging.
         Exclude already active/queued.
         """
         rows = self.db.conn.execute(
-            "SELECT DISTINCT rj_id FROM downloads "
+            "SELECT DISTINCT rj_id, status FROM downloads "
             "WHERE status IN ('paused','queued','failed','downloading','resuming')"
         ).fetchall()
-        # Filter out already queued/active
-        result = [row["rj_id"] for row in rows
-                  if row["rj_id"] not in self.queued_rj_ids
-                  and row["rj_id"] not in self.active_tasks]
+
+        # Classify by status
+        counts = {"paused": 0, "failed": 0, "queued": 0,
+                  "downloading": 0, "resuming": 0}
+        seen = set()
+        for row in rows:
+            rj_id = row["rj_id"]
+            st = row["status"]
+            if rj_id in self.queued_rj_ids or rj_id in self.active_tasks:
+                continue
+            if rj_id not in seen:
+                seen.add(rj_id)
+                if st in counts:
+                    counts[st] += 1
+
+        result = list(seen)
+
+        # ── RC7.10: Also scan for failed that are resumable/retryable ──
+        failed_rj = set()
+        retry_from_zero = 0
+        resumable = 0
+        skipped = 0
+        for rj_id in result:
+            dl = self.db.get_downloads_summary(rj_id)
+            if dl.get("failed", 0) > 0:
+                failed_rj.add(rj_id)
+                # Check if this failed RJ can be retried (has metadata cache)
+                if self.db.get_metadata_cache(rj_id):
+                    # Check for partial files
+                    has_partial = any(
+                        dl.get(s, 0) > 0 for s in ("paused", "downloading"))
+                    if has_partial:
+                        resumable += 1
+                    else:
+                        retry_from_zero += 1
+                else:
+                    skipped += 1
+
+        logger.info(
+            f"RESUME_ALL_SCAN paused={counts['paused']} "
+            f"failed={counts['failed']} "
+            f"registered=0 "
+            f"retry_from_zero={retry_from_zero} "
+            f"resumable={resumable} "
+            f"skipped={skipped}")
         logger.info(f"RESUME_ALL_ENQUEUED count={len(result)}")
         if not result:
             logger.info("RESUME_ALL_NONE reason=no_pending_restorable")
@@ -1146,10 +1187,20 @@ class Orchestrator:
                 last_attempt = attempt == self.config.retry_count - 1
                 if last_attempt:
                     self.stats.failed += 1
+                    # ── RC7.10: keep partial file as paused for resume ──
+                    partial_exists = (part_path.exists() and part_path.stat().st_size > 0
+                                      ) or (final_path.exists() and final_path.stat().st_size > 0
+                                            and final_path.stat().st_size < track.size)
+                    final_status = 'paused' if partial_exists else 'failed'
                     self.db.upsert_download(dl_id, meta.rj_id, track.title,
-                                            str(final_path), 'failed', error=str(e))
-                    self._emit_progress(meta.rj_id, track.id or track.title, track.title, 0, track.size, "failed")
-                    logging.error(f"Error downloading {track.title}: {e}", exc_info=True)
+                                            str(final_path), final_status,
+                                            error=str(e))
+                    self._emit_progress(meta.rj_id, track.id or track.title, track.title,
+                                        existing_size if partial_exists else 0,
+                                        track.size, "paused" if partial_exists else "failed")
+                    logging.warning(
+                        f"Download {track.title} {final_status} "
+                        f"(partial_file={partial_exists}): {e}")
                     return False
                 logging.warning(f"Retry {attempt+1}/3 for {track.title}: {e}")
                 existing_size = 0
