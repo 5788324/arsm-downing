@@ -94,7 +94,7 @@ async def test():
 
     # ── Run download_file ──
     print("── 运行 download_file (3 chunks: 150+200+150=500 bytes) ──")
-    result = await orc.download_file(track, meta, None)
+    result = await orc.download_file(track, meta, None, asyncio.Semaphore(3))
 
     orc._stream_with_fallback = original_stream
 

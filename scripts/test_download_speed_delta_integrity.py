@@ -45,7 +45,7 @@ async def test():
         return True, FakeResp(chunks)
     orc._stream_with_fallback = mock_stream
 
-    result = await orc.download_file(track, meta, None)
+    result = await orc.download_file(track, meta, None, asyncio.Semaphore(3))
     assert result is True, f"download_file 应返回 True: {result}"
 
     # Verify events have monotonically increasing downloaded bytes

@@ -66,7 +66,7 @@ async def test():
     # ── Monkeypatch download_file ──
     call_log = []
 
-    async def fake_download(track, meta, cover_path):
+    async def fake_download(track, meta, cover_path, file_sem):
         call_log.append(track.id)
         # t1, t3 succeed; t2 fails
         if track.id == "a2":

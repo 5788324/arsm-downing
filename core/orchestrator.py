@@ -34,7 +34,10 @@ class Orchestrator:
         self.db = db
         self.stats = SessionStats()
         self.speed = SpeedTracker(window_seconds=5.0)
-        self.sem = asyncio.Semaphore(config.file_concurrency)
+        # ── RC7.6: per-RJ semaphore, NOT global ──
+        self._global_inflight = 0
+        self._global_inflight_lock = asyncio.Lock()
+        self._per_rj_inflight: Dict[str, int] = {}
         self.download_queue: asyncio.Queue = asyncio.Queue()
         self.queued_rj_ids: set = set()       # RC7: prevent duplicate enqueue
         self.active_tasks: Dict[str, asyncio.Task] = {}
@@ -761,22 +764,13 @@ class Orchestrator:
     #  download_file — returns bool
     # ══════════════════════════════════════════════
     async def download_file(self, track: TrackItem, meta: WorkMetadata,
-                            cover_path: Optional[Path]) -> bool:
+                            cover_path: Optional[Path],
+                            file_sem: asyncio.Semaphore) -> bool:
         """Download a single file. Returns True on success/skip, False on failure."""
         final_path = track.save_path
         part_path = final_path.with_suffix(final_path.suffix + ".part")
         dl_id = self._make_dl_id(meta.rj_id, track.id or track.title,
                                  track.save_path, track.title)
-
-        # ── RC3.1: start diagnostic log ──
-        import urllib.parse as _up
-        host = _up.urlparse(track.url).hostname or "unknown"
-        is_resume = part_path.exists() or (
-            final_path.exists() and final_path.stat().st_size < track.size)
-        logger.info(
-            f"DOWNLOAD_START rj={meta.rj_id} track={track.title[:50]} "
-            f"host={host} size={track.size} exist={is_resume} "
-            f"path={final_path}")
 
         if sys.platform == "win32" and len(str(final_path.absolute())) > 255:
             stem = self.sanitize(track.title)[:30]
@@ -822,123 +816,161 @@ class Orchestrator:
                                     str(final_path), 'downloading',
                                     existing_size, track.size)
             self._emit_progress(meta.rj_id, track.id or track.title, track.title, existing_size, track.size, "downloading")
-            # ── RC3.1: per-attempt diag ──
+            # ── RC3.1: per-attempt diag (moved inside semaphore RC7.6) ──
             is_resume = existing_size > 0
             rng = f"bytes={existing_size}-" if existing_size else "none"
             d_proxy = self.config.get_proxy_for('download') or "direct"
-            logger.info(
-                f"DOWNLOAD_ATTEMPT rj={meta.rj_id} track={track.title[:40]} "
-                f"attempt={attempt+1}/{self.config.retry_count} "
-                f"resume={is_resume} range={rng} download_proxy={d_proxy}")
             try:
                 headers = {}
                 if existing_size > 0:
                     headers["Range"] = f"bytes={existing_size}-"
 
-                async with self.sem:
+                # ── RC7.6: per-RJ file slot — acquire before any log or request ──
+                async with file_sem:
+                    # Track in-flight
+                    async with self._global_inflight_lock:
+                        self._global_inflight += 1
+                        global_inflight = self._global_inflight
+                    self._per_rj_inflight[meta.rj_id] = \
+                        self._per_rj_inflight.get(meta.rj_id, 0) + 1
+                    work_inflight = self._per_rj_inflight[meta.rj_id]
+
+                    import urllib.parse as _up
+                    host = _up.urlparse(track.url).hostname or "unknown"
+                    is_resume = existing_size > 0
+                    logger.info(
+                        f"FILE_SLOT_ACQUIRE rj={meta.rj_id} "
+                        f"track={track.title[:50]} "
+                        f"host={host} size={track.size} resume={is_resume} "
+                        f"work_inflight={work_inflight} global_inflight={global_inflight} "
+                        f"file_concurrency={self.config.file_concurrency} "
+                        f"work_concurrency={self.config.work_concurrency}")
+                    logger.info(
+                        f"DOWNLOAD_START rj={meta.rj_id} track={track.title[:50]} "
+                        f"host={host} size={track.size} exist={is_resume} "
+                        f"path={final_path}")
+                    logger.info(
+                        f"DOWNLOAD_ATTEMPT rj={meta.rj_id} track={track.title[:40]} "
+                        f"attempt={attempt+1}/{self.config.retry_count} "
+                        f"resume={is_resume} range={rng} download_proxy={d_proxy}")
+
                     success, resp_or_err = await self._stream_with_fallback(
                         track.url, headers)
 
                     if not success:
-                        last_attempt = attempt == self.config.retry_count - 1
-                        if last_attempt:
-                            self.stats.failed += 1
-                            self.db.upsert_download(
-                                dl_id, meta.rj_id, track.title,
-                                str(final_path), 'failed',
-                                error=str(resp_or_err))
-                            self._emit_progress(meta.rj_id, track.id or track.title, track.title,
-                                                existing_size, track.size, "failed")
-                            return False
-                        existing_size = 0  # reset for retry
-                        await asyncio.sleep(
-                                self.config.retry_backoff ** attempt)
-                        continue
-
-                    resp = resp_or_err
-                    try:
-                        if resp.status == 416:
-                            self.stats.skipped += 1
-                            self.db.upsert_download(
-                                dl_id, meta.rj_id, track.title,
-                                str(final_path), 'completed', track.size, track.size)
-                            return True
-
-                        if resp.status not in (200, 206):
-                            last_attempt = attempt == self.config.retry_count - 1
-                            if last_attempt:
-                                self.stats.failed += 1
+                        # Release in-flight before handling error
+                        self._per_rj_inflight[meta.rj_id] = max(
+                            0, self._per_rj_inflight.get(meta.rj_id, 1) - 1)
+                        async with self._global_inflight_lock:
+                            self._global_inflight = max(0, self._global_inflight - 1)
+                    else:
+                        resp = resp_or_err
+                        try:
+                            if resp.status == 416:
+                                self.stats.skipped += 1
                                 self.db.upsert_download(
                                     dl_id, meta.rj_id, track.title,
-                                    str(final_path), 'failed',
-                                    error=f"HTTP {resp.status}")
-                                self._emit_progress(meta.rj_id, track.id or track.title, track.title,
-                                                    existing_size, track.size, "failed")
-                                return False
-                            existing_size = 0
-                            await asyncio.sleep(
-                                self.config.retry_backoff ** attempt)
-                            continue
+                                    str(final_path), 'completed', track.size, track.size)
+                                # release in-flight (will also release below)
+                                self._per_rj_inflight[meta.rj_id] = max(
+                                    0, self._per_rj_inflight.get(meta.rj_id, 1) - 1)
+                                async with self._global_inflight_lock:
+                                    self._global_inflight = max(0, self._global_inflight - 1)
+                                return True
 
-                        is_partial = resp.status == 206
-                        # ── RC3.1: response diagnostic ──
-                        clen = resp.headers.get("Content-Length", "?")
-                        cr = resp.headers.get("Content-Range", "none")
-                        logger.info(
-                            f"DOWNLOAD_RESP rj={meta.rj_id} track={track.title[:40]} "
-                            f"http={resp.status} partial={is_partial} "
-                            f"content_len={clen} content_range={cr}")
-                        if is_partial:
-                            cr = resp.headers.get("Content-Range", "")
-                            m = re.match(r"bytes\s+(\d+)-\d+/(\d+)", cr)
-                            if m and int(m.group(1)) != existing_size:
-                                logging.warning(f"Range mismatch {track.title}")
+                            if resp.status not in (200, 206):
+                                self._per_rj_inflight[meta.rj_id] = max(
+                                    0, self._per_rj_inflight.get(meta.rj_id, 1) - 1)
+                                async with self._global_inflight_lock:
+                                    self._global_inflight = max(0, self._global_inflight - 1)
+                                last_attempt = attempt == self.config.retry_count - 1
+                                if last_attempt:
+                                    self.stats.failed += 1
+                                    self.db.upsert_download(
+                                        dl_id, meta.rj_id, track.title,
+                                        str(final_path), 'failed',
+                                        error=f"HTTP {resp.status}")
+                                    self._emit_progress(meta.rj_id, track.id or track.title, track.title,
+                                                        existing_size, track.size, "failed")
+                                    return False
                                 existing_size = 0
-                                is_partial = False
+                                await asyncio.sleep(
+                                    self.config.retry_backoff ** attempt)
+                                continue
 
-                        mode = "ab" if is_partial else "wb"
-                        target = part_path
-                        if resp.status == 200:
-                            existing_size = 0
-                            mode = "wb"
-                        downloaded = existing_size if is_partial else 0
+                            is_partial = resp.status == 206
+                            clen = resp.headers.get("Content-Length", "?")
+                            cr = resp.headers.get("Content-Range", "none")
+                            logger.info(
+                                f"DOWNLOAD_RESP rj={meta.rj_id} track={track.title[:40]} "
+                                f"http={resp.status} partial={is_partial} "
+                                f"content_len={clen} content_range={cr}")
+                            if is_partial:
+                                cr = resp.headers.get("Content-Range", "")
+                                m = re.match(r"bytes\s+(\d+)-\d+/(\d+)", cr)
+                                if m and int(m.group(1)) != existing_size:
+                                    logging.warning(f"Range mismatch {track.title}")
+                                    existing_size = 0
+                                    is_partial = False
 
-                        async with aiofiles.open(target, mode) as f:
-                            async for chunk in resp.content.iter_chunked(
-                                self.config.chunk_size):
-                                await f.write(chunk)
-                                downloaded += len(chunk)
-                                self.stats.bytes_downloaded += len(chunk)
-                                # Update speed meter with delta_bytes
-                                self.speed.update(
-                                    meta.rj_id, track.id or track.title,
-                                    downloaded, len(chunk))
-                                self._emit_progress(
-                                    meta.rj_id, track.id or track.title, track.title,
-                                    downloaded, track.size, "downloading")
-                    finally:
-                        if not resp.closed:
-                            resp.close()
+                            mode = "ab" if is_partial else "wb"
+                            target = part_path
+                            if resp.status == 200:
+                                existing_size = 0
+                                mode = "wb"
+                            downloaded = existing_size if is_partial else 0
 
-                actual = target.stat().st_size
-                if actual != track.size:
-                    logging.warning(f"Size mismatch {track.title}: {actual} vs {track.size}")
+                            async with aiofiles.open(target, mode) as f:
+                                async for chunk in resp.content.iter_chunked(
+                                    self.config.chunk_size):
+                                    await f.write(chunk)
+                                    downloaded += len(chunk)
+                                    self.stats.bytes_downloaded += len(chunk)
+                                    self.speed.update(
+                                        meta.rj_id, track.id or track.title,
+                                        downloaded, len(chunk))
+                                    self._emit_progress(
+                                        meta.rj_id, track.id or track.title, track.title,
+                                        downloaded, track.size, "downloading")
+                        finally:
+                            if not resp.closed:
+                                resp.close()
 
-                if target == part_path:
-                    os.replace(str(part_path), str(final_path))
+                            # ── Post-download processing ──
+                            actual = target.stat().st_size
+                            if actual != track.size:
+                                logging.warning(f"Size mismatch {track.title}: {actual} vs {track.size}")
 
-                if self.config.tag_audio and track.type == 'audio':
-                    try:
-                        AudioProcessor.apply_tags(final_path, meta, cover_path)
-                    except Exception as e:
-                        logging.warning(f"Tagging failed {final_path}: {e}")
+                            if target == part_path:
+                                os.replace(str(part_path), str(final_path))
 
-                self.stats.success += 1
-                self.db.upsert_download(dl_id, meta.rj_id, track.title,
-                                        str(final_path), 'completed',
-                                        track.size, track.size)
-                self._emit_progress(meta.rj_id, track.id or track.title, track.title, track.size, track.size, "completed")
-                return True
+                            if self.config.tag_audio and track.type == 'audio':
+                                try:
+                                    AudioProcessor.apply_tags(final_path, meta, cover_path)
+                                except Exception as e:
+                                    logging.warning(f"Tagging failed {final_path}: {e}")
+
+                            self.stats.success += 1
+                            self.db.upsert_download(dl_id, meta.rj_id, track.title,
+                                                    str(final_path), 'completed',
+                                                    track.size, track.size)
+                            self._emit_progress(meta.rj_id, track.id or track.title, track.title,
+                                                track.size, track.size, "completed")
+
+                    # ── Release in-flight (normal exit path) ──
+                    self._per_rj_inflight[meta.rj_id] = max(
+                        0, self._per_rj_inflight.get(meta.rj_id, 1) - 1)
+                    work_inflight_after = self._per_rj_inflight.get(meta.rj_id, 0)
+                    async with self._global_inflight_lock:
+                        self._global_inflight = max(0, self._global_inflight - 1)
+                        global_inflight_after = self._global_inflight
+                    logger.info(
+                        f"FILE_SLOT_RELEASE rj={meta.rj_id} "
+                        f"track={track.title[:50]} "
+                        f"work_inflight={work_inflight_after} "
+                        f"global_inflight={global_inflight_after}")
+
+                    return True
 
             except asyncio.CancelledError:
                 self.speed.pause_track(meta.rj_id, track.id or track.title)
@@ -1038,11 +1070,19 @@ class Orchestrator:
 
         self._emit_work_status(rj_id, "Downloading")
 
+        # ── RC7.6: per-RJ semaphore (file_concurrency files per work) ──
+        file_sem = asyncio.Semaphore(self.config.file_concurrency)
+        self._per_rj_inflight[rj_id] = 0
+
         # Gather with return_exceptions to capture CancelledError
         results = await asyncio.gather(
-            *[self.download_file(t, meta, cover_path) for t in targets],
+            *[self.download_file(t, meta, cover_path, file_sem)
+              for t in targets],
             return_exceptions=True
         )
+
+        # Clean up in-flight tracking
+        self._per_rj_inflight.pop(rj_id, None)
 
         # Analyze results
         success_count = 0
