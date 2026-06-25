@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""migration rejects pending downloads."""
 import asyncio
 import shutil
 import sys
@@ -10,16 +9,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 async def test():
-    print(f"\n{'='*60}\n  migration rejects pending\n{'='*60}\n")
+    print(f"\n{'='*60}\n  candidate already under output_dir skipped\n{'='*60}\n")
     import core.database as database_module
     from core.migration import MigrationEngine
     from core.models import WorkMetadata
 
-    base = Path(tempfile.gettempdir()).resolve() / 'tmp_test_pending'
-    src = base / 'src' / 'RJ99803'
+    base = Path(tempfile.gettempdir()).resolve() / 'tmp_hotfix_already'
     target = base / 'target'
+    src = target / 'RJHOTFIX002'
     src.mkdir(parents=True, exist_ok=True)
-    target.mkdir(parents=True, exist_ok=True)
     (src / 't1.mp3').write_bytes(b'x' * 100)
     db_path = base / 'history.db'
     if db_path.exists():
@@ -27,15 +25,16 @@ async def test():
     database_module.DB_FILE = db_path
     db = database_module.LibraryVault()
 
-    rj = 'RJ99803'
-    meta = WorkMetadata(rj_id=rj, title='P', circle='', cv=[], tags=[], price=0, source_url='', dl_count=0, rating=0.0, release_date='', cover_url='')
-    db.register(meta, 100, src, status='completed')
-    db.upsert_download(f'{rj}:t1', rj, 't1', str(src / 't1.mp3'), 'paused', 50, 100)
+    rj = 'RJHOTFIX002'
+    meta = WorkMetadata(rj_id=rj, title='T', circle='', cv=[], tags=[], price=0, source_url='', dl_count=0, rating=0.0, release_date='', cover_url='')
+    db.register(meta, 100, src, status='verified')
+    db.upsert_download(f'{rj}:t1', rj, 't1', str(src / 't1.mp3'), 'registered', 100, 100)
     db.commit()
 
-    cand = MigrationEngine(db).get_candidates(str(target))
-    assert rj not in {c['rj_id'] for c in cand}, cand
-    print('  OK paused rejected')
+    dry = MigrationEngine(db).dry_run(str(target))
+    assert dry['candidate_count'] == 0, dry
+    assert dry['skipped_already_on_target'] == 1, dry
+    print(f"  OK skipped_already_on_target={dry['skipped_already_on_target']}")
 
     shutil.rmtree(base, ignore_errors=True)
     print(f"\n{'='*60}\n  OK passed\n{'='*60}\n")

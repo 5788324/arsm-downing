@@ -3,6 +3,7 @@ from ui.theme import Styles, ACCENT_PRIMARY, SUCCESS, WARNING, ERROR
 import asyncio
 import os
 import time
+from pathlib import Path
 
 class ToolsView(ft.Container):
     def __init__(self, app_controller):
@@ -190,85 +191,127 @@ class ToolsView(ft.Container):
         else:
             asyncio.create_task(_test())
 
+    def resolve_migration_target(self):
+        """Resolve migration target strictly from config.output_dir."""
+        cfg = self.app_controller.config
+        output_dir = getattr(cfg, "output_dir", None)
+        if not output_dir:
+            self.log("  ERROR: output_dir ??????????", ERROR)
+            return None
+
+        target_base = Path(output_dir).expanduser().resolve(strict=False)
+        if not target_base.exists():
+            self.log(f"  ERROR: output_dir ???: {target_base}", ERROR)
+            return None
+
+        source_roots = self.list_migration_source_roots(target_base)
+        self.log(
+            f"  MIGRATION_TARGET_RESOLVED target_base={target_base} "
+            f"source_roots={source_roots}",
+            ACCENT_PRIMARY,
+        )
+        return target_base
+
+    def list_migration_source_roots(self, target_base):
+        cfg = self.app_controller.config
+        roots = []
+        target_norm = str(target_base).lower()
+        for raw in getattr(cfg, "library_paths", []):
+            resolved = str(Path(raw).expanduser().resolve(strict=False))
+            if resolved.lower() == target_norm:
+                continue
+            roots.append(resolved)
+        return roots
+
     def migrate_dry_run(self, e):
-        """RC8.1: Dry-run with source→target display."""
+        """RC8.1-hotfix: Dry-run with fixed output_dir target."""
         from core.migration import MigrationEngine
         db = self.app_controller.db
         engine = MigrationEngine(db)
 
-        # Find best target: explicit MIGRATION_TARGET dir or first non-source library_path
-        paths = getattr(self.app_controller.config, 'library_paths', [])
-        target_base = None
-        for p in paths:
-            if p != str(self.app_controller.config.output_dir):
-                target_base = p
-                break
-        if not target_base and len(paths) >= 2:
-            target_base = paths[-1]
+        target_base = self.resolve_migration_target()
         if not target_base:
-            self.log("  ⚠ 需要先设置目标盘路径(library_paths)", WARNING)
             return
 
-        self.log(f"> 迁移候选扫描 target={target_base}", "white")
-        dry = engine.dry_run(target_base)
-        self.log(f"  MIGRATION_DRY_RUN candidate_count={dry['candidate_count']} "
-                 f"total_size={dry['total_size_mb']}MB", ACCENT_PRIMARY)
+        self.log(f"> ?????? target={target_base}", "white")
+        dry = engine.dry_run(str(target_base))
+        self.log(
+            f"  MIGRATION_DRY_RUN candidate_count={dry['candidate_count']} "
+            f"total_size={dry['total_size_mb']}MB",
+            ACCENT_PRIMARY,
+        )
+        self.log(
+            f"  skipped_already_on_target={dry['skipped_already_on_target']} "
+            f"skipped_target_exists={dry['skipped_target_exists']} "
+            f"skipped_pending={dry['skipped_pending']} "
+            f"skipped_part_file={dry['skipped_part_file']}",
+            "grey",
+        )
 
         if dry["candidate_count"] == 0:
-            self.log("  无可迁移作品", WARNING)
+            self.log("  ??????", WARNING)
             return
 
-        self.log(f"")
+        self.log("")
         for item in dry["candidates"][:20]:
             self.log(
-                f"  {item['rj_id']} [{item['status']}] {item['size_mb']}MB", "white")
+                f"  {item['rj_id']} [{item['status']}] {item['size_mb']}MB",
+                "white",
+            )
             self.log(f"    source: {item['source']}", "grey")
             self.log(f"    target: {item['target']}", ACCENT_PRIMARY)
         if dry["candidate_count"] > 20:
-            self.log(f"  ... 还有 {dry['candidate_count'] - 20} 个", "grey")
+            self.log(f"  ... ?? {dry['candidate_count'] - 20} ?", "grey")
 
         self.log("")
-        self.log("> 使用「执行迁移(N个)」按钮进行真实迁移", ACCENT_PRIMARY)
-        self.log("  ⚠ 请先备份 history.db!", WARNING)
+        self.log("> ???????(N?)?????????", ACCENT_PRIMARY)
+        self.log("  ??: ???? history.db!", WARNING)
 
     def migrate_execute(self, e, batch_limit: int):
-        """RC8.1: Real migration — calls MigrationEngine.migrate_one."""
+        """RC8.1-hotfix: Real migration using config.output_dir."""
         from core.migration import MigrationEngine
         db = self.app_controller.db
         engine = MigrationEngine(db)
 
-        paths = getattr(self.app_controller.config, 'library_paths', [])
-        target_base = None
-        for p in paths:
-            if p != str(self.app_controller.config.output_dir):
-                target_base = p
-                break
-        if not target_base and len(paths) >= 2:
-            target_base = paths[-1]
+        target_base = self.resolve_migration_target()
         if not target_base:
-            self.log("  ⚠ 需要先设置目标盘路径", WARNING)
             return
 
-        candidates = engine.get_candidates(target_base)
-
-        # Check for active/queued RJs
+        candidates = engine.get_candidates(str(target_base))
         orc = self.app_controller.orc
         active_or_queued = orc.queued_rj_ids | set(orc.active_tasks.keys())
-        filtered = [c for c in candidates if c["rj_id"] not in active_or_queued]
 
-        if not filtered:
-            self.log("  无可迁移作品(无pending/active)", WARNING)
+        batch = []
+        for item in candidates:
+            validation = engine.validate_migration_request(
+                item["rj_id"], item["source"], item["target"], str(target_base),
+                active_or_queued=active_or_queued,
+            )
+            if not validation["success"]:
+                self.log(
+                    f"  MIGRATION_REJECT rj={item['rj_id']} reason={validation['reason']}",
+                    WARNING,
+                )
+                continue
+            batch.append(item)
+            if len(batch) >= batch_limit:
+                break
+
+        if not batch:
+            self.log("  ??????(??? active/queued/invalid)", WARNING)
             return
 
-        batch = filtered[:batch_limit]
-        self.log(f"> 准备迁移 {len(batch)} 个作品...", ACCENT_PRIMARY)
-        self.log(f"  ⚠ 请确认已备份 history.db!", WARNING)
+        self.log(f"> ???? {len(batch)} ???...", ACCENT_PRIMARY)
+        self.log("  ??: ?????? history.db!", WARNING)
 
         ok, fail = 0, 0
         for item in batch:
             rj_id = item["rj_id"]
             self.log(f"  MIGRATION_START rj={rj_id}", "white")
-            res = engine.migrate_one(rj_id, item["source"], item["target"])
+            res = engine.migrate_one(
+                rj_id, item["source"], item["target"],
+                target_base=str(target_base), active_or_queued=active_or_queued,
+            )
             if res["success"]:
                 self.log(f"  MIGRATION_COPY_DONE rj={rj_id}", SUCCESS)
                 self.log(f"  MIGRATION_VERIFY_DONE rj={rj_id}", SUCCESS)
@@ -277,50 +320,71 @@ class ToolsView(ft.Container):
                 self.log(f"  MIGRATION_DONE rj={rj_id}", SUCCESS)
                 ok += 1
             else:
-                self.log(f"  MIGRATION_FAIL rj={rj_id} stage={res['stage']} "
-                         f"error={res['error']}", ERROR)
+                if res.get("error") in {
+                    "active_or_queued", "pending_downloads", "source_missing",
+                    "source_under_target_base", "target_not_under_target_base",
+                    "source_equals_target", "part_file_present", "target_exists_nonempty",
+                }:
+                    self.log(
+                        f"  MIGRATION_REJECT rj={rj_id} reason={res['error']}",
+                        WARNING,
+                    )
+                else:
+                    self.log(
+                        f"  MIGRATION_FAIL rj={rj_id} stage={res['stage']} error={res['error']}",
+                        ERROR,
+                    )
                 fail += 1
 
-        self.log(f"  迁移完成: {ok} 成功, {fail} 失败", ACCENT_PRIMARY)
+        self.log(f"  ????: {ok} ??, {fail} ??", ACCENT_PRIMARY)
 
     def verify_migrated(self, e):
-        """RC8.1: Verify a migrated work's paths and integrity."""
+        """RC8.1-hotfix: Verify migrated works against output_dir."""
+        from core.migration import MigrationEngine
+
         db = self.app_controller.db
-        paths = getattr(self.app_controller.config, 'library_paths', [])
-        target_base = paths[-1] if paths else None
+        engine = MigrationEngine(db)
+        target_base = self.resolve_migration_target()
         if not target_base:
-            self.log("  ⚠ 需要先设置目标路径", WARNING)
             return
 
-        self.log("> 验证迁移结果...", "white")
-        # Check works with local_path in target
+        source_roots = self.list_migration_source_roots(target_base)
+        self.log("> ??????...", "white")
         rows = db.conn.execute(
             "SELECT rj_id, local_path, status FROM works "
-            "WHERE local_path LIKE ? AND status IN ('completed','verified')",
-            (f"{target_base}%",)).fetchall()
+            "WHERE status IN ('completed','verified') ORDER BY rj_id"
+        ).fetchall()
 
-        if not rows:
-            self.log("  目标盘无迁移作品", "grey")
+        verified_rows = []
+        for row in rows:
+            local_path = row["local_path"] or ""
+            if local_path and str(local_path).lower().startswith(str(target_base).lower()):
+                verified_rows.append(row)
+
+        if not verified_rows:
+            self.log("  ????????", "grey")
             return
 
         ok, issues = 0, 0
-        for row in rows[:20]:
-            rj = row["rj_id"]; lp = row["local_path"]
-            src_exists = os.path.exists(lp)
-            downloads = db.conn.execute(
-                "SELECT local_path FROM downloads WHERE rj_id=?", (rj,)).fetchall()
-            all_dl_exist = all(os.path.exists(d["local_path"]) for d in downloads)
-            all_under_target = all(d["local_path"].startswith(target_base) for d in downloads)
-
-            if src_exists and all_dl_exist and all_under_target:
-                self.log(f"  ✓ {rj} [{row['status']}] verified", SUCCESS)
+        for row in verified_rows[:20]:
+            result = engine.verify_migrated_work(
+                row["rj_id"], str(target_base), source_roots=source_roots)
+            if result["success"]:
+                self.log(f"  OK {row['rj_id']} [{row['status']}] verified", SUCCESS)
                 ok += 1
             else:
-                self.log(f"  ✗ {rj}: src={src_exists} dl={all_dl_exist} "
-                         f"under_target={all_under_target}", ERROR)
+                self.log(
+                    f"  ERR {row['rj_id']}: work_exists={result['work_exists']} "
+                    f"work_on_target={result['work_on_target']} "
+                    f"missing_downloads={len(result['missing_downloads'])} "
+                    f"downloads_not_on_target={len(result['downloads_not_on_target'])} "
+                    f"source_removed_or_empty={result['source_removed_or_empty']} "
+                    f"part_files_present={result['part_files_present']}",
+                    ERROR,
+                )
                 issues += 1
 
-        self.log(f"  验证: {ok} 通过, {issues} 异常", ACCENT_PRIMARY)
+        self.log(f"  ??: {ok} ??, {issues} ??", ACCENT_PRIMARY)
 
     def diagnose_failed(self, e):
         """RC7.10: Diagnose failed downloads — categories + write report."""

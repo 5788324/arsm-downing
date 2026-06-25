@@ -1,25 +1,26 @@
 #!/usr/bin/env python3
-"""dry-run shows source and target."""
 import asyncio
 import shutil
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 async def test():
-    print(f"\n{'='*60}\n  dry-run shows source + target\n{'='*60}\n")
+    print(f"\n{'='*60}\n  no reverse migration from output to old library\n{'='*60}\n")
     import core.database as database_module
-    from core.migration import MigrationEngine
+    from ui.views.tools_view import ToolsView
     from core.models import WorkMetadata
 
-    base = Path(tempfile.gettempdir()).resolve() / 'tmp_test_dryrun_source_target'
+    base = Path(tempfile.gettempdir()).resolve() / 'tmp_hotfix_reverse'
     target = base / 'target'
-    src = base / 'src' / 'RJ99951'
-    src.mkdir(parents=True, exist_ok=True)
-    target.mkdir(parents=True, exist_ok=True)
+    old1 = base / 'old1'
+    src = target / 'RJHOTFIX007'
+    for p in (target, old1, src):
+        p.mkdir(parents=True, exist_ok=True)
     (src / 't1.mp3').write_bytes(b'x' * 100)
     db_path = base / 'history.db'
     if db_path.exists():
@@ -27,16 +28,25 @@ async def test():
     database_module.DB_FILE = db_path
     db = database_module.LibraryVault()
 
-    rj = 'RJ99951'
+    rj = 'RJHOTFIX007'
     meta = WorkMetadata(rj_id=rj, title='T', circle='', cv=[], tags=[], price=0, source_url='', dl_count=0, rating=0.0, release_date='', cover_url='')
     db.register(meta, 100, src, status='completed')
     db.upsert_download(f'{rj}:t1', rj, 't1', str(src / 't1.mp3'), 'registered', 100, 100)
     db.commit()
 
-    candidates = MigrationEngine(db).get_candidates(str(target))
-    assert len(candidates) == 1, candidates
-    assert 'source' in candidates[0] and 'target' in candidates[0]
-    print(f"  OK {candidates[0]['rj_id']}: source={candidates[0]['source']} target={candidates[0]['target']}")
+    cfg = SimpleNamespace(output_dir=str(target), library_paths=[str(old1), str(target)])
+    ctrl = SimpleNamespace(config=cfg, db=db)
+
+    logs = []
+    tv = object.__new__(ToolsView)
+    tv.app_controller = ctrl
+    tv.log = lambda message, color='white': logs.append(message)
+
+    ToolsView.migrate_dry_run(tv, None)
+    assert any('candidate_count=0' in x for x in logs), logs
+    assert any('skipped_already_on_target=1' in x for x in logs), logs
+    assert not any('target: ' + str(old1) in x for x in logs), logs
+    print('  OK reverse migration blocked in dry-run')
 
     shutil.rmtree(base, ignore_errors=True)
     print(f"\n{'='*60}\n  OK passed\n{'='*60}\n")

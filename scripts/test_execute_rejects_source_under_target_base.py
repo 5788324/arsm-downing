@@ -1,45 +1,40 @@
 #!/usr/bin/env python3
-"""rejects existing nonempty target."""
 import asyncio
-import os
 import shutil
 import sys
-import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 async def test():
-    print(f"\n{'='*60}\n  rejects existing nonempty target\n{'='*60}\n")
-    import core.database as database_module
+    print(f"\n{'='*60}\n  execute rejects source under target base\n{'='*60}\n")
+    from core.database import LibraryVault
     from core.migration import MigrationEngine
     from core.models import WorkMetadata
 
-    base = Path(tempfile.gettempdir()).resolve() / 'tmp_test_existing_target'
-    src = base / 'src' / 'RJ99966'
-    target_base = base / 'target'
-    tgt = target_base / 'RJ99966'
+    base = Path('tmp_hotfix_reject_source').resolve()
+    target = base / 'target'
+    src = target / 'RJHOTFIX003'
+    tgt = target / 'RJHOTFIX003-copy'
     src.mkdir(parents=True, exist_ok=True)
-    tgt.mkdir(parents=True, exist_ok=True)
     (src / 't1.mp3').write_bytes(b'x' * 100)
-    (tgt / 'existing.txt').write_bytes(b'x')
-    db_path = base / 'history.db'
-    if db_path.exists():
-        db_path.unlink()
-    database_module.DB_FILE = db_path
-    db = database_module.LibraryVault()
 
-    rj = 'RJ99966'
+    db = LibraryVault()
+    rj = 'RJHOTFIX003'
     meta = WorkMetadata(rj_id=rj, title='T', circle='', cv=[], tags=[], price=0, source_url='', dl_count=0, rating=0.0, release_date='', cover_url='')
     db.register(meta, 100, src, status='completed')
     db.upsert_download(f'{rj}:t1', rj, 't1', str(src / 't1.mp3'), 'registered', 100, 100)
     db.commit()
 
-    candidates = MigrationEngine(db).get_candidates(str(target_base))
-    assert not any(c['rj_id'] == rj for c in candidates), candidates
-    print('  OK existing nonempty target rejected')
+    result = MigrationEngine(db).validate_migration_request(rj, str(src), str(tgt), str(target))
+    assert not result['success'], result
+    assert result['reason'] == 'source_under_target_base', result
+    print(f"  OK reject reason={result['reason']}")
 
+    db.conn.execute('DELETE FROM works WHERE rj_id=?', (rj,))
+    db.conn.execute('DELETE FROM downloads WHERE rj_id=?', (rj,))
+    db.commit()
     shutil.rmtree(base, ignore_errors=True)
     print(f"\n{'='*60}\n  OK passed\n{'='*60}\n")
     return 0
