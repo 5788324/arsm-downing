@@ -44,6 +44,9 @@ class Orchestrator:
         self.active_tasks: Dict[str, asyncio.Task] = {}
         self.cancelled_rjs: set = set()
         self._shutting_down: bool = False
+        # ── RC7.8: pause/resume lifecycle ──
+        self.global_paused: bool = False
+        self.pause_generation: int = 0
         self.on_progress: Optional[Callable] = None
         self.on_work_status: Optional[Callable] = None
 
@@ -105,27 +108,49 @@ class Orchestrator:
             except asyncio.TimeoutError:
                 continue
 
-            # ── RC7.7: get work data, cleanup if not found ──
+            # ── RC7.8: triple-check before WORKER_START ──
+
+            # Check 1: global_paused
+            if self.global_paused:
+                logger.info(f"WORKER_SKIP rj={rj_id} reason=global_paused")
+                self.queued_rj_ids.discard(rj_id)
+                self._queued_work_data.pop(rj_id, None)
+                self.download_queue.task_done()
+                continue
+
+            # Check 2: still in queued_rj_ids or cancelled
+            if rj_id in self.cancelled_rjs:
+                self.cancelled_rjs.discard(rj_id)
+                self.queued_rj_ids.discard(rj_id)
+                self._queued_work_data.pop(rj_id, None)
+                logger.info(f"WORKER_SKIP rj={rj_id} reason=cancelled")
+                self.download_queue.task_done()
+                continue
+
+            if rj_id not in self.queued_rj_ids:
+                self._queued_work_data.pop(rj_id, None)
+                logger.info(f"WORKER_SKIP rj={rj_id} reason=not_queued")
+                self.download_queue.task_done()
+                continue
+
+            # Check 3: DB status check
+            if not self._is_ready_to_download(rj_id):
+                self.queued_rj_ids.discard(rj_id)
+                self._queued_work_data.pop(rj_id, None)
+                logger.info(f"WORKER_SKIP rj={rj_id} reason=db_status_not_ready")
+                self.download_queue.task_done()
+                continue
+
+            # ── All checks passed: get work data ──
             work_data = self._queued_work_data.pop(rj_id, None)
             self.queued_rj_ids.discard(rj_id)
 
-            if rj_id in self.cancelled_rjs:
-                self.cancelled_rjs.discard(rj_id)
-                self.download_queue.task_done()
-                continue
-
-            # ── RC7.7: pre-flight DB status check ──
-            if not self._is_ready_to_download(rj_id):
-                logger.info(f"WORKER_SKIP rj={rj_id} (paused/completed/cancelled)")
-                self.download_queue.task_done()
-                continue
-
             if not work_data:
-                logger.warning(f"WORKER_SKIP rj={rj_id} (no work_data)")
+                logger.warning(f"WORKER_SKIP rj={rj_id} reason=no_work_data")
                 self.download_queue.task_done()
                 continue
 
-            # ── RC7.4: emit Downloading only when worker actually starts ──
+            # ── WORKER_START ──
             self._emit_work_status(rj_id, "Downloading")
             logger.info(
                 f"WORKER_START rj={rj_id} "
@@ -353,7 +378,21 @@ class Orchestrator:
         return has_pending
 
     def pause_all(self):
-        """Pause all pausable works + drain queue (RC7.7)."""
+        """Pause all pausable works + set global_paused + drain queue (RC7.8)."""
+        self.pause_generation += 1
+        self.global_paused = True
+        gen = self.pause_generation
+
+        queue_before = self.download_queue.qsize()
+        queued_before = len(self.queued_rj_ids)
+        active_before = len(self.active_tasks)
+
+        logger.info(
+            f"PAUSE_ALL_BEGIN generation={gen} "
+            f"queue_size={queue_before} queued_rj_ids={queued_before} "
+            f"active_tasks={active_before}")
+
+        # 1. Pause all queued/downloading works in DB
         rows = self.db.conn.execute(
             "SELECT DISTINCT rj_id FROM downloads "
             "WHERE status IN ('queued','downloading')").fetchall()
@@ -363,13 +402,13 @@ class Orchestrator:
         for r in w_rows:
             if r["rj_id"] not in rj_ids:
                 rj_ids.append(r["rj_id"])
-        logger.info(f"pause_all: affecting {len(rj_ids)} works: {rj_ids}")
+
         for rj_id in rj_ids:
             self.speed.pause_work(rj_id)
             self.pause_job(rj_id)
             self._emit_work_status(rj_id, "Paused")
 
-        # ── RC7.7: drain download_queue (no coroutines!) ──
+        # 2. Drain download_queue
         drained = 0
         while not self.download_queue.empty():
             try:
@@ -380,10 +419,32 @@ class Orchestrator:
                 drained += 1
             except asyncio.QueueEmpty:
                 break
-        # Clear work_data for safety
+
+        # 3. Clear work_data + queued_rj_ids
         self._queued_work_data.clear()
-        if drained:
-            logger.info(f"pause_all: drained {drained} items from download_queue")
+        self.queued_rj_ids.clear()
+
+        # 4. Cancel all active tasks
+        active_cancelled = 0
+        for rj_id, task in list(self.active_tasks.items()):
+            if not task.done():
+                task.cancel()
+                active_cancelled += 1
+
+        logger.info(
+            f"PAUSE_ALL_DRAINED queue_drained={drained} "
+            f"queued_rj_ids_before={queued_before} active_before={active_before}")
+
+        logger.info(
+            f"PAUSE_ALL_CANCELLED active_cancelled={active_cancelled}")
+
+        logger.info(
+            f"PAUSE_ALL_DONE generation={gen} "
+            f"queue_size={self.download_queue.qsize()} "
+            f"queued_rj_ids={len(self.queued_rj_ids)} "
+            f"active_tasks={len(self.active_tasks)} "
+            f"global_paused={self.global_paused}")
+
         return rj_ids
 
     def resume_all(self):
@@ -415,9 +476,12 @@ class Orchestrator:
     async def _resume_all_async(self):
         """Internal: actually resume all paused/queued works.
 
-        RC7.4: Collect stats, log diagnostic summary.
-        Each task emits Queued/No pending/Failed internally.
+        RC7.8: Clear global_paused before resuming.
         """
+        # ── RC7.8: reopen for new work ──
+        self.global_paused = False
+        logger.info(f"RESUME_ALL: global_paused=False generation={self.pause_generation}")
+
         rj_ids = self.resume_all()
         stats = {
             "resumed_to_queue": 0, "already_queued": 0,
