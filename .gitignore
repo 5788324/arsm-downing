@@ -49,3 +49,5 @@ config.local.backup.json
 backup_rc7_1/
 arsm-downing/
 .codex/
+tmp_debug_*/
+tmp_probe_*/
