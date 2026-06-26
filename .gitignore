@@ -48,3 +48,4 @@ tmp_test_*/
 config.local.backup.json
 backup_rc7_1/
 arsm-downing/
+.codex/

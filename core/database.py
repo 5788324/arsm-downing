@@ -577,24 +577,43 @@ class LibraryVault:
             updated = 0
             def _move(conn):
                 nonlocal updated
-                # Update works
+                target_library_path = str(Path(new_path).parent)
+
+                before = conn.total_changes
+                conn.execute(
+                    "DELETE FROM library_index WHERE rj_id = ? AND work_dir = ? AND work_dir != ?",
+                    (rj_id, new_path, old_path))
+                updated += conn.total_changes - before
+
+                before = conn.total_changes
                 conn.execute(
                     "UPDATE works SET local_path = ? WHERE rj_id = ? AND local_path = ?",
                     (new_path, rj_id, old_path))
-                if conn.total_changes > 0:
-                    updated += conn.total_changes
-                # Update downloads
+                updated += conn.total_changes - before
+
+                before = conn.total_changes
                 conn.execute(
                     "UPDATE downloads SET local_path = REPLACE(local_path, ?, ?) "
                     "WHERE rj_id = ? AND local_path LIKE ?",
                     (old_path, new_path, rj_id, f"{old_path}%"))
-                updated += conn.total_changes
-                # Update library_index
+                updated += conn.total_changes - before
+
+                before = conn.total_changes
                 conn.execute(
-                    "UPDATE library_index SET work_dir = ? "
+                    "UPDATE library_index SET work_dir = ?, library_path = ? "
                     "WHERE rj_id = ? AND work_dir = ?",
-                    (new_path, rj_id, old_path))
-                updated += conn.total_changes
+                    (new_path, target_library_path, rj_id, old_path))
+                library_update_delta = conn.total_changes - before
+                updated += library_update_delta
+
+                if library_update_delta == 0:
+                    before = conn.total_changes
+                    conn.execute(
+                        "INSERT OR IGNORE INTO library_index "
+                        "(rj_id, library_path, work_dir, status, scanned_at) "
+                        "VALUES (?, ?, ?, 'found', ?)",
+                        (rj_id, target_library_path, new_path, datetime.now()))
+                    updated += conn.total_changes - before
 
             with self._lock:
                 conn = self._write_conn()

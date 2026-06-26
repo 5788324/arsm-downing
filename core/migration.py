@@ -4,17 +4,49 @@ Two-phase: copy -> verify -> rename -> DB update -> delete source.
 All failures roll back. Never touch pending downloads.
 """
 
+import json
 import logging
 import os
 import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
 logger = logging.getLogger("echovault.migration")
 
 
+def _ensure_migration_log_handler() -> None:
+    """Attach a dedicated migration.log file handler once."""
+    try:
+        log_dir = Path("logs")
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "migration.log"
+        for handler in logger.handlers:
+            if isinstance(handler, logging.FileHandler):
+                try:
+                    if Path(handler.baseFilename).resolve() == log_path.resolve():
+                        return
+                except OSError:
+                    continue
+        file_handler = logging.FileHandler(log_path, encoding="utf-8")
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+        ))
+        logger.addHandler(file_handler)
+        if logger.level == logging.NOTSET or logger.level > logging.INFO:
+            logger.setLevel(logging.INFO)
+    except OSError:
+        pass
+
+
+_ensure_migration_log_handler()
+
+
 class MigrationEngine:
     """Handles safe migration of completed/verified works between disks."""
+
+    CLEANUP_PLAN_FILE = Path("logs/migration_cleanup_plan.jsonl")
 
     def __init__(self, db):
         self.db = db
@@ -43,6 +75,79 @@ class MigrationEngine:
         except OSError:
             return False
         return False
+
+    @classmethod
+    def _dir_stats(cls, path: str) -> tuple:
+        """Return (file_count, total_bytes) for a directory tree."""
+        file_count = 0
+        total_bytes = 0
+        for root, dirs, files in os.walk(path):
+            file_count += len(files)
+            for file_name in files:
+                try:
+                    total_bytes += os.path.getsize(os.path.join(root, file_name))
+                except OSError:
+                    continue
+        return file_count, total_bytes
+
+    @classmethod
+    def get_disk_space_check(
+        cls,
+        target_base: str,
+        planned_size_bytes: int,
+        headroom_ratio: float = 0.1,
+    ) -> dict:
+        """Return target-drive free space readiness for a migration plan."""
+        target_path = cls._resolve_path(target_base)
+        free_bytes = 0
+        if target_path.exists():
+            try:
+                free_bytes = shutil.disk_usage(target_path).free
+            except OSError:
+                free_bytes = 0
+        required_bytes = planned_size_bytes + int(planned_size_bytes * headroom_ratio)
+        return {
+            'target_drive': str(target_path.drive or target_path),
+            'target_base': str(target_path),
+            'free_space_bytes': free_bytes,
+            'free_space_gb': round(free_bytes / 1024 / 1024 / 1024, 2),
+            'planned_size_bytes': planned_size_bytes,
+            'planned_size_gb': round(planned_size_bytes / 1024 / 1024 / 1024, 2),
+            'headroom_ratio': headroom_ratio,
+            'headroom_required_bytes': required_bytes,
+            'headroom_required_gb': round(required_bytes / 1024 / 1024 / 1024, 2),
+            'enough_space': free_bytes >= required_bytes,
+        }
+
+    @classmethod
+    def _load_cleanup_plan(cls) -> dict:
+        """Return cleanup-plan entries keyed by RJ id."""
+        plan = {}
+        if not cls.CLEANUP_PLAN_FILE.exists():
+            return plan
+        try:
+            with open(cls.CLEANUP_PLAN_FILE, 'r', encoding='utf-8') as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    rj_id = entry.get('rj_id')
+                    if rj_id:
+                        plan[rj_id] = entry
+        except OSError:
+            return plan
+        return plan
+
+    @classmethod
+    def _append_cleanup_plan(cls, entry: dict) -> None:
+        """Append one preserved-source entry to the cleanup plan."""
+        cls.CLEANUP_PLAN_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(cls.CLEANUP_PLAN_FILE, 'a', encoding='utf-8') as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + '\n')
 
     def scan_candidates(self, target_base: str) -> dict:
         """Scan migratable works and return candidates plus skip counts."""
@@ -135,7 +240,12 @@ class MigrationEngine:
 
     def dry_run(self, target_base: str) -> dict:
         """Return dry-run stats without modifying anything."""
-        return self.scan_candidates(target_base)
+        dry = self.scan_candidates(target_base)
+        dry['space_check'] = self.get_disk_space_check(
+            target_base,
+            dry['total_size_bytes'],
+        )
+        return dry
 
     def validate_migration_request(
         self,
@@ -175,11 +285,19 @@ class MigrationEngine:
         rj_id: str,
         source: str,
         target: str,
+        delete_source: bool = True,
         target_base: Optional[str] = None,
         active_or_queued: Optional[set] = None,
     ) -> dict:
         """Migrate a single work. Returns dict with success/error/stage."""
-        result = {'rj_id': rj_id, 'success': False, 'stage': '', 'error': ''}
+        result = {
+            'rj_id': rj_id,
+            'success': False,
+            'stage': '',
+            'error': '',
+            'delete_source': delete_source,
+            'cleanup_required': not delete_source,
+        }
         tmp_target = target + '.tmp_migrating'
         logger.info(f"MIGRATION_START rj={rj_id} source={source} target={target}")
 
@@ -232,9 +350,27 @@ class MigrationEngine:
                 return result
             logger.info(f"MIGRATION_DB_UPDATE_DONE rj={rj_id}")
 
-            result['stage'] = 'delete_source'
-            shutil.rmtree(source, ignore_errors=True)
-            logger.info(f"MIGRATION_DELETE_SOURCE_DONE rj={rj_id}")
+            if delete_source:
+                result['stage'] = 'delete_source'
+                shutil.rmtree(source, ignore_errors=True)
+                logger.info(f"MIGRATION_DELETE_SOURCE_DONE rj={rj_id}")
+            else:
+                result['stage'] = 'source_preserved'
+                cleanup_entry = {
+                    'rj_id': rj_id,
+                    'source': source,
+                    'target': target,
+                    'status': 'source_preserved',
+                    'migrated_at': datetime.now().isoformat(),
+                    'verified': True,
+                    'delete_allowed_after_full_verification': True,
+                }
+                self._append_cleanup_plan(cleanup_entry)
+                logger.info(
+                    'MIGRATION_SOURCE_PRESERVED '
+                    f'rj={rj_id} source_preserved=True cleanup_required=True '
+                    f'old_source={source} target={target}'
+                )
 
             result['success'] = True
             logger.info(f"MIGRATION_DONE rj={rj_id}")
@@ -298,24 +434,78 @@ class MigrationEngine:
                 continue
             source_candidates.append(candidate)
 
+        cleanup_entry = self._load_cleanup_plan().get(rj_id)
+        source_preserved = bool(cleanup_entry and cleanup_entry.get('status') == 'source_preserved')
         source_dir_ok = True
+        source_details = []
         for candidate in source_candidates:
             if os.path.isdir(candidate):
-                try:
-                    if os.listdir(candidate):
-                        source_dir_ok = False
-                        break
-                except OSError:
+                file_count, total_bytes = self._dir_stats(candidate)
+                source_details.append({
+                    'path': candidate,
+                    'exists': True,
+                    'file_count': file_count,
+                    'total_bytes': total_bytes,
+                })
+                if not source_preserved and file_count > 0:
                     source_dir_ok = False
                     break
             elif os.path.exists(candidate):
-                source_dir_ok = False
-                break
+                source_details.append({
+                    'path': candidate,
+                    'exists': True,
+                    'file_count': None,
+                    'total_bytes': None,
+                })
+                if not source_preserved:
+                    source_dir_ok = False
+                    break
+            else:
+                source_details.append({
+                    'path': candidate,
+                    'exists': False,
+                    'file_count': 0,
+                    'total_bytes': 0,
+                })
 
         part_files_present = bool(work_path) and self._has_part_files(work_path)
+        target_file_count, target_total_bytes = (0, 0)
+        if work_exists:
+            target_file_count, target_total_bytes = self._dir_stats(work_path)
+
+        preserved_source_ok = True
+        if source_preserved:
+            preserved_source_ok = False
+            for detail in source_details:
+                if detail['exists'] and detail['file_count'] is not None:
+                    if detail['file_count'] == target_file_count and detail['total_bytes'] == target_total_bytes:
+                        preserved_source_ok = True
+                        break
+            if not source_details:
+                preserved_source_ok = False
+
+        library_rows = self.db.conn.execute(
+            'SELECT library_path, work_dir FROM library_index WHERE rj_id=? ORDER BY work_dir',
+            (rj_id,),
+        ).fetchall()
+        library_target_rows = []
+        library_non_target_rows = []
+        for row_item in library_rows:
+            work_dir = row_item['work_dir'] or ''
+            if work_dir and self._is_same_or_under(work_dir, target_base_str):
+                library_target_rows.append(dict(row_item))
+            else:
+                library_non_target_rows.append(dict(row_item))
+        if source_preserved:
+            library_on_target = bool(library_target_rows)
+        else:
+            library_on_target = bool(library_rows) and not library_non_target_rows
+
         success = (
             work_exists and work_on_target and not missing_downloads
-            and not downloads_not_on_target and source_dir_ok and not part_files_present
+            and not downloads_not_on_target and not part_files_present
+            and library_on_target
+            and ((source_preserved and preserved_source_ok) or (not source_preserved and source_dir_ok))
         )
         return {
             'success': success,
@@ -327,7 +517,13 @@ class MigrationEngine:
             'missing_downloads': missing_downloads,
             'downloads_not_on_target': downloads_not_on_target,
             'source_candidates': source_candidates,
+            'source_details': source_details,
             'source_removed_or_empty': source_dir_ok,
+            'source_preserved': source_preserved,
+            'cleanup_plan_entry': cleanup_entry,
+            'cleanup_plan_present': bool(cleanup_entry),
+            'preserved_source_ok': preserved_source_ok,
+            'library_on_target': library_on_target,
             'part_files_present': part_files_present,
         }
 
@@ -352,13 +548,6 @@ class MigrationEngine:
     @staticmethod
     def _verify_dir(src: str, dst: str) -> bool:
         """Verify dst matches src: same file count and total size."""
-        def count_dir(path):
-            fc, tb = 0, 0
-            for root, dirs, files in os.walk(path):
-                fc += len(files)
-                for f in files:
-                    tb += os.path.getsize(os.path.join(root, f))
-            return fc, tb
-        s_fc, s_tb = count_dir(src)
-        d_fc, d_tb = count_dir(dst)
+        s_fc, s_tb = MigrationEngine._dir_stats(src)
+        d_fc, d_tb = MigrationEngine._dir_stats(dst)
         return s_fc == d_fc and s_tb == d_tb

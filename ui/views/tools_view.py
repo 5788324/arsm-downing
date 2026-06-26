@@ -12,6 +12,18 @@ class ToolsView(ft.Container):
         self.expand = True
 
         self.log_area = ft.ListView(expand=True, spacing=5, auto_scroll=True)
+        self.keep_source_mode = True
+        self.delete_source_confirm_pending = False
+        self.keep_source_checkbox = ft.Checkbox(
+            label="\u4fdd\u7559\u6e90\u76ee\u5f55\uff0c\u7a0d\u540e\u7edf\u4e00\u6e05\u7406",
+            value=True,
+            on_change=self._set_keep_source_mode,
+        )
+        self.delete_source_checkbox = ft.Checkbox(
+            label="\u6210\u529f\u540e\u5220\u9664\u6e90\u76ee\u5f55",
+            value=False,
+            on_change=self._set_delete_source_mode,
+        )
 
         self.content = ft.Column([
             ft.Text("实用工具与系统诊断", size=32, weight=ft.FontWeight.BOLD),
@@ -41,6 +53,10 @@ class ToolsView(ft.Container):
                 ft.ElevatedButton("迁移已完成作品", icon=ft.icons.DRIVE_FILE_MOVE,
                     on_click=self.migrate_dry_run),
             ], spacing=20, wrap=True),
+            ft.Row([
+                self.keep_source_checkbox,
+                self.delete_source_checkbox,
+            ], spacing=20, wrap=True),
             ft.Divider(height=20, color="transparent"),
             ft.Row([
                 ft.Text("诊断日志", size=20, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
@@ -52,6 +68,45 @@ class ToolsView(ft.Container):
     def log(self, message: str, color: str = "white"):
         self.log_area.controls.append(ft.Text(message, color=color, size=12, font_family="Consolas"))
         self.log_area.update()
+
+    def _set_keep_source_mode(self, e):
+        self.keep_source_mode = True
+        self.keep_source_checkbox.value = True
+        self.delete_source_checkbox.value = False
+        self.delete_source_confirm_pending = False
+        self.keep_source_checkbox.update()
+        self.delete_source_checkbox.update()
+
+    def _set_delete_source_mode(self, e):
+        delete_mode = bool(self.delete_source_checkbox.value)
+        self.keep_source_mode = not delete_mode
+        self.keep_source_checkbox.value = not delete_mode
+        self.delete_source_confirm_pending = False
+        self.keep_source_checkbox.update()
+        self.delete_source_checkbox.update()
+
+    def current_migration_mode(self) -> str:
+        return "copy_keep_source" if self.keep_source_mode else "move"
+
+    def require_delete_source_confirm(self) -> bool:
+        if self.keep_source_mode:
+            self.delete_source_confirm_pending = False
+            return False
+        if not self.delete_source_confirm_pending:
+            self.delete_source_confirm_pending = True
+            self.log("  WARNING: ??????????????????????????", WARNING)
+            return True
+        self.delete_source_confirm_pending = False
+        return False
+
+    def log_space_check(self, space_check: dict):
+        self.log(
+            f"  target_drive={space_check['target_drive']} free_space={space_check['free_space_gb']}GB "
+            f"planned_size={space_check['planned_size_gb']}GB "
+            f"headroom_required={space_check['headroom_required_gb']}GB "
+            f"enough_space={'yes' if space_check['enough_space'] else 'no'}",
+            SUCCESS if space_check['enough_space'] else WARNING,
+        )
 
     def scan_library(self, e):
         cfg = self.app_controller.config
@@ -196,7 +251,7 @@ class ToolsView(ft.Container):
         cfg = self.app_controller.config
         output_dir = getattr(cfg, "output_dir", None)
         if not output_dir:
-            self.log("  ERROR: output_dir ??????????", ERROR)
+            self.log("  ERROR: output_dir ?????????????", ERROR)
             return None
 
         target_base = Path(output_dir).expanduser().resolve(strict=False)
@@ -224,7 +279,7 @@ class ToolsView(ft.Container):
         return roots
 
     def migrate_dry_run(self, e):
-        """RC8.1-hotfix: Dry-run with fixed output_dir target."""
+        """RC8.4: Dry-run with fixed output_dir target + disk space check."""
         from core.migration import MigrationEngine
         db = self.app_controller.db
         engine = MigrationEngine(db)
@@ -233,7 +288,12 @@ class ToolsView(ft.Container):
         if not target_base:
             return
 
-        self.log(f"> ?????? target={target_base}", "white")
+        self.log(f"> ?????? dry-run target={target_base}", "white")
+        self.log(
+            f"  migration_mode={self.current_migration_mode()} "
+            f"source_will_be_preserved={'yes' if self.keep_source_mode else 'no'}",
+            ACCENT_PRIMARY,
+        )
         dry = engine.dry_run(str(target_base))
         self.log(
             f"  MIGRATION_DRY_RUN candidate_count={dry['candidate_count']} "
@@ -247,9 +307,10 @@ class ToolsView(ft.Container):
             f"skipped_part_file={dry['skipped_part_file']}",
             "grey",
         )
+        self.log_space_check(dry['space_check'])
 
         if dry["candidate_count"] == 0:
-            self.log("  ??????", WARNING)
+            self.log("  ???????", WARNING)
             return
 
         self.log("")
@@ -261,23 +322,31 @@ class ToolsView(ft.Container):
             self.log(f"    source: {item['source']}", "grey")
             self.log(f"    target: {item['target']}", ACCENT_PRIMARY)
         if dry["candidate_count"] > 20:
-            self.log(f"  ... ?? {dry['candidate_count'] - 20} ?", "grey")
+            self.log(f"  ... ?? {dry['candidate_count'] - 20} ???", "grey")
 
         self.log("")
-        self.log("> ???????(N?)?????????", ACCENT_PRIMARY)
-        self.log("  ??: ???? history.db!", WARNING)
+        self.log(
+            f"> mode={self.current_migration_mode()} / copy_keep_source mode source will be preserved={self.keep_source_mode}",
+            ACCENT_PRIMARY,
+        )
+        self.log("  ??: ???? history.db ?????????", WARNING)
 
     def migrate_execute(self, e, batch_limit: int):
-        """RC8.1-hotfix: Real migration using config.output_dir."""
+        """RC8.4: Real migration using config.output_dir with keep-source default."""
         from core.migration import MigrationEngine
         db = self.app_controller.db
         engine = MigrationEngine(db)
+
+        if self.require_delete_source_confirm():
+            return
 
         target_base = self.resolve_migration_target()
         if not target_base:
             return
 
-        candidates = engine.get_candidates(str(target_base))
+        dry = engine.dry_run(str(target_base))
+        self.log_space_check(dry['space_check'])
+        candidates = dry['candidates']
         orc = self.app_controller.orc
         active_or_queued = orc.queued_rj_ids | set(orc.active_tasks.keys())
 
@@ -298,25 +367,34 @@ class ToolsView(ft.Container):
                 break
 
         if not batch:
-            self.log("  ??????(??? active/queued/invalid)", WARNING)
+            self.log("  ???????(??? active/queued/invalid ??)", WARNING)
             return
 
-        self.log(f"> ???? {len(batch)} ???...", ACCENT_PRIMARY)
+        self.log(f"> ???? {len(batch)} ?????...", ACCENT_PRIMARY)
+        self.log(
+            f"  mode={self.current_migration_mode()} copy_keep_source mode source will be preserved={'yes' if self.keep_source_mode else 'no'}",
+            ACCENT_PRIMARY,
+        )
         self.log("  ??: ?????? history.db!", WARNING)
 
         ok, fail = 0, 0
+        delete_source = not self.keep_source_mode
         for item in batch:
             rj_id = item["rj_id"]
             self.log(f"  MIGRATION_START rj={rj_id}", "white")
             res = engine.migrate_one(
                 rj_id, item["source"], item["target"],
+                delete_source=delete_source,
                 target_base=str(target_base), active_or_queued=active_or_queued,
             )
             if res["success"]:
                 self.log(f"  MIGRATION_COPY_DONE rj={rj_id}", SUCCESS)
                 self.log(f"  MIGRATION_VERIFY_DONE rj={rj_id}", SUCCESS)
                 self.log(f"  MIGRATION_DB_UPDATE_DONE rj={rj_id}", SUCCESS)
-                self.log(f"  MIGRATION_DELETE_SOURCE_DONE rj={rj_id}", SUCCESS)
+                if delete_source:
+                    self.log(f"  MIGRATION_DELETE_SOURCE_DONE rj={rj_id}", SUCCESS)
+                else:
+                    self.log(f"  MIGRATION_SOURCE_PRESERVED rj={rj_id}", SUCCESS)
                 self.log(f"  MIGRATION_DONE rj={rj_id}", SUCCESS)
                 ok += 1
             else:
@@ -339,7 +417,7 @@ class ToolsView(ft.Container):
         self.log(f"  ????: {ok} ??, {fail} ??", ACCENT_PRIMARY)
 
     def verify_migrated(self, e):
-        """RC8.1-hotfix: Verify migrated works against output_dir."""
+        """RC8.4: Verify migrated works against output_dir and keep-source plan."""
         from core.migration import MigrationEngine
 
         db = self.app_controller.db
@@ -349,7 +427,7 @@ class ToolsView(ft.Container):
             return
 
         source_roots = self.list_migration_source_roots(target_base)
-        self.log("> ??????...", "white")
+        self.log("> ?????????...", "white")
         rows = db.conn.execute(
             "SELECT rj_id, local_path, status FROM works "
             "WHERE status IN ('completed','verified') ORDER BY rj_id"
@@ -362,7 +440,7 @@ class ToolsView(ft.Container):
                 verified_rows.append(row)
 
         if not verified_rows:
-            self.log("  ????????", "grey")
+            self.log("  ?????????? completed/verified ?????", "grey")
             return
 
         ok, issues = 0, 0
@@ -370,7 +448,8 @@ class ToolsView(ft.Container):
             result = engine.verify_migrated_work(
                 row["rj_id"], str(target_base), source_roots=source_roots)
             if result["success"]:
-                self.log(f"  OK {row['rj_id']} [{row['status']}] verified", SUCCESS)
+                mode_note = 'source_preserved' if result['source_preserved'] else 'source_deleted'
+                self.log(f"  OK {row['rj_id']} [{row['status']}] verified {mode_note}", SUCCESS)
                 ok += 1
             else:
                 self.log(
@@ -379,12 +458,16 @@ class ToolsView(ft.Container):
                     f"missing_downloads={len(result['missing_downloads'])} "
                     f"downloads_not_on_target={len(result['downloads_not_on_target'])} "
                     f"source_removed_or_empty={result['source_removed_or_empty']} "
+                    f"source_preserved={result['source_preserved']} "
+                    f"cleanup_plan_present={result['cleanup_plan_present']} "
+                    f"preserved_source_ok={result['preserved_source_ok']} "
+                    f"library_on_target={result['library_on_target']} "
                     f"part_files_present={result['part_files_present']}",
                     ERROR,
                 )
                 issues += 1
 
-        self.log(f"  ??: {ok} ??, {issues} ??", ACCENT_PRIMARY)
+        self.log(f"  ????: {ok} ??, {issues} ??", ACCENT_PRIMARY)
 
     def diagnose_failed(self, e):
         """RC7.10: Diagnose failed downloads — categories + write report."""
