@@ -1669,6 +1669,101 @@ User selects 10-50 RJs from backlog_list.py output →
   dry-run with backlog_reenable.py --rj ... →
   review preview → execute with --execute →
   then batch-download those RJs via Flet UI
+
+---
+
+## 21. 2026-06-27 RC9.8 selected backlog re-enable
+
+### 日期
+```text
+2026-06-27
+```
+
+### 执行者
+```text
+DeepSeek/OpenCode
+```
+
+### 阶段
+```text
+RC9.8 / selected backlog re-enable and download queue restoration
+```
+
+### 本轮目标
+Select a batch of 30 historical backlog RJs from ignored_backlog, re-enable them to queued status, and verify they appear in the download queue without restoring everything.
+
+### 实际完成
+```text
+1. Preflight: GO — all checks passed.
+2. Backlog list: 184 candidates (92 stale, 92 ignored).
+3. Selected 30 RJs from ignored_backlog (smallest download counts, ~546 rows).
+4. Dry-run: 546 rows, ignored→queued, no completed/works touched — clean.
+5. Execute: 546 rows updated in single transaction.
+   - Backup: raw copy + SQLite .backup() to TEMP
+   - Preimage: 546 rows saved to JSON
+   - Rollback SQL: generated per-row
+   - Integrity: ok → ok
+   - Completed: unchanged (1333)
+   - Works: unchanged
+6. Startup verify: load_queue loaded=31 total_pending=31
+   - 30 re-enabled RJs + 1 existing (RJ01510133)
+   - No accidental full restore
+   - auto_resume=False, passive mode
+7. Postcheck: OK — integrity ok, completed_missing 0
+```
+
+### 结果
+```text
+selected_rj_count:       30
+selected_source:         ignored_backlog (smallest download counts)
+would_update:            546 rows
+executed:                 546 rows updated (30 RJs)
+backup:                   .local_backups/backlog_reenable_20260627_160943/
+rollback:                 backlog_reenable_rollback.sql
+
+downloads_status_before:  completed=1333, ignored=5226, stale=3534, paused=6, queued=0
+downloads_status_after:   completed=1333, ignored=4680, stale=3534, paused=6, queued=546
+stale before/after:       3534 / 3534 (unchanged)
+ignored before/after:     5226 / 4680 (-546, exactly the re-enabled rows)
+completed unchanged:      yes (1333)
+works unchanged:          yes
+integrity:                ok → ok
+```
+
+### 是否改代码
+```text
+no (used existing tool)
+```
+
+### 是否改 DB
+```text
+yes — 546 rows UPDATED (ignored→queued for 30 selected RJs)
+      0 DELETE, 0 works modified, 0 files touched
+```
+
+### 是否删除文件
+```text
+no
+```
+
+### 是否改下载核心
+```text
+no
+```
+
+### 报告路径
+```text
+rc9_8_selected_backlog_reenable_20260627_160802/selected_rjs.txt
+backlog_reenable_20260627_160943/ (backup, preimage, rollback, summary)
+bulk_download_postcheck_20260627_161106/
+```
+
+### 下一步
+```text
+Download this batch of 30 RJs via Flet UI (they are now in the queue).
+After completion → postcheck → re-enable next batch of ~30 from backlog.
+Continue batch-by-batch until backlog is cleared or user stops.
+```
 ```
 ```
 ```
