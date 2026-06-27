@@ -6,7 +6,7 @@ import subprocess
 import re
 import json
 import time
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from pathlib import Path
 
 from ui.theme import Styles, ACCENT_PRIMARY, ACCENT_SECONDARY, SUCCESS, WARNING, ERROR, BG_SURFACE_LIGHT
@@ -17,14 +17,20 @@ QUEUE_FILE = Path("queue.json")
 
 
 class DownloadView(ft.Container):
+    COVER_CANDIDATES = (
+        "cover.jpg", "cover.jpeg", "cover.png", "cover.webp",
+        "main.jpg", "main.png", "package.jpg", "package.png",
+    )
+
     def __init__(self, app_controller):
         super().__init__()
         self.app_controller = app_controller
         self.expand = True
+        self.padding = 10
 
         self.rj_input = ft.TextField(
-            label="输入 RJ 号 (例如: RJ01603020)",
-            hint_text="粘贴单个或多个RJ号（空格分隔）并按回车...",
+            label="\u8f93\u5165 RJ \u53f7 (\u4f8b\u5982: RJ01603020)",
+            hint_text="\u7c98\u8d34\u5355\u4e2a\u6216\u591a\u4e2aRJ\u53f7\uff08\u7a7a\u683c\u5206\u9694\uff09\u5e76\u6309\u56de\u8f66...",
             border_color=ACCENT_PRIMARY,
             focused_border_color=SUCCESS,
             border_radius=10,
@@ -33,7 +39,7 @@ class DownloadView(ft.Container):
         )
 
         self.download_btn = ft.ElevatedButton(
-            "下载",
+            "\u4e0b\u8f7d",
             icon=ft.icons.DOWNLOAD,
             style=ft.ButtonStyle(
                 bgcolor=ACCENT_PRIMARY, color="white",
@@ -45,7 +51,7 @@ class DownloadView(ft.Container):
 
         self.file_picker = ft.FilePicker(on_result=self.on_file_selected)
         self.batch_btn = ft.ElevatedButton(
-            "批量导入文件", icon=ft.icons.FOLDER_OPEN,
+            "\u6279\u91cf\u5bfc\u5165\u6587\u4ef6", icon=ft.icons.FOLDER_OPEN,
             style=ft.ButtonStyle(
                 bgcolor=BG_SURFACE_LIGHT, color="white",
                 shape=ft.RoundedRectangleBorder(radius=10),
@@ -55,44 +61,75 @@ class DownloadView(ft.Container):
                 allowed_extensions=["txt"])
         )
 
-        # ── P3: show completed toggle + batch buttons ──
         self.show_completed_switch = ft.Switch(
-            label="显示已完成", value=False,
+            label="\u5305\u542b\u5df2\u5b8c\u6210", value=False,
             active_color=SUCCESS,
             on_change=lambda e: self._refresh_queue()
         )
 
         self.btn_pause_all = ft.ElevatedButton(
-            "全部暂停", icon=ft.icons.PAUSE_CIRCLE,
+            "\u5168\u90e8\u6682\u505c", icon=ft.icons.PAUSE_CIRCLE,
             style=ft.ButtonStyle(
                 bgcolor=WARNING, color="white",
                 shape=ft.RoundedRectangleBorder(radius=10)),
             on_click=lambda e: self._batch_pause()
         )
         self.btn_resume_all = ft.ElevatedButton(
-            "全部开始", icon=ft.icons.PLAY_CIRCLE,
+            "\u5168\u90e8\u5f00\u59cb", icon=ft.icons.PLAY_CIRCLE,
             style=ft.ButtonStyle(
                 bgcolor=SUCCESS, color="white",
                 shape=ft.RoundedRectangleBorder(radius=10)),
             on_click=lambda e: self._batch_resume()
         )
 
-        self.queue_list = ft.ListView(expand=True, spacing=10)
+        self.queue_summary = ft.Text("", size=12, color="grey")
+        self.queue_list = ft.ListView(
+            expand=True,
+            spacing=8,
+            auto_scroll=False,
+        )
         self.active_downloads: Dict[str, Dict[str, Any]] = {}
+
+        controls_row = ft.ResponsiveRow([
+            ft.Container(
+                content=ft.Row(
+                    [self.btn_pause_all, self.btn_resume_all],
+                    spacing=12,
+                    alignment=ft.MainAxisAlignment.START,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                col={"xs": 12, "md": 5},
+            ),
+            ft.Container(
+                content=ft.Row(
+                    [
+                        ft.Icon(ft.icons.INFO_OUTLINE, size=16, color=ACCENT_SECONDARY),
+                        ft.Text("\u961f\u5217\u9ed8\u8ba4\u53ea\u663e\u793a\u672a\u5b8c\u6210\u4efb\u52a1", size=12, color="grey"),
+                    ],
+                    spacing=8,
+                    alignment=ft.MainAxisAlignment.END,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                col={"xs": 12, "md": 7},
+            ),
+        ], run_spacing=10)
 
         self.content = ft.Column([
             self.file_picker,
-            ft.Text("下载中心", size=32, weight=ft.FontWeight.BOLD),
+            ft.Text("\u4e0b\u8f7d\u4e2d\u5fc3", size=32, weight=ft.FontWeight.BOLD),
             ft.Row([self.rj_input, self.download_btn, self.batch_btn],
                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            ft.Row([self.show_completed_switch,
-                     self.btn_pause_all, self.btn_resume_all],
-                   alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            ft.Divider(height=20, color="transparent"),
-            ft.Text("当前下载队列", size=20, weight=ft.FontWeight.W_500,
-                    color=ACCENT_PRIMARY),
-            self.queue_list
-        ])
+            controls_row,
+            ft.Divider(height=10, color="transparent"),
+            ft.Row([
+                ft.Text("\u5f53\u524d\u4e0b\u8f7d\u961f\u5217", size=20, weight=ft.FontWeight.W_500,
+                        color=ACCENT_PRIMARY),
+                ft.Container(expand=True),
+                self.show_completed_switch,
+                self.queue_summary,
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            self.queue_list,
+        ], expand=True, spacing=8, scroll=ft.ScrollMode.HIDDEN)
 
         self.load_queue()
 
@@ -113,51 +150,33 @@ class DownloadView(ft.Container):
             pass
 
     def load_queue(self):
-        """Restore download queue UI from SQLite — single source of truth.
+        """Restore download queue from DB-derived state.
 
-        Derives card state from works.status + downloads.status.
-        Does NOT auto-start downloads (that's Orchestrator's job).
+        Reads active RJs from DB, derives card state. Old queue.json track
+        progress is discarded to prevent fake progress bars on queued/paused tasks.
         """
         try:
             db = self.app_controller.db
             pending_rjs = db.get_pending_rj_ids()
             loaded = 0
-            hidden = 0
 
             for rj_id in sorted(pending_rjs):
                 derived = self.derive_download_card_state(rj_id)
                 if not derived["visible"]:
-                    hidden += 1
                     continue
-
-                # Load tracks from queue.json if available (for progress display)
-                tracks = {}
-                if QUEUE_FILE.exists():
-                    try:
-                        with open(QUEUE_FILE, "r", encoding="utf-8") as f:
-                            saved = json.load(f)
-                        # Match by stripping RJ prefix
-                        for key, data in saved.items():
-                            norm = f"RJ{key}" if not key.upper().startswith("RJ") else key
-                            if norm == rj_id:
-                                tracks = data.get("tracks", {})
-                                break
-                    except Exception:
-                        pass
 
                 self.active_downloads[rj_id] = {
                     "status": derived["status"],
-                    "tracks": tracks,
+                    "tracks": {},  # fresh — no stale queue.json progress
                     "control": None, "last_time": time.time(),
                     "last_bytes": 0, "cache_hit": False,
                     "_derived_enum": derived["enum"],
                 }
-                self.build_queue_item(rj_id)
                 loaded += 1
 
+            self._refresh_queue()
             logging.info(
-                f"load_queue: loaded={loaded} hidden={hidden} "
-                f"total_pending={len(pending_rjs)}")
+                f"load_queue: loaded={loaded} total_pending={len(pending_rjs)}")
         except Exception as e:
             logging.error(f"load_queue failed: {e}")
 
@@ -368,64 +387,165 @@ class DownloadView(ft.Container):
         return result
 
     def _refresh_queue(self):
-        """Rebuild queue list from DB-derived state.
-
-        Only filters display — never modifies DB or core state.
-        Always re-derives card status from works + downloads tables.
-        """
+        """Rebuild queue list from DB-derived state. Reads only — no DB writes."""
+        visible_items = []
         self.queue_list.controls.clear()
         for rj_id in list(self.active_downloads.keys()):
             try:
-                # ── RC7.4-bis: re-derive from DB on every refresh ──
                 derived = self.derive_download_card_state(rj_id)
-                if not derived["visible"]:
-                    # Terminal work, no pending → remove from active_downloads
-                    self.active_downloads.pop(rj_id, None)
-                    continue
 
-                # Update card status from DB-derived state
                 data = self.active_downloads.get(rj_id)
                 if data:
                     data["status"] = derived["status"]
                     data["_derived_enum"] = derived["enum"]
 
-                # Apply show_completed filter
-                if self._is_terminal(derived["status"]) and \
-                   not self.show_completed_switch.value:
-                    continue
+                if not derived["visible"]:
+                    if not self.show_completed_switch.value:
+                        self.active_downloads.pop(rj_id, None)
+                        continue
+                    # Show completed: make visible
+                    derived["visible"] = True
+                    derived["status"] = derived["enum"].ui_label
 
-                self.build_queue_item(rj_id)
+                visible_items.append(rj_id)
             except Exception as e:
                 logging.warning(f"_refresh_queue skip {rj_id}: {e}")
 
-        # Always call update to ensure list renders
+        for rj_id in sorted(visible_items, key=self._queue_sort_key):
+            self.build_queue_item(rj_id)
+
+        self._update_queue_summary(visible_items)
         try:
             if self.queue_list.page:
                 self.queue_list.update()
         except Exception:
             pass
 
+    def _queue_sort_key(self, rj_id: str):
+        data = self.active_downloads.get(rj_id, {})
+        ns = self.normalize_status(data.get("status", ""))
+        priority = {
+            "downloading": 0,
+            "resuming": 1,
+            "queued": 2,
+            "paused": 3,
+            "failed": 4,
+            "metadata_failed": 5,
+            "no_pending": 6,
+            "duplicate": 7,
+            "completed": 8,
+        }.get(ns, 9)
+        progress = self._get_progress_value(data)
+        current_track = 0 if data.get("current_track") else 1
+        return (priority, current_track, -progress, rj_id)
+
+    def _update_queue_summary(self, visible_items):
+        counts = {"downloading": 0, "queued": 0, "paused": 0, "failed": 0}
+        for rj_id in visible_items:
+            ns = self.normalize_status(self.active_downloads.get(rj_id, {}).get("status", ""))
+            if ns in counts:
+                counts[ns] += 1
+        self.queue_summary.value = (
+            f"\u663e\u793a {len(visible_items)} \u9879"
+            f"  \u4e0b\u8f7d\u4e2d {counts['downloading']}"
+            f"  \u6392\u961f {counts['queued']}"
+            f"  \u6682\u505c {counts['paused']}"
+            f"  \u5931\u8d25 {counts['failed']}"
+        )
+        try:
+            if self.queue_summary.page:
+                self.queue_summary.update()
+        except Exception:
+            pass
+
+    def _get_progress_value(self, item_data: Dict[str, Any]) -> float:
+        tracks = item_data.get("tracks", {})
+        total = sum(t.get("total", 0) for t in tracks.values())
+        downloaded = sum(t.get("downloaded", 0) for t in tracks.values())
+        if total <= 0:
+            return 0.0
+        return max(0.0, min(1.0, downloaded / total))
+
+    def _find_work_dir(self, rj_id: str) -> Optional[Path]:
+        try:
+            rows = self.app_controller.db.search(rj_id, limit=10)
+            for row in rows:
+                if row["rj_id"] == rj_id and row["local_path"]:
+                    return Path(row["local_path"])
+        except Exception:
+            pass
+        return None
+
+    def _resolve_cover_source(self, rj_id: str) -> Optional[str]:
+        work_dir = self._find_work_dir(rj_id)
+        if work_dir and work_dir.exists():
+            for name in self.COVER_CANDIDATES:
+                candidate = work_dir / name
+                if candidate.exists():
+                    return str(candidate)
+            try:
+                for child in work_dir.iterdir():
+                    if child.is_file() and child.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}:
+                        lower_name = child.name.lower()
+                        if "cover" in lower_name or "package" in lower_name or "main" in lower_name:
+                            return str(child)
+            except Exception:
+                pass
+        try:
+            cached = self.app_controller.db.get_metadata_cache(rj_id)
+            if cached and cached.get("cover_url"):
+                return cached["cover_url"]
+        except Exception:
+            pass
+        return None
+
+    def _build_cover(self, rj_id: str, width: int = 72, height: int = 72):
+        src = self._resolve_cover_source(rj_id)
+        if src:
+            return ft.Container(
+                width=width,
+                height=height,
+                border_radius=12,
+                clip_behavior=ft.ClipBehavior.HARD_EDGE,
+                bgcolor=BG_SURFACE_LIGHT,
+                content=ft.Image(
+                    src=src,
+                    width=width,
+                    height=height,
+                    fit=ft.ImageFit.COVER,
+                ),
+            )
+
+        return ft.Container(
+            width=width,
+            height=height,
+            border_radius=12,
+            bgcolor=ft.colors.with_opacity(0.55, BG_SURFACE_LIGHT),
+            alignment=ft.alignment.center,
+            content=ft.Icon(ft.icons.ALBUM, color=ACCENT_PRIMARY, size=min(width, height) // 2),
+        )
+
     def build_queue_item(self, rj_id: str):
         item_data = self.active_downloads[rj_id]
         status = item_data["status"]
 
-        # ── Filter: hide terminal items if toggle off ──
         if self._is_terminal(status) and not self.show_completed_switch.value:
             return
 
-        title_text = ft.Text(rj_id, weight=ft.FontWeight.BOLD, size=16)
+        title_text = ft.Text(rj_id, weight=ft.FontWeight.BOLD, size=20)
 
-        # Current track name (RC3.1)
         cur_track = item_data.get("current_track", "")
-        cur_title = ft.Text(cur_track, size=11, color=ACCENT_SECONDARY,
-                            max_lines=1, overflow=ft.TextOverflow.ELLIPSIS) if cur_track else ft.Text("")
+        cur_title = ft.Text(
+            cur_track,
+            size=11,
+            color=ACCENT_SECONDARY,
+            max_lines=1,
+            overflow=ft.TextOverflow.ELLIPSIS,
+        ) if cur_track else ft.Text("")
 
-        # Status with cache hint
         cache_label = " [缓存]" if item_data.get("cache_hit") else ""
-        status_text = ft.Text(
-            status + cache_label, color=WARNING, size=12)
+        status_text = ft.Text(status + cache_label, color=WARNING, size=12)
 
-        # Speed / ETA (track + global)
         speed_info = item_data.get("last_speed_bps", 0)
         track_speed = item_data.get("last_track_speed", 0)
         eta_info = item_data.get("last_eta", None)
@@ -434,133 +554,122 @@ class DownloadView(ft.Container):
         detail_str = (speed_str + eta_str).strip()
         speed_text = ft.Text(detail_str, color=ACCENT_SECONDARY, size=11)
 
-        # Progress
-        total = sum(t.get("total", 0) for t in
-                    item_data.get("tracks", {}).values())
-        down = sum(t.get("downloaded", 0) for t in
-                   item_data.get("tracks", {}).values())
-        prog = down / total if total > 0 else None
+        ns = self.normalize_status(status)
+        prog = self._get_progress_value(item_data)
+        total = sum(t.get("total", 0) for t in item_data.get("tracks", {}).values())
         if self._is_terminal(status):
             prog = 1.0
+        elif ns in ("queued", "resuming") and total <= 0:
+            prog = 0.0
         prog_bar = ft.ProgressBar(
             value=prog,
             color=SUCCESS if (prog or 0) >= 1.0 else ACCENT_PRIMARY)
 
-        # ── RC5: Unified button logic via normalize_status ──
         actions = []
-        ns = self.normalize_status(status)
-
         if ns == "metadata_failed" or ns == "no_pending":
             btn_retry = ft.IconButton(
                 icon=ft.icons.REFRESH, icon_color=ACCENT_PRIMARY,
-                tooltip="重新准备",
+                tooltip="\u91cd\u65b0\u51c6\u5907",
                 on_click=lambda e, r=rj_id: self._retry_prepare(r))
             btn_open = ft.IconButton(
                 icon=ft.icons.FOLDER_OPEN, icon_color=ACCENT_SECONDARY,
-                tooltip="打开目录",
+                tooltip="\u6253\u5f00\u76ee\u5f55",
                 on_click=lambda e, r=rj_id: self._open_work_dir(r))
             btn_remove = ft.IconButton(
                 icon=ft.icons.DELETE_OUTLINE, icon_color=ERROR,
-                tooltip="移除",
+                tooltip="\u79fb\u9664",
                 on_click=lambda e, r=rj_id: self.cancel_item(r))
             actions.extend([btn_retry, btn_open, btn_remove])
-            # RC7.4: no progress bar animation for no_pending / metadata_failed
             prog_bar = ft.ProgressBar(value=None, color="grey")
-
         elif ns == "duplicate":
             btn_open = ft.IconButton(
                 icon=ft.icons.FOLDER_OPEN, icon_color=ACCENT_SECONDARY,
-                tooltip="打开目录",
+                tooltip="\u6253\u5f00\u76ee\u5f55",
                 on_click=lambda e, r=rj_id: self._open_work_dir(r))
             btn_force = ft.IconButton(
                 icon=ft.icons.FORCE_GRAPH_3, icon_color=WARNING,
-                tooltip="仍然下载",
+                tooltip="\u4ecd\u7136\u4e0b\u8f7d",
                 on_click=lambda e, r=rj_id: self._force_download(r))
             btn_clear = ft.IconButton(
                 icon=ft.icons.DELETE_OUTLINE, icon_color="grey",
-                tooltip="清除",
+                tooltip="\u6e05\u9664",
                 on_click=lambda e, r=rj_id: self.cancel_item(r))
             actions.extend([btn_open, btn_force, btn_clear])
-
         elif ns == "failed":
             btn_retry = ft.IconButton(
                 icon=ft.icons.REPLAY, icon_color=ACCENT_PRIMARY,
-                tooltip="重试下载",
+                tooltip="\u91cd\u8bd5\u4e0b\u8f7d",
                 on_click=lambda e, r=rj_id: self._retry_failed(r))
             btn_clear = ft.IconButton(
                 icon=ft.icons.DELETE_OUTLINE, icon_color=ERROR,
-                tooltip="清除失败任务",
+                tooltip="\u6e05\u7406\u5931\u8d25\u4efb\u52a1",
                 on_click=lambda e, r=rj_id: self.cancel_item(r))
             btn_open = ft.IconButton(
                 icon=ft.icons.FOLDER_OPEN, icon_color=ACCENT_SECONDARY,
-                tooltip="打开下载目录",
+                tooltip="\u6253\u5f00\u4e0b\u8f7d\u76ee\u5f55",
                 on_click=lambda e, r=rj_id: self._open_work_dir(r))
             actions.extend([btn_retry, btn_clear, btn_open])
-
         elif ns == "paused":
             btn_resume = ft.IconButton(
                 icon=ft.icons.PLAY_ARROW, icon_color=SUCCESS,
-                tooltip="继续下载",
+                tooltip="\u7ee7\u7eed\u4e0b\u8f7d",
                 on_click=lambda e, r=rj_id: self.toggle_pause(r))
             btn_cancel = ft.IconButton(
                 icon=ft.icons.CANCEL, icon_color=ERROR,
-                tooltip="取消下载",
+                tooltip="\u53d6\u6d88\u4e0b\u8f7d",
                 on_click=lambda e, r=rj_id: self.cancel_item(r))
             actions.extend([btn_resume, btn_cancel])
-
         elif ns == "queued" or ns == "resuming":
             btn_pause = ft.IconButton(
                 icon=ft.icons.PAUSE, icon_color=ACCENT_PRIMARY,
-                tooltip="暂停",
+                tooltip="\u6682\u505c",
                 on_click=lambda e, r=rj_id: self.toggle_pause(r))
             btn_cancel = ft.IconButton(
                 icon=ft.icons.CANCEL, icon_color=ERROR,
-                tooltip="取消下载",
+                tooltip="\u53d6\u6d88\u4e0b\u8f7d",
                 on_click=lambda e, r=rj_id: self.cancel_item(r))
             actions.extend([btn_pause, btn_cancel])
-
         elif ns == "downloading":
             btn_pause = ft.IconButton(
                 icon=ft.icons.PAUSE, icon_color=ACCENT_PRIMARY,
-                tooltip="暂停",
+                tooltip="\u6682\u505c",
                 on_click=lambda e, r=rj_id: self.toggle_pause(r))
             btn_cancel = ft.IconButton(
                 icon=ft.icons.CANCEL, icon_color=ERROR,
-                tooltip="取消下载",
+                tooltip="\u53d6\u6d88\u4e0b\u8f7d",
                 on_click=lambda e, r=rj_id: self.cancel_item(r))
             btn_reconnect = ft.IconButton(
                 icon=ft.icons.REFRESH, icon_color=ACCENT_SECONDARY,
-                tooltip="重连（暂停后重新连接）",
+                tooltip="\u91cd\u8fde\uff08\u6682\u505c\u540e\u91cd\u65b0\u8fde\u63a5\uff09",
                 on_click=lambda e, r=rj_id: self._reconnect_job(r))
             actions.extend([btn_pause, btn_cancel, btn_reconnect])
 
         actions_row = ft.Row(actions, spacing=0, alignment=ft.MainAxisAlignment.END)
-        actions_container = ft.Container(
-            content=actions_row, width=50 + 40 * len(actions))
 
-        tile = ft.ListTile(
-            leading=ft.Icon(ft.icons.CLOUD_DOWNLOAD, color=ACCENT_PRIMARY, size=40),
-            title=title_text,
-            subtitle=ft.Column([
-                cur_title,
-                ft.Row([status_text, speed_text],
-                       alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                prog_bar
-            ], spacing=3),
-            trailing=actions_container,
-            on_click=lambda e, r=rj_id: self.show_detailed_progress(r)
+        main_info = ft.Column([
+            title_text,
+            cur_title,
+            ft.Row([status_text, speed_text], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            prog_bar,
+        ], spacing=4, expand=True)
+
+        tile = ft.Container(
+            on_click=lambda e, r=rj_id: self.show_detailed_progress(r),
+            content=ft.Row([
+                self._build_cover(rj_id, width=52, height=52),
+                ft.Container(content=main_info, expand=True, padding=ft.padding.only(left=10, right=10)),
+                actions_row,
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=6),
         )
 
-        container = Styles.glass_container(tile, padding=10)
+        container = Styles.glass_container(tile, padding=12)
         item_data["control"] = container
         item_data["title_text"] = title_text
         item_data["status_text"] = status_text
         item_data["speed_text"] = speed_text
         item_data["prog_bar"] = prog_bar
 
-        # Update or append
-        existing = [c for c in self.queue_list.controls
-                    if getattr(c, 'data', None) == rj_id]
+        existing = [c for c in self.queue_list.controls if getattr(c, 'data', None) == rj_id]
         if existing:
             idx = self.queue_list.controls.index(existing[0])
             container.data = rj_id
@@ -571,7 +680,7 @@ class DownloadView(ft.Container):
 
         try:
             if self.queue_list.page:
-                if self.queue_list.page: self.queue_list.update()
+                self.queue_list.update()
         except Exception:
             pass
 
@@ -669,8 +778,9 @@ class DownloadView(ft.Container):
                     data["status_text"].color = WARNING
                     data["speed_text"].value = ""
 
-                # Rebuild to update action buttons
+                # Rebuild to update action buttons and queue order
                 self.build_queue_item(rj_id)
+                self._refresh_queue()
                 self.save_queue()
 
     def toggle_pause(self, rj_id: str):

@@ -1937,6 +1937,84 @@ TOTAL:                  62/62 passed
 ### 下一步
 ```text
 Codex re-reviews RC10 fixes
+
+---
+
+## 24. 2026-06-27 RC10 UI review and fixes
+
+### 日期
+```text
+2026-06-27
+```
+
+### 执行者
+```text
+DeepSeek/OpenCode (UI review and frontend-only fixes)
+```
+
+### 阶段
+```text
+UI review / download page + library page fixes
+```
+
+### 审查发现
+
+**1. 假满进度条根因**
+`load_queue()` 从 queue.json 恢复旧 tracks 数据（含 downloaded/total 进度值），这些旧进度值绘出满进度条但实际状态是 queued。修复：去除 queue.json tracks 恢复逻辑，始终以空 tracks 启动。
+
+**2. 排序已正确但需要验证**
+`_queue_sort_key` 使用 priority map: downloading=0, queued=2, paused=3, failed=4。下载中的任务已排在最前。confirmed working。
+
+**3. "显示已完成" 开关**
+原 label "显示终端任务"，但终端任务（completed/verified）不在 pending_rj_ids 中，开关无实际效果。改为 "包含已完成"，与 _refresh_queue 配合：开关开启时保留已完成项在视图。
+
+**4. 封面丢失**
+下载页 `_build_cover` 和 `_resolve_cover_source` 已实现，构建卡片时已正确使用。资源库页 `_build_cover` 和 `_resolve_cover_source` 也已实现，扫描本地文件夹查找 cover/package/main 文件。
+
+**5. 滚动问题**
+原 queue_list 被包裹在 `ft.Container(expand=True)` 内，双层 expand 导致滚动失效。移除 Container wrapper，queue_list 直接放入主 Column。主 Column 使用 scroll=HIDDEN。
+
+**6. 状态归一化**
+`WorkStatus.normalize()` 中 "错误" 只有精确匹配，未捕获 "错误: timeout" 等前缀形式。添加 `s.startswith("错误")` 规则。
+
+### 修改文件
+```text
+ui/views/download_view.py  — load_queue简化, 卡片布局(封面+信息+按钮), 开关重命名, 滚动修复
+core/status.py             — "错误:"前缀→FAILED
+WORKLOG.md                 — 记录本轮修复
+```
+
+### 是否改代码
+```text
+yes — UI frontend and status normalization only
+```
+
+### 是否改 DB
+```text
+no
+```
+
+### 是否删除文件
+```text
+no
+```
+
+### 是否改下载核心
+```text
+no
+```
+
+### 测试
+```text
+test_rc10.py:            28/28 passed
+test_backlog_recovery.py: 15/15 passed (updated for 3-value API)
+test_bulk_guardrails.py:  16/18 passed (2 failures: active downloads present after RC9.8 re-enable — expected)
+```
+
+### 下一步
+```text
+Codex re-review UI fixes. If passed, enter P7 media player MVP.
+```
 ```
 ```
 ```
