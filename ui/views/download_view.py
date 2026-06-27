@@ -615,12 +615,43 @@ class DownloadView(ft.Container):
 
         actions_row = ft.Row(actions, spacing=0, alignment=ft.MainAxisAlignment.END)
 
+        # Build per-file progress list from tracks data
+        tracks = item_data.get("tracks", {})
+        track_items = []
+        showing_count = 0
+        for tname, tdata in sorted(tracks.items()):
+            if showing_count >= 8:
+                track_items.append(ft.Text(f"  ... and {len(tracks)-8} more", size=10, color="grey"))
+                break
+            t_total = tdata.get("total", 0)
+            t_dl = tdata.get("downloaded", 0)
+            t_pct = t_dl / t_total if t_total > 0 else 0
+            t_color = SUCCESS if t_pct >= 1.0 else ACCENT_PRIMARY
+            short_name = tname[:35] + ".." if len(tname) > 35 else tname
+            track_items.append(ft.Column([
+                ft.Row([
+                    ft.Text(short_name, size=10, color=ACCENT_SECONDARY, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                    ft.Text(f"{t_pct*100:.0f}%", size=10, color="grey"),
+                ], spacing=6, alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                ft.ProgressBar(value=t_pct, color=t_color, bar_height=3),
+            ], spacing=1))
+            showing_count += 1
+
+        # If no tracks yet, show status+speed row
+        if not track_items:
+            track_items = [
+                ft.Row([status_text, speed_text], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                prog_bar,
+            ]
+        else:
+            # Add status+speed+overall bar below track items
+            track_items.append(ft.Row([status_text, speed_text], alignment=ft.MainAxisAlignment.SPACE_BETWEEN))
+            track_items.append(prog_bar)
+
         main_info = ft.Column([
             title_text,
-            cur_title,
-            ft.Row([status_text, speed_text], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            prog_bar,
-        ], spacing=4, expand=True)
+            *track_items,
+        ], spacing=2, expand=True)
 
         tile = ft.Container(
             on_click=lambda e, r=rj_id: self.show_detailed_progress(r),
@@ -889,68 +920,17 @@ class DownloadView(ft.Container):
         data["last_track_speed"] = event.track_speed_bps
         data["last_eta"] = event.eta_seconds
 
-        # Throttle: max 3 UI updates per second to prevent freeze
+        # Throttle: rebuild card at most every 0.3s
         last_ui = data.get("_last_ui_update", 0)
         if now - last_ui < 0.3:
             return
         data["_last_ui_update"] = now
 
-        # ── RC7.3: paused items — update data ONLY, no visual animation ──
-        ui_status = data.get("status", "")
-        is_paused = (
-            ui_status in ("已暂停", "Paused (partial)") or
-            ui_status.startswith("Paused") or
-            "paused" in str(ui_status).lower())
-
-        if is_paused:
-            # Update downloaded/total in data but NOT visual controls
-            # The progress bar stays at last known static value
-            # Speed stays at 0 / empty
-            if "speed_text" in data:
-                data["speed_text"].value = ""
-                try:
-                    data["speed_text"].update()
-                except Exception:
-                    pass
-            return
-
-        total_bytes = sum(t["total"] for t in data["tracks"].values())
-        downloaded_bytes = sum(t["downloaded"] for t in data["tracks"].values())
-
-        if total_bytes > 0:
-            prog = downloaded_bytes / total_bytes
-            if "prog_bar" in data:
-                data["prog_bar"].value = prog
-
-            # Display core-calculated speed
-            if data.get("status") == "下载中":
-                gbps = event.global_speed_bps
-                if "speed_text" in data:
-                    if gbps > 0:
-                        eta = event.eta_seconds
-                        speed_str = f"{gbps/1024/1024:.2f} MB/s"
-                        if eta:
-                            speed_str += f" ETA {eta:.0f}s"
-                        data["speed_text"].value = speed_str
-                    else:
-                        data["speed_text"].value = "连接中..."
-                    try:
-                        data["speed_text"].update()
-                    except Exception:
-                        pass
-            elif data.get("status") in ("队列排队中", "队列中"):
-                if "speed_text" in data:
-                    data["speed_text"].value = ""
-                    try:
-                        data["speed_text"].update()
-                    except Exception:
-                        pass
-
-            try:
-                if "prog_bar" in data:
-                    data["prog_bar"].update()
-            except Exception:
-                pass
+        # Rebuild card to refresh per-file progress bars
+        try:
+            self.build_queue_item(rj_id)
+        except Exception:
+            pass
 
         if hasattr(self, "current_dialog_rj") and \
            self.current_dialog_rj == rj_id:
