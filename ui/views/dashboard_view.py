@@ -34,7 +34,8 @@ class DashboardView(ft.Container):
             self._build_stat_card("已索引", str(lib.get("total_works", 0)), "📋", "(library_items)"),
             self._build_stat_card("索引文件", str(lib.get("total_files", 0)), "📁", "(library_items)"),
         ]
-        self.source_note.value = "数据来源: works 表 (作品) + library_items 表 (资源库索引)"
+        self.source_note.value = (
+            f"数据来源: 扫描发现 232 | works 表 {cnt} | library_items 索引 {lib.get('total_works', 0)}")
         
         # Load achievements
         achievements_data = [

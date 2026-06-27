@@ -37,45 +37,55 @@ class ToolsView(ft.Container):
         )
 
         self.content = ft.Column([
-            ft.Text("实用工具与系统诊断", size=32, weight=ft.FontWeight.BOLD),
-            ft.Text("系统工具", size=20, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
+            ft.Text("系统工具", size=28, weight=ft.FontWeight.BOLD),
+
+            # ── 诊断 ──
+            ft.Text("诊断", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
             ft.Row([
-                ft.ElevatedButton("修复数据库", icon=ft.icons.STORAGE, on_click=self.repair_db),
-                ft.ElevatedButton("清理缓存", icon=ft.icons.DELETE_SWEEP, on_click=self.clear_cache),
+                ft.ElevatedButton("运行一键诊断", icon=ft.icons.HEALTH_AND_SAFETY, on_click=self.run_diagnostic),
                 ft.ElevatedButton("测试网络", icon=ft.icons.NETWORK_CHECK, on_click=self.test_network),
-                ft.ElevatedButton("扫描仓库", icon=ft.icons.FOLDER_SPECIAL, on_click=self.scan_library),
-                ft.ElevatedButton("清理无效队列", icon=ft.icons.CLEANING_SERVICES, on_click=self.clean_queue),
-            ], spacing=20, wrap=True),
+            ], spacing=12, wrap=True),
+
+            # ── 仓库与元数据 ──
+            ft.Text("仓库与元数据", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
             ft.Row([
-                ft.ElevatedButton("诊断失败任务", icon=ft.icons.BUG_REPORT,
-                    on_click=self.diagnose_failed),
-                ft.ElevatedButton("迁移候选扫描", icon=ft.icons.FIND_IN_PAGE,
-                    on_click=self.migrate_dry_run),
-            ], spacing=20, wrap=True),
+                ft.ElevatedButton("扫描仓库", icon=ft.icons.FOLDER_SPECIAL, on_click=self.scan_library,
+                    tooltip="扫描 library_paths 中的 RJ 目录并更新 library_index"),
+                ft.ElevatedButton("诊断失败任务", icon=ft.icons.BUG_REPORT, on_click=self.diagnose_failed,
+                    tooltip="分析 downloads 中 failed 状态的错误分类"),
+            ], spacing=12, wrap=True),
+
+            # ── 迁移 ──
+            ft.Text("迁移", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
             ft.Row([
-                ft.ElevatedButton("执行迁移(1个)", icon=ft.icons.PLAY_ARROW,
-                    on_click=lambda e: self.migrate_execute(e, 1)),
-                ft.ElevatedButton("执行迁移(3个)", icon=ft.icons.FAST_FORWARD,
-                    on_click=lambda e: self.migrate_execute(e, 3)),
-                ft.ElevatedButton("验证迁移", icon=ft.icons.VERIFIED_USER,
-                    on_click=self.verify_migrated),
-            ], spacing=20, wrap=True),
-            ft.Row([
-                ft.ElevatedButton("迁移已完成作品", icon=ft.icons.DRIVE_FILE_MOVE,
-                    on_click=self.migrate_dry_run),
-            ], spacing=20, wrap=True),
+                ft.ElevatedButton("迁移已完成作品", icon=ft.icons.DRIVE_FILE_MOVE, on_click=self.migrate_dry_run,
+                    tooltip="扫描 completed/verified 作品迁移到 output_dir"),
+                ft.ElevatedButton("验证迁移", icon=ft.icons.VERIFIED_USER, on_click=self.verify_migrated),
+            ], spacing=12, wrap=True),
             ft.Row([
                 self.keep_source_checkbox,
                 self.delete_source_checkbox,
-            ], spacing=20, wrap=True),
-            ft.Divider(height=20, color="transparent"),
+            ], spacing=12, wrap=True),
+
+            # ── 队列清理 ──
+            ft.Text("队列清理", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
             ft.Row([
-                ft.Text("诊断日志", size=20, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
-                ft.ElevatedButton("运行一键诊断", icon=ft.icons.HEALTH_AND_SAFETY, on_click=self.run_diagnostic)
-            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            Styles.glass_container(self.log_area, padding=10),
-            ft.Divider(height=20, color="transparent"),
-            ft.Text("Backlog - 历史任务恢复", size=20, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
+                ft.ElevatedButton("清理无效队列", icon=ft.icons.CLEANING_SERVICES, on_click=self.clean_queue,
+                    tooltip="清理 queue.json 中无效/已完成的任务记录"),
+            ], spacing=12, wrap=True),
+
+            # ── 缓存/数据库 ──
+            ft.Text("缓存与数据库", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
+            ft.Row([
+                ft.ElevatedButton("压缩数据库(VACUUM)", icon=ft.icons.STORAGE, on_click=self.repair_db,
+                    tooltip="执行 VACUUM 压缩 SQLite 数据库文件"),
+                ft.ElevatedButton("清理元数据缓存", icon=ft.icons.DELETE_SWEEP, on_click=self.clear_cache,
+                    tooltip="清理过期的 metadata_cache 条目（7 天以上）"),
+            ], spacing=12, wrap=True),
+
+            # ── Backlog ──
+            ft.Divider(height=10, color="transparent"),
+            ft.Text("历史任务恢复", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
             self.backlog_summary,
             ft.Row([
                 self.backlog_source,
@@ -84,7 +94,12 @@ class ToolsView(ft.Container):
                 ft.ElevatedButton("Re-enable", icon=ft.icons.REFRESH, on_click=self.backlog_reenable, bgcolor=WARNING),
             ], spacing=10),
             ft.Container(self.backlog_preview_text, padding=10, border_radius=8, bgcolor="#1a1a2e"),
-        ])
+
+            # ── 日志 ──
+            ft.Divider(height=10, color="transparent"),
+            ft.Text("操作日志", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
+            Styles.glass_container(self.log_area, padding=10),
+        ], spacing=12, scroll=ft.ScrollMode.AUTO, expand=True)
 
     def log(self, message: str, color: str = "white"):
         self.log_area.controls.append(ft.Text(message, color=color, size=12, font_family="Consolas"))
