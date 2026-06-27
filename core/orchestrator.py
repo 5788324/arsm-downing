@@ -1125,6 +1125,7 @@ class Orchestrator:
                                 existing_size = 0
                                 mode = "wb"
                             downloaded = existing_size if is_partial else 0
+                            completed_ok = False
 
                             async with aiofiles.open(target, mode) as f:
                                 async for chunk in resp.content.iter_chunked(
@@ -1138,15 +1139,22 @@ class Orchestrator:
                                     self._emit_progress(
                                         meta.rj_id, track.id or track.title, track.title,
                                         downloaded, track.size, "downloading")
+
+                            completed_ok = target.exists() and target.stat().st_size == track.size
                         finally:
                             if not resp.closed:
                                 resp.close()
 
+                            if not target.exists():
+                                continue
+
                             actual = target.stat().st_size
                             if actual != track.size:
                                 logging.warning(f"Size mismatch {track.title}: {actual} vs {track.size}")
+                                if not completed_ok:
+                                    continue
 
-                            if target == part_path:
+                            if target == part_path and part_path.exists():
                                 os.replace(str(part_path), str(final_path))
 
                             if self.config.tag_audio and track.type == 'audio':

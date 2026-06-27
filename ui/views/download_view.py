@@ -11,6 +11,7 @@ from pathlib import Path
 
 from ui.theme import Styles, ACCENT_PRIMARY, ACCENT_SECONDARY, SUCCESS, WARNING, ERROR, BG_SURFACE_LIGHT
 from core.status import WorkStatus
+from core.orchestrator import Orchestrator
 
 RJ_PATTERN = re.compile(r"(?:RJ)?(\d{6,})")
 QUEUE_FILE = Path("queue.json")
@@ -790,7 +791,7 @@ class DownloadView(ft.Container):
         data = self.active_downloads.get(rj_id)
         if not data:
             return
-        if data["status"] in ("已暂停", "Paused"):
+        if data["status"] in ("已暂停", "Paused (partial)") or data["status"].startswith("Paused"):
             data["status"] = "队列中"
             data["cache_hit"] = False
             self.build_queue_item(rj_id)
