@@ -1,160 +1,162 @@
-"""WorkStatus — single source of truth for download states.
-
-All status checks use this enum. UI normalize_status maps legacy strings here.
-"""
+"""Single source of truth for work and download states."""
 
 from enum import Enum
-from typing import List
 
 
 class WorkStatus(Enum):
-    # ── Active / pipeline ──
-    PREPARING = "preparing"       # metadata fetch in progress
-    PREPARED = "prepared"         # metadata fetched, folder created
-    QUEUED = "queued"             # waiting in download queue
-    DOWNLOADING = "downloading"   # actively downloading
-    PAUSED = "paused"             # user-paused
-    RESUMING = "resuming"         # resume in progress
+    # Active / pipeline
+    PREPARING = "preparing"
+    PREPARED = "prepared"
+    QUEUED = "queued"
+    DOWNLOADING = "downloading"
+    PAUSED = "paused"
+    RESUMING = "resuming"
 
-    # ── Terminal ──
-    COMPLETED = "completed"       # all tracks downloaded
-    REGISTERED = "registered"     # recorded in works library
-    PARTIAL = "partial"           # some tracks failed
+    # Terminal
+    COMPLETED = "completed"
+    REGISTERED = "registered"
+    PARTIAL = "partial"
 
-    # ── Error / special ──
-    FAILED = "failed"             # download failed
-    METADATA_FAILED = "metadata_failed"  # metadata/proxy failed
-    NO_PENDING = "no_pending"     # resume found no pending tracks
+    # Error / special
+    FAILED = "failed"
+    METADATA_FAILED = "metadata_failed"
+    NO_PENDING = "no_pending"
+    STALE = "stale"
+    IGNORED = "ignored"
 
-    # ── Library-only (not download pipeline) ──
-    DUPLICATE = "duplicate"       # already in library_index
-    EXTERNAL = "external"         # found via library scan
-    VERIFIED = "verified"         # scan + track check passed
-    MISSING = "missing"           # directory not found
-    INDEXED = "indexed"           # scanned but not enriched
+    # Library-only
+    DUPLICATE = "duplicate"
+    EXTERNAL = "external"
+    VERIFIED = "verified"
+    MISSING = "missing"
+    INDEXED = "indexed"
 
-    # ── Internal transient — not persisted to DB ──
+    # Internal transient, never persisted
     ALREADY_QUEUED = "already_queued"
     ALREADY_RUNNING = "already_running"
 
     @property
     def is_active(self) -> bool:
-        """Is the work actively in the download pipeline?"""
         return self in (
-            WorkStatus.PREPARING, WorkStatus.PREPARED,
-            WorkStatus.QUEUED, WorkStatus.DOWNLOADING,
+            WorkStatus.PREPARING,
+            WorkStatus.PREPARED,
+            WorkStatus.QUEUED,
+            WorkStatus.DOWNLOADING,
             WorkStatus.RESUMING,
         )
 
     @property
     def is_pausable(self) -> bool:
-        """Can the work be paused?"""
         return self in (
-            WorkStatus.QUEUED, WorkStatus.DOWNLOADING,
+            WorkStatus.QUEUED,
+            WorkStatus.DOWNLOADING,
             WorkStatus.PREPARED,
         )
 
     @property
     def is_resumable(self) -> bool:
-        """Can the work be resumed?"""
         return self in (WorkStatus.QUEUED, WorkStatus.PAUSED)
 
     @property
     def is_terminal(self) -> bool:
-        """Has the work reached a final state?"""
         return self in (
-            WorkStatus.COMPLETED, WorkStatus.REGISTERED,
-            WorkStatus.VERIFIED, WorkStatus.EXTERNAL,
+            WorkStatus.COMPLETED,
+            WorkStatus.REGISTERED,
+            WorkStatus.VERIFIED,
+            WorkStatus.EXTERNAL,
             WorkStatus.INDEXED,
+            WorkStatus.STALE,
+            WorkStatus.IGNORED,
         )
 
     @property
     def needs_metadata_retry(self) -> bool:
-        """Should UI show 'retry prepare'?"""
-        return self in (
-            WorkStatus.METADATA_FAILED, WorkStatus.NO_PENDING,
-        )
+        return self in (WorkStatus.METADATA_FAILED, WorkStatus.NO_PENDING)
 
     @property
     def ui_label(self) -> str:
-        """Human-readable label."""
         labels = {
-            WorkStatus.PREPARING: "准备中...",
-            WorkStatus.PREPARED: "已就绪",
-            WorkStatus.QUEUED: "队列中",
-            WorkStatus.DOWNLOADING: "下载中",
-            WorkStatus.PAUSED: "已暂停",
-            WorkStatus.RESUMING: "恢复中...",
-            WorkStatus.COMPLETED: "已完成",
-            WorkStatus.REGISTERED: "已完成",
-            WorkStatus.PARTIAL: "部分完成",
-            WorkStatus.FAILED: "下载失败",
-            WorkStatus.METADATA_FAILED: "元数据失败",
-            WorkStatus.NO_PENDING: "无可恢复文件",
-            WorkStatus.DUPLICATE: "重复",
-            WorkStatus.EXTERNAL: "外部资源",
-            WorkStatus.VERIFIED: "已验证",
-            WorkStatus.MISSING: "文件缺失",
-            WorkStatus.INDEXED: "已索引",
+            WorkStatus.PREPARING: "???...",
+            WorkStatus.PREPARED: "???",
+            WorkStatus.QUEUED: "???",
+            WorkStatus.DOWNLOADING: "???",
+            WorkStatus.PAUSED: "???",
+            WorkStatus.RESUMING: "???...",
+            WorkStatus.COMPLETED: "???",
+            WorkStatus.REGISTERED: "???",
+            WorkStatus.PARTIAL: "????",
+            WorkStatus.FAILED: "????",
+            WorkStatus.METADATA_FAILED: "?????",
+            WorkStatus.NO_PENDING: "??????",
+            WorkStatus.STALE: "????",
+            WorkStatus.IGNORED: "???",
+            WorkStatus.DUPLICATE: "??",
+            WorkStatus.EXTERNAL: "????",
+            WorkStatus.VERIFIED: "???",
+            WorkStatus.MISSING: "????",
+            WorkStatus.INDEXED: "???",
         }
         return labels.get(self, self.value)
 
     @staticmethod
-    def normalize(status: str) -> 'WorkStatus':
-        """Map any status string to a WorkStatus enum member."""
-        s = status.strip()
+    def normalize(status: str) -> "WorkStatus":
+        s = (status or "").strip()
         if not s:
             return WorkStatus.QUEUED
 
-        if any(k in s.lower() for k in (
-                "metadata_failed", "metadata failed",
-                "metadata proxy failed",
-                "获取元数据失败", "元数据失败", "元数据代理失败")):
+        s_lower = s.lower()
+
+        if any(k in s_lower for k in (
+            "metadata_failed",
+            "metadata failed",
+            "metadata proxy failed",
+        )) or s in ("???????", "?????", "???????"):
             return WorkStatus.METADATA_FAILED
 
-        if any(k in s.lower() for k in (
-                "no pending", "no_pending", "no pending tracks",
-                "无可恢复")):
+        if any(k in s_lower for k in ("no pending", "no_pending", "no pending tracks")) or s == "????":
             return WorkStatus.NO_PENDING
 
-        if "重复" in s or "duplicate" in s.lower():
+        if s in ("stale", "????"):
+            return WorkStatus.STALE
+        if s in ("ignored", "???"):
+            return WorkStatus.IGNORED
+
+        if "??" in s or "duplicate" in s_lower:
             return WorkStatus.DUPLICATE
 
-        if s.startswith("Failed") or s.startswith("Error") or \
-           s in ("failed", "下载失败"):
+        if s.startswith("Failed") or s.startswith("Error") or s in ("failed", "????"):
             return WorkStatus.FAILED
 
-        if s in ("已完成", "Completed", "completed", "registered"):
+        if s in ("???", "Completed", "completed", "registered"):
             return WorkStatus.COMPLETED
 
-        if "Partially completed" in s or "部分完成" in s or \
-           s in ("partial",):
+        if "Partially completed" in s or "????" in s or s == "partial":
             return WorkStatus.PARTIAL
 
-        if s in ("已暂停", "Paused", "Paused (partial)", "paused"):
+        if s in ("???", "Paused", "Paused (partial)", "paused"):
             return WorkStatus.PAUSED
 
-        if s in ("Preparing", "准备中..."):
+        if s in ("Preparing", "???..."):
             return WorkStatus.PREPARING
-        if s in ("Prepared", "Prepared (cached)", "已就绪"):
+        if s in ("Prepared", "Prepared (cached)", "???"):
             return WorkStatus.PREPARED
-        if s in ("Queued", "Queued (cached)", "队列中", "队列排队中"):
+        if s in ("Queued", "Queued (cached)", "???", "?????"):
             return WorkStatus.QUEUED
-        if s in ("Downloading", "下载中"):
+        if s in ("Downloading", "???"):
             return WorkStatus.DOWNLOADING
-        if s in ("Resuming...", "恢复中..."):
+        if s in ("Resuming...", "???..."):
             return WorkStatus.RESUMING
-        if s in ("external", "外部资源"):
+        if s in ("external", "????"):
             return WorkStatus.EXTERNAL
-        if s in ("verified", "已验证"):
+        if s in ("verified", "???"):
             return WorkStatus.VERIFIED
-        if s in ("missing", "文件缺失"):
+        if s in ("missing", "????"):
             return WorkStatus.MISSING
-        if s in ("indexed", "已索引"):
+        if s in ("indexed", "???"):
             return WorkStatus.INDEXED
-        if s in ("already_queued",):
+        if s == "already_queued":
             return WorkStatus.QUEUED
-        if s in ("already_running",):
+        if s == "already_running":
             return WorkStatus.DOWNLOADING
 
-        return WorkStatus.QUEUED  # default
+        return WorkStatus.QUEUED

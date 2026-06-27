@@ -234,7 +234,7 @@ class Orchestrator:
         # Write paused to DB for all tracks that aren't terminal
         rows = self.db.get_downloads_by_rj(rj_id)
         for row in rows:
-            if row["status"] not in ('completed', 'registered', 'failed', 'paused'):
+            if row["status"] not in ('completed', 'registered', 'failed', 'paused', 'stale', 'ignored'):
                 self.db.upsert_download(
                     row["id"], rj_id, row["track_title"],
                     row["local_path"], 'paused',
@@ -367,7 +367,7 @@ class Orchestrator:
         rows = self.db.get_downloads_by_rj(rj_id)
         # If all downloads are terminal → skip
         all_terminal = all(
-            row["status"] in ('completed', 'registered', 'failed')
+            row["status"] in ('completed', 'registered', 'failed', 'stale', 'ignored')
             for row in rows)
         if all_terminal and rows:
             return False

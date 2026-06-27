@@ -484,6 +484,8 @@ class ToolsView(ft.Container):
         self.log(f"  paused_resumable: {d['paused_resumable']}", SUCCESS)
         self.log(f"  paused_missing_file: {d['paused_missing_file']}", "grey")
         self.log(f"  registered_count: {d['registered_count']}", ACCENT_PRIMARY)
+        self.log(f"  stale_count: {d.get('stale_count', 0)}", 'grey')
+        self.log(f"  ignored_count: {d.get('ignored_count', 0)}", 'grey')
 
         if d["per_error_prefix"]:
             self.log("  错误前缀分布:", "white")

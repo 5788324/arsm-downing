@@ -977,3 +977,98 @@ RC9.1 下载续跑计划: allowed.
 Do not execute P4 stale/ignored before download continuation planning.
 Continue to preserve failed/paused/registered records for resume/retry/manual review classification.
 ```
+
+---
+
+## 15. 2026-06-27 RC9.1 unfinished download soft closeout
+
+### 日期
+```text
+2026-06-27
+```
+
+### 执行者
+```text
+Codex
+```
+
+### 阶段
+```text
+RC9.1 / unfinished download soft closeout (preview only)
+```
+
+### 本轮目标
+优先清理当前历史未完成下载队列，但采用 soft closeout 策略：不删除历史行，不删除文件，不碰 completed，只把历史残留从后续自动恢复和 active queue 中安全移出。
+
+### 实际完成
+```text
+1. Added soft status support for stale / ignored.
+2. Updated startup restore path to ignore stale / ignored by excluding them from pending-download queries.
+3. Kept resume_all / active queue aligned so stale / ignored do not participate in batch resume or queue restore.
+4. Added RC9.1 unfinished closeout planner and SQL preview generator.
+5. Generated preview-only closeout plan from live history.db.
+6. Added focused tests for resume_all, startup restore, completed exclusion, preview-only registered->ignored, paused .part handling, and failed-without-file stale candidate.
+7. Did NOT execute any DB update.
+8. Did NOT delete any file.
+```
+
+### RC9.1 plan 结果
+```text
+failed_to_stale: 1732
+paused_missing_file_to_stale: 1775
+paused_resumable_needs_user_decision: 7
+registered_to_ignored: 5226
+blocked: 20
+completed_skipped: 1307
+completed_included: no
+
+blocked_reasons:
+  failed_has_recoverable_file: 20
+
+paused_resumable_rj:
+  RJ01357991: 5
+  RJ01498118: 2
+
+focus_rj:
+  RJ01588893 -> failed_to_stale=3, registered_to_ignored=48
+  RJ01534605 -> failed_to_stale=9, registered_to_ignored=39
+  RJ00323125 -> no matching unfinished downloads in current downloads table
+  RJ323125 -> paused_missing_file_to_stale=24
+  RJ01571951 -> no matching unfinished downloads in current downloads table
+  RJ01572913 -> no matching unfinished downloads in current downloads table
+```
+
+### 是否改代码
+```text
+yes
+```
+
+### 是否改 DB
+```text
+no
+```
+
+### 是否删除文件
+```text
+no
+```
+
+### 是否改下载核心
+```text
+minimal
+```
+
+### 报告路径
+```text
+.local_backups/rc9_1_unfinished_closeout_final_20260627_134943/
+  rc9_1_unfinished_closeout_plan.json
+  rc9_1_unfinished_closeout_sql_preview.sql
+  RC9_1_UNFINISHED_CLOSEOUT_SUMMARY.txt
+```
+
+### 下一步
+```text
+RC9.2 actual soft closeout DB update requires explicit user approval.
+Continue to preserve failed / paused / registered history rows until that approval is given.
+Allow future download continuation planning before any stale/ignored DB write is executed.
+```

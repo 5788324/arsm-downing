@@ -253,11 +253,15 @@ class LibraryVault:
             return []
 
     def get_pending_downloads(self) -> List[sqlite3.Row]:
-        """Get all downloads not in terminal state, for resume."""
+        """Get downloads that are eligible for startup restore.
+
+        Soft-close statuses such as stale/ignored are intentionally excluded.
+        Failed downloads are handled by explicit resume/retry flows, not startup restore.
+        """
         try:
             return self.conn.execute(
                 """SELECT * FROM downloads
-                   WHERE status NOT IN ('completed', 'registered', 'failed')
+                   WHERE status IN ('queued', 'paused', 'downloading', 'resuming')
                    ORDER BY rj_id, id"""
             ).fetchall()
         except Exception as e:
@@ -276,15 +280,14 @@ class LibraryVault:
             return ""
 
     def get_pending_rj_ids(self) -> set:
-        """Return set of rj_ids that have non-terminal downloads.
+        """Return RJ ids that should appear in the active download queue.
 
-        Includes: queued, paused, downloading, failed.
-        Excludes: completed, registered.
+        Soft-close statuses such as stale/ignored are intentionally excluded.
         """
         try:
             rows = self.conn.execute(
                 """SELECT DISTINCT rj_id FROM downloads
-                   WHERE status IN ('queued','paused','downloading','failed')"""
+                   WHERE status IN ('queued','paused','downloading','failed','resuming')"""
             ).fetchall()
             return {row["rj_id"] for row in rows}
         except Exception as e:
@@ -658,6 +661,8 @@ class LibraryVault:
             "paused_resumable": 0,
             "paused_missing_file": 0,
             "registered_count": 0,
+            "stale_count": 0,
+            "ignored_count": 0,
             "per_error_prefix": {},
             "per_root_path": {},
         }
@@ -714,9 +719,15 @@ class LibraryVault:
             else:
                 result["paused_missing_file"] += 1
 
-        # Registered count
+        # Registered / soft-close counts
         result["registered_count"] = self.conn.execute(
             "SELECT COUNT(*) FROM downloads WHERE status = 'registered'"
+        ).fetchone()[0]
+        result["stale_count"] = self.conn.execute(
+            "SELECT COUNT(*) FROM downloads WHERE status = 'stale'"
+        ).fetchone()[0]
+        result["ignored_count"] = self.conn.execute(
+            "SELECT COUNT(*) FROM downloads WHERE status = 'ignored'"
         ).fetchone()[0]
 
         return result
