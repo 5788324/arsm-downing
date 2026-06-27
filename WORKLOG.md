@@ -882,3 +882,98 @@ Codex 审查 P5 dry-run → 批准后执行 P5 actual DB write (CREATE TABLE + I
 ```
 ```
 ```
+
+---
+
+## 14. 2026-06-27 P5 actual DB write retry
+
+### 日期
+```text
+2026-06-27
+```
+
+### 执行者
+```text
+Codex
+```
+
+### 阶段
+```text
+P5 / library index actual DB write retry
+```
+
+### 本轮目标
+在不修改 `works` / `downloads` 的前提下，重试 P5 actual DB write，并将 SQLite 一致性备份目标从 `.local_backups` 改为 `%TEMP%`。
+
+### 实际完成
+```text
+1. Confirmed git status clean and no running python/flet process.
+2. Stored raw copy backup and execution context under .local_backups/p5_library_index_actual_write_retry_20260627_132949/.
+3. Stored SQLite-consistent backup at %TEMP% because .local_backups had previously failed with disk I/O error.
+4. Re-ran P5 actual write using latest dry-run outputs.
+5. Created library_scan_runs and library_items only.
+6. Inserted 1 scan run and upserted 192 library_items rows.
+7. Preserved RJ01583802 as path_mismatch_with_works_local_path warning.
+8. Verified works/downloads counts and status distributions unchanged.
+9. Kept failed/paused/registered download records intact; no stale/ignored write executed.
+```
+
+### P5 actual write 结果
+```text
+sqlite_backup_target: C:\Users\YANG\AppData\Local\Temp\arsm_p5_sqlite_backup_20260627_132949\history.sqlite_backup_before_p5.db
+sqlite_backup_integrity: ok
+active_db_integrity_before: ok
+active_db_integrity_after: ok
+
+library_scan_runs_count: 1
+library_items_count: 192
+this_run_items: 192
+fake_or_test_items: 0
+items_not_on_E: 0
+path_mismatch_items:
+  - RJ01583802 -> E:\arsm\RJ01583802
+    warnings_json=["path_mismatch_with_works_local_path"]
+
+works_count_before_after: 216 -> 216
+downloads_count_before_after: 10067 -> 10067
+works_status_unchanged: yes
+downloads_status_unchanged: yes
+```
+
+### 是否改代码
+```text
+no
+```
+
+### 是否改 DB
+```text
+yes
+```
+
+### 是否删除文件
+```text
+no
+```
+
+### 是否改下载核心
+```text
+no
+```
+
+### 报告路径
+```text
+.local_backups/p5_library_index_actual_write_retry_20260627_132949/
+  history.before_p5_library_index.raw.db
+  sqlite_backup_location.json
+  p5_library_index_actual_write_summary.json
+  p5_library_index_post_verify.json
+  p5_forbidden_tables_safety_check.json
+```
+
+### 下一步
+```text
+P6 library UI MVP: allowed.
+RC9.1 下载续跑计划: allowed.
+Do not execute P4 stale/ignored before download continuation planning.
+Continue to preserve failed/paused/registered records for resume/retry/manual review classification.
+```
