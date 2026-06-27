@@ -1181,5 +1181,98 @@ Download queue is clean (0 pending). Ready to:
   - Continue downloading new RJs normally
   - Enter P6 library UI MVP development
   - Stale/ignored rows preserved as audit trail, reversible via rollback SQL if needed
+
+---
+
+## 16. 2026-06-27 RC9.3 download smoke test
+
+### 日期
+```text
+2026-06-27
+```
+
+### 执行者
+```text
+DeepSeek/OpenCode
+```
+
+### 阶段
+```text
+RC9.3 / download smoke test — verify queue is clean + download pipeline works
+```
+
+### 本轮目标
+Verify that after RC9.2 soft closeout:
+1. Startup does NOT restore stale/ignored tasks
+2. Active queue is clean (0 pending)
+3. Download pipeline works for new RJs
+4. No DB regression
+
+### 实际完成
+```text
+1. Pre-download DB snapshot: integrity=ok, active_unfinished={}, stale=3534, ignored=5226.
+2. Started app, checked startup logs: load_queue=0, no stale/ignored restoration.
+3. Attempted programmatic download test with 2 fresh RJs:
+   - RJ01001001: queue_job returned null — RJ does not exist on DLsite
+   - Download pipeline rejected gracefully, no crash, no stale interference
+4. Post-download DB snapshot: all counts unchanged, integrity=ok, no artifacts.
+5. stale/ignored counts unchanged (3534/5226), completed unchanged (1307).
+6. Actual download test requires user to add a valid DLsite RJ via UI.
+```
+
+### 启动验证
+```text
+load_queue: loaded=0 hidden=0 total_pending=0
+restore_pending enqueued: 0
+No stale/ignored tasks auto-restored
+Workers booted: 2 (normal)
+```
+
+### DB 快照对比
+```text
+                Before      After
+integrity_check ok          ok
+works_status    unchanged   unchanged
+stale           3534        3534
+ignored         5226        5226
+completed       1307        1307
+active_unfinished {}         {}
+completed_missing 0          0
+library_items   192         192
+```
+
+### 是否改代码
+```text
+no
+```
+
+### 是否改 DB
+```text
+no (orchestrator rejected non-existent RJ without DB write)
+```
+
+### 是否删除文件
+```text
+no
+```
+
+### 是否改下载核心
+```text
+no
+```
+
+### 报告路径
+```text
+.local_backups/rc9_3_download_smoke_test_20260627_140607/
+  before_download_smoke_db_snapshot.json
+  after_download_smoke_db_snapshot.json
+```
+
+### 下一步
+```text
+User manually adds 1 real RJ via UI to complete download pipeline verification.
+If download works → RC9 complete. Enter P6 library UI MVP.
+Stale/ignored rows preserved indefinitely as audit trail.
+```
 ```
 ```
