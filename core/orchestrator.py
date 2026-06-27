@@ -640,10 +640,11 @@ class Orchestrator:
     #  P1.5-2:  restore on startup
     # ══════════════════════════════════════════════
     async def restore_pending_downloads(self):
-        """Cold-start: normalize interrupted states → paused. Do NOT enqueue.
+        """Cold-start: normalize ONLY interrupted active states → paused.
 
-        RC7.9: When auto_resume_on_start is False, NO work is enqueued.
-        Only mark downloading/queued/resuming → paused so UI shows correctly.
+        downloading/resuming → paused (interrupted, cannot persist across restart).
+        queued → kept as queued (user explicitly queued, should not be lost).
+        paused → kept as paused.
         """
         pending = self.db.get_pending_downloads()
         if not pending:
@@ -662,11 +663,12 @@ class Orchestrator:
         for rj_id in sorted(rj_groups):
             statuses = rj_groups[rj_id]
 
-            # ── RC7.9: normalize ALL non-terminal → paused ──
+            # Only normalize truly interrupted states (downloading/resuming).
+            # queued and paused stay as-is.
             for row in pending:
                 if row["rj_id"] != rj_id:
                     continue
-                if row["status"] in ('downloading', 'queued', 'resuming'):
+                if row["status"] in ('downloading', 'resuming'):
                     self.db.upsert_download(
                         row["id"], rj_id, row["track_title"],
                         row["local_path"], 'paused',

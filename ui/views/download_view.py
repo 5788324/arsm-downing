@@ -62,12 +62,6 @@ class DownloadView(ft.Container):
                 allowed_extensions=["txt"])
         )
 
-        self.show_completed_switch = ft.Switch(
-            label="\u5305\u542b\u5df2\u5b8c\u6210", value=False,
-            active_color=SUCCESS,
-            on_change=lambda e: self._refresh_queue()
-        )
-
         self.btn_pause_all = ft.ElevatedButton(
             "\u5168\u90e8\u6682\u505c", icon=ft.icons.PAUSE_CIRCLE,
             style=ft.ButtonStyle(
@@ -91,29 +85,10 @@ class DownloadView(ft.Container):
         )
         self.active_downloads: Dict[str, Dict[str, Any]] = {}
 
-        controls_row = ft.ResponsiveRow([
-            ft.Container(
-                content=ft.Row(
-                    [self.btn_pause_all, self.btn_resume_all],
-                    spacing=12,
-                    alignment=ft.MainAxisAlignment.START,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                ),
-                col={"xs": 12, "md": 5},
-            ),
-            ft.Container(
-                content=ft.Row(
-                    [
-                        ft.Icon(ft.icons.INFO_OUTLINE, size=16, color=ACCENT_SECONDARY),
-                        ft.Text("\u961f\u5217\u9ed8\u8ba4\u53ea\u663e\u793a\u672a\u5b8c\u6210\u4efb\u52a1", size=12, color="grey"),
-                    ],
-                    spacing=8,
-                    alignment=ft.MainAxisAlignment.END,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                ),
-                col={"xs": 12, "md": 7},
-            ),
-        ], run_spacing=10)
+        controls_row = ft.Row([
+            self.btn_pause_all,
+            self.btn_resume_all,
+        ], spacing=12)
 
         self.content = ft.Column([
             self.file_picker,
@@ -121,16 +96,15 @@ class DownloadView(ft.Container):
             ft.Row([self.rj_input, self.download_btn, self.batch_btn],
                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             controls_row,
-            ft.Divider(height=10, color="transparent"),
+            ft.Divider(height=6, color="transparent"),
             ft.Row([
-                ft.Text("\u5f53\u524d\u4e0b\u8f7d\u961f\u5217", size=20, weight=ft.FontWeight.W_500,
+                ft.Text("\u5f53\u524d\u4e0b\u8f7d\u961f\u5217", size=18, weight=ft.FontWeight.W_500,
                         color=ACCENT_PRIMARY),
                 ft.Container(expand=True),
-                self.show_completed_switch,
                 self.queue_summary,
             ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
             self.queue_list,
-        ], expand=True, spacing=8, scroll=ft.ScrollMode.HIDDEN)
+        ], expand=True, spacing=6)
 
         self.load_queue()
 
@@ -401,12 +375,8 @@ class DownloadView(ft.Container):
                     data["_derived_enum"] = derived["enum"]
 
                 if not derived["visible"]:
-                    if not self.show_completed_switch.value:
-                        self.active_downloads.pop(rj_id, None)
-                        continue
-                    # Show completed: make visible
-                    derived["visible"] = True
-                    derived["status"] = derived["enum"].ui_label
+                    self.active_downloads.pop(rj_id, None)
+                    continue
 
                 visible_items.append(rj_id)
             except Exception as e:
@@ -532,9 +502,7 @@ class DownloadView(ft.Container):
     def build_queue_item(self, rj_id: str):
         item_data = self.active_downloads[rj_id]
         status = item_data["status"]
-
-        if self._is_terminal(status) and not self.show_completed_switch.value:
-            return
+        ns = self.normalize_status(status)
 
         title_text = ft.Text(rj_id, weight=ft.FontWeight.BOLD, size=20)
 
@@ -548,7 +516,11 @@ class DownloadView(ft.Container):
         ) if cur_track else ft.Text("")
 
         cache_label = " [缓存]" if item_data.get("cache_hit") else ""
-        status_text = ft.Text(status + cache_label, color=WARNING, size=12)
+        status_colors = {"downloading": SUCCESS, "queued": ACCENT_SECONDARY, "paused": WARNING,
+                         "failed": ERROR, "completed": SUCCESS, "metadata_failed": ERROR,
+                         "no_pending": WARNING, "duplicate": "grey"}
+        status_color = status_colors.get(ns, ACCENT_PRIMARY)
+        status_text = ft.Text(status + cache_label, color=status_color, size=12, weight=ft.FontWeight.W_600)
 
         speed_info = item_data.get("last_speed_bps", 0)
         speed_str = ""
@@ -559,7 +531,6 @@ class DownloadView(ft.Container):
                 speed_str += f"  ETA {eta_info:.0f}s"
         speed_text = ft.Text(speed_str, color=ACCENT_SECONDARY, size=11)
 
-        ns = self.normalize_status(status)
         prog = self._get_progress_value(item_data)
         total = sum(t.get("total", 0) for t in item_data.get("tracks", {}).values())
         if self._is_terminal(status):

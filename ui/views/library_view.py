@@ -18,10 +18,10 @@ STATUS_LABELS = {
     "missing": ("Missing", ERROR),
 }
 FILTER_OPTIONS = [
-    ("__all__", "All"),
-    ("has_audio", "With Audio"),
-    ("missing_cover", "No Cover"),
-    ("warnings", "Warnings"),
+    ("__all__", "\u5168\u90e8"),
+    ("has_audio", "\u6709\u97f3\u9891"),
+    ("missing_cover", "\u65e0\u5c01\u9762"),
+    ("warnings", "\u6709\u8b66\u544a"),
 ]
 COVER_CANDIDATES = (
     "cover.jpg", "cover.jpeg", "cover.png", "cover.webp",
@@ -59,7 +59,7 @@ class LibraryView(ft.Container):
         self._summary = {}
 
         self.search_input = ft.TextField(
-            hint_text="Search RJ / folder...",
+            hint_text="\u641c\u7d22 RJ / \u6587\u4ef6\u5939...",
             border_radius=10,
             expand=True,
             on_change=self.on_search,
@@ -69,8 +69,8 @@ class LibraryView(ft.Container):
         self.filter_chips = ft.Row([], wrap=True, spacing=6)
         self.summary_bar = ft.Text("", size=12, color="grey")
         self.page_info = ft.Text("", size=12, color="grey")
-        self.btn_prev = ft.TextButton(content=ft.Text("Prev", color=ACCENT_PRIMARY), on_click=lambda e: self._go_page(-1))
-        self.btn_next = ft.TextButton(content=ft.Text("Next", color=ACCENT_PRIMARY), on_click=lambda e: self._go_page(1))
+        self.btn_prev = ft.TextButton(content=ft.Text("\u4e0a\u4e00\u9875", color=ACCENT_PRIMARY), on_click=lambda e: self._go_page(-1))
+        self.btn_next = ft.TextButton(content=ft.Text("\u4e0b\u4e00\u9875", color=ACCENT_PRIMARY), on_click=lambda e: self._go_page(1))
 
         self.grid = ft.GridView(
             expand=True,
@@ -82,7 +82,7 @@ class LibraryView(ft.Container):
         )
 
         self.content = ft.Column([
-            ft.Text("Resource Library", size=28, weight=ft.FontWeight.BOLD),
+            ft.Text("\u8d44\u6e90\u5e93", size=28, weight=ft.FontWeight.BOLD),
             self.summary_bar,
             ft.Row([self.search_input], spacing=10),
             ft.Container(content=self.filter_chips, padding=ft.padding.only(top=4, bottom=4)),
@@ -100,12 +100,12 @@ class LibraryView(ft.Container):
         try:
             self._summary = self.app_controller.db.get_library_summary()
             self.summary_bar.value = (
-                f"Total: {self._summary.get('total_works', 0)} works, "
-                f"{self._summary.get('total_files', 0)} files, "
+                f"\u5171 {self._summary.get('total_works', 0)} \u4e2a\u4f5c\u54c1, "
+                f"{self._summary.get('total_files', 0)} \u6587\u4ef6, "
                 f"{fmt_size(self._summary.get('total_size', 0))} | "
-                f"Audio: {self._summary.get('with_audio', 0)} | "
-                f"Cover: {self._summary.get('with_cover', 0)} | "
-                f"Warnings: {self._summary.get('with_warnings', 0)}"
+                f"\u97f3\u9891: {self._summary.get('with_audio', 0)} | "
+                f"\u5c01\u9762: {self._summary.get('with_cover', 0)} | "
+                f"\u8b66\u544a: {self._summary.get('with_warnings', 0)}"
             )
         except Exception:
             self.summary_bar.value = "Library not available"
@@ -179,7 +179,7 @@ class LibraryView(ft.Container):
             alignment=ft.alignment.center,
             content=ft.Column([
                 ft.Icon(ft.icons.IMAGE_NOT_SUPPORTED_OUTLINED, color=WARNING, size=36),
-                ft.Text("No cover", size=12, color="grey"),
+                ft.Text("\u65e0\u5c01\u9762", size=12, color="grey"),
             ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=6),
         )
 
@@ -234,7 +234,7 @@ class LibraryView(ft.Container):
             if audio_count > 0:
                 badge_controls.append(
                     ft.Container(
-                        content=ft.Text(f"{audio_count} audio", size=9, color="white"),
+                        content=ft.Text(f"{audio_count} \u97f3\u9891", size=9, color="white"),
                         bgcolor=SUCCESS,
                         border_radius=999,
                         padding=ft.padding.symmetric(horizontal=6, vertical=2),
@@ -275,10 +275,13 @@ class LibraryView(ft.Container):
         self.page_info.value = f"Page {self._current_page + 1}/{total_pages} ({start}-{end} of {total})"
         self.btn_prev.disabled = self._current_page == 0
         self.btn_next.disabled = (self._current_page + 1) >= total_pages
-        safe_update(self.grid)
-        safe_update(self.page_info)
-        safe_update(self.btn_prev)
-        safe_update(self.btn_next)
+        try:
+            if self.grid.page: self.grid.update()
+            if self.page_info.page: self.page_info.update()
+            if self.btn_prev.page: self.btn_prev.update()
+            if self.btn_next.page: self.btn_next.update()
+        except Exception:
+            pass
 
     def on_search(self, e=None):
         self._current_page = 0
