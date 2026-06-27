@@ -477,6 +477,7 @@ class DownloadView(ft.Container):
         return None
 
     def _resolve_cover_source(self, rj_id: str) -> Optional[str]:
+        # 1. Local disk scan (best quality, no proxy)
         work_dir = self._find_work_dir(rj_id)
         if work_dir and work_dir.exists():
             for name in self.COVER_CANDIDATES:
@@ -491,6 +492,8 @@ class DownloadView(ft.Container):
                             return str(child)
             except Exception:
                 pass
+
+        # 2. Metadata cache (works for new downloads with no local files yet)
         try:
             cached = self.app_controller.db.get_metadata_cache(rj_id)
             if cached and cached.get("cover_url"):
@@ -547,12 +550,13 @@ class DownloadView(ft.Container):
         status_text = ft.Text(status + cache_label, color=WARNING, size=12)
 
         speed_info = item_data.get("last_speed_bps", 0)
-        track_speed = item_data.get("last_track_speed", 0)
-        eta_info = item_data.get("last_eta", None)
-        speed_str = f"文件 {track_speed/1024:.0f} KB/s 全局 {speed_info/1024/1024:.1f} MB/s" if speed_info > 0 else ""
-        eta_str = f" ETA {eta_info:.0f}s" if eta_info else ""
-        detail_str = (speed_str + eta_str).strip()
-        speed_text = ft.Text(detail_str, color=ACCENT_SECONDARY, size=11)
+        speed_str = ""
+        if speed_info > 0:
+            speed_str = f"{speed_info/1024/1024:.1f} MB/s"
+            eta_info = item_data.get("last_eta", None)
+            if eta_info:
+                speed_str += f"  ETA {eta_info:.0f}s"
+        speed_text = ft.Text(speed_str, color=ACCENT_SECONDARY, size=11)
 
         ns = self.normalize_status(status)
         prog = self._get_progress_value(item_data)
@@ -778,9 +782,8 @@ class DownloadView(ft.Container):
                     data["status_text"].color = WARNING
                     data["speed_text"].value = ""
 
-                # Rebuild to update action buttons and queue order
+                # Rebuild to update action buttons
                 self.build_queue_item(rj_id)
-                self._refresh_queue()
                 self.save_queue()
 
     def toggle_pause(self, rj_id: str):
