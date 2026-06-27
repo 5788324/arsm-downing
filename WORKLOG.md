@@ -297,4 +297,172 @@ DB/log/RJ miscommit risk = no
 P1：UI 侧 LibraryVault 单例确认
 P2：RC9 下载状态只读诊断
 Do not reopen RC8 migration unless new evidence shows missing completed downloads or allowlist target drift.
+
+---
+
+## 7. 2026-06-27 P1: UI 侧 LibraryVault 单例确认
+
+### 日期
+```text
+2026-06-27
+```
+
+### 执行者
+```text
+DeepSeek/OpenCode
+```
+
+### 阶段
+```text
+P1 / UI 侧 LibraryVault 单例确认
+```
+
+### 本轮目标
+确认整个 Flet 应用只创建一次 LibraryVault()，检查所有 UI 视图是否绕过 DB 层。
+
+### 实际完成
+```text
+1. grep LibraryVault() across all *.py: found 2 instances in production UI code.
+2. ui/app.py:53 — singleton instance in AppController.__init__. Correct.
+3. ui/views/download_view.py:737 — second LibraryVault() instance in _open_work_dir(). BLOCKER FOUND.
+4. ui/views/download_view.py:212 — dead import of LibraryVault (not used for instantiation, but clutter).
+5. All other UI views (library_view, tools_view, dashboard_view, settings_view): clean.
+6. All core modules (orchestrator, migration): clean, use dependency injection.
+7. No rogue sqlite3.connect() outside database.py's own internals.
+8. takoyune_repo/ is legacy alt-code, not used by active app.
+```
+
+### 修复
+```text
+1. download_view.py:737-739: removed `from core.database import LibraryVault; db = LibraryVault()` and
+   replaced with `self.app_controller.config` and `self.app_controller.db.get_metadata_cache()`.
+2. download_view.py:212: removed dead `from core.database import LibraryVault` import.
+   Total diff: +2 -7 lines.
+```
+
+### 是否改代码
+```text
+yes — ui/views/download_view.py, 2-line minimal fix
+```
+
+### 是否改 DB
+```text
+no
+```
+
+### 是否删除文件
+```text
+no
+```
+
+### 是否改下载核心
+```text
+no
+```
+
+### 结果
+```text
+PASS: Only one LibraryVault() in UI code (ui/app.py:53 singleton).
+All views share the AppController.db instance.
+P1 confirmed — no blockers remain.
+```
+
+---
+
+## 8. 2026-06-27 P2: RC9 下载状态只读诊断
+
+### 日期
+```text
+2026-06-27
+```
+
+### 执行者
+```text
+DeepSeek/OpenCode
+```
+
+### 阶段
+```text
+P2 / RC9 下载状态只读诊断
+```
+
+### 本轮目标
+Read-only diagnosis of downloads_status, failed/paused/registered categories, key RJ deep dive.
+
+### 实际完成
+```text
+1. Wrote rc9_diagnosis.py — comprehensive read-only analysis.
+2. Generated RC9_DOWNLOAD_STATUS_DIAGNOSIS.json and SUMMARY.txt.
+3. Saved to .local_backups/rc9_diagnosis_20260627_114347.
+```
+
+### 核心发现
+```text
+works_status: {completed:101, prepared:74, verified:36, partial:3, external:2} total=216
+works_on_E: 195, completed+verified_on_E: 120, not_on_E: 17
+
+downloads_status: {registered:5226, paused:1782, failed:1752, completed:1307} total=10067
+  completed on E: 423, not on E: 884
+
+failed (1752):
+  - 0 resumable (no partial files)
+  - 1732 retry-from-zero (no files)
+  - 0 complete-file-but-DB-says-failed
+  - top errors: Fallback also failed (1596), HTTP 400 (156)
+
+paused (1782 across 35 RJs):
+  - 5 with file (resumable)
+  - 1777 without file (orphaned pause records)
+
+registered (5226 across 110 RJs):
+  - 92 with completed/verified work
+  - 18 with other non-terminal downloads
+  - 0 with active/prepared work
+
+Key RJs:
+  RJ01588893: verified, path=C:\...Music\arsm.one, exists, 883 completed, 3 failed, 48 registered
+  RJ01534605: verified, path=C:\...Music\arsm.one, exists, 1 completed, 9 failed, 39 registered
+  RJ00323125: verified, path=C:\...Music\arsm.one\RJ323125..., exists, size=0, no downloads
+  RJ323125: prepared, path=E:\arsm\... (NOT exists), size=0, 24 paused
+
+missing_work_paths: 3 (RJ01571951, RJ01572913, RJ323125)
+downloads_completed_not_on_E_grouped: 2 RJs (RJ01588893:883, RJ01534605:1)
+works_cv_not_on_E: 17 (15 exist locally, 2 missing)
+loose RJ format abnormal = 0
+canonical RJ8 abnormal = 1
+RJ323125 is a historical non-canonical RJ and should map to RJ00323125
+work_on_E_but_old_path_downloads: 0
+```
+
+### 是否改代码
+```text
+no (diagnosis script only)
+```
+
+### 是否改 DB
+```text
+no
+```
+
+### 是否删除文件
+```text
+no
+```
+
+### 是否改下载核心
+```text
+no
+```
+
+### 报告路径
+```text
+.local_backups/rc9_diagnosis_20260627_114347/RC9_DOWNLOAD_STATUS_DIAGNOSIS.json
+.local_backups/rc9_diagnosis_20260627_114347/RC9_DOWNLOAD_STATUS_DIAGNOSIS_SUMMARY.txt
+```
+
+### 下一步
+```text
+P3: 资源库只读扫描 MVP
+P4: RC9 安全修复第一轮 (基于本诊断结果)
+```
 ```
