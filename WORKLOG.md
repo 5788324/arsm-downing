@@ -1071,4 +1071,115 @@ minimal
 RC9.2 actual soft closeout DB update requires explicit user approval.
 Continue to preserve failed / paused / registered history rows until that approval is given.
 Allow future download continuation planning before any stale/ignored DB write is executed.
+
+---
+
+## 15. 2026-06-27 RC9.2 actual unfinished download soft closeout
+
+### 日期
+```text
+2026-06-27
+```
+
+### 执行者
+```text
+DeepSeek/OpenCode
+```
+
+### 阶段
+```text
+RC9.2 / actual DB write — soft closeout of unfinished downloads
+```
+
+### 本轮目标
+Execute UPDATE-only soft closeout: failed/paused → stale, registered → ignored.
+Keep completed untouched. No DELETE.
+
+### 策略
+```text
+• failed -> stale (1752 rows)
+• paused -> stale (1782 rows)
+• registered -> ignored (5226 rows)
+• completed -> unchanged (1307 rows)
+• UPDATE only, no DELETE
+```
+
+### 实际完成
+```text
+1. Confirmed no running Python/Flet processes.
+2. Created .local_backups/rc9_2_unfinished_soft_closeout_20260627_135848.
+3. Raw copy backup + SQLite .backup() to TEMP.
+4. Generated preimage (8760 rows) + rollback SQL.
+5. Executed 2 UPDATE statements in transaction:
+   - stale_updated: 3534 (failed + paused)
+   - ignored_updated: 5226 (registered)
+6. Verified: completed unchanged (1307), works unchanged, integrity = ok.
+7. Post-verify: remaining_active_unfinished = {}, completed_missing = 0.
+8. UI check: load_queue loaded=0, hidden=0, total_pending=0 — clean startup.
+```
+
+### 是否改代码
+```text
+no
+```
+
+### 是否改 DB
+```text
+yes — UPDATED downloads.status for 8760 rows (failed/paused → stale, registered → ignored)
+      0 DELETE, 0 INSERT, 0 works modified, 0 library_items modified
+```
+
+### 是否删除文件
+```text
+no
+```
+
+### 是否改下载核心
+```text
+no
+```
+
+### 备份路径
+```text
+raw: .local_backups/rc9_2_unfinished_soft_closeout_20260627_135848/
+sqlite: C:\Users\YANG\AppData\Local\Temp\arsm_rc9_2_sqlite_backup_20260627_135848/
+```
+
+### 报表
+```text
+preimage:        rc9_2_preimage_downloads.json (8760 rows)
+rollback:        rc9_2_rollback_preview.sql
+actual_summary:  rc9_2_actual_soft_closeout_summary.json
+post_verify:     rc9_2_post_verify.json
+```
+
+### 结果
+```text
+stale_updated:           3534
+ignored_updated:         5226
+downloads_status_before: completed=1307, failed=1752, paused=1782, registered=5226
+downloads_status_after:  completed=1307, stale=3534, ignored=5226
+completed_before/after:  1307 / 1307 (unchanged)
+works_status:            unchanged
+remaining_unfinished:    {}
+integrity_check:         ok
+completed_missing:       0
+startup:                 load_queue=0, no old tasks restored
+```
+
+### Git 状态
+```text
+HEAD: 7fa091b
+pushed: yes
+git status clean: yes (only WORKLOG.md modified)
+commit: "docs: record rc9.2 unfinished download soft closeout"
+```
+
+### 下一步
+```text
+Download queue is clean (0 pending). Ready to:
+  - Continue downloading new RJs normally
+  - Enter P6 library UI MVP development
+  - Stale/ignored rows preserved as audit trail, reversible via rollback SQL if needed
+```
 ```
