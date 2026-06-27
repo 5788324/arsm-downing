@@ -217,11 +217,24 @@ class LibraryView(ft.Container):
             except Exception:
                 warn_list = []
 
-            # Warning labels (Chinese)
-            WARN_LABELS = {"no_images": "无图片", "no_audio_files": "无音频",
-                           "empty_directory": "空目录", "no_cover_candidate": "无封面候选",
-                           "unusual_large_file": "异常大文件"}
-            warn_texts = [WARN_LABELS.get(w, w) for w in warn_list[:3]]
+            # Warning labels (Chinese) — prefix-based matching
+            WARN_PREFIXES = [
+                ("unusual_large_file:", "\u5f02\u5e38\u5927\u6587\u4ef6"),
+                ("no_images", "\u65e0\u56fe\u7247"),
+                ("no_audio_files", "\u65e0\u97f3\u9891"),
+                ("empty_directory", "\u7a7a\u76ee\u5f55"),
+                ("no_cover_candidate", "\u65e0\u5c01\u9762\u5019\u9009"),
+                ("path_mismatch", "\u8def\u5f84\u4e0d\u5339\u914d"),
+            ]
+            def _warn_label(w: str) -> str:
+                for prefix, cn in WARN_PREFIXES:
+                    if w == prefix.rstrip(":"):
+                        return cn
+                    if w.startswith(prefix):
+                        rest = w[len(prefix):].strip()
+                        return f"{cn}: {rest}" if rest else cn
+                return w
+            warn_texts = [_warn_label(w) for w in warn_list[:3]]
 
             # Cover: when in missing_cover filter, don't use remote fallback
             use_remote_cover = not fc
