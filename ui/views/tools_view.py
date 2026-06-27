@@ -14,6 +14,17 @@ class ToolsView(ft.Container):
         self.log_area = ft.ListView(expand=True, spacing=5, auto_scroll=True)
         self.keep_source_mode = True
         self.delete_source_confirm_pending = False
+
+        # Backlog widgets
+        self.backlog_summary = ft.Text("Backlog: loading...", size=13, color="grey")
+        self._backlog_source_val = "ignored"
+        self._backlog_batch_val = "30"
+        self.backlog_preview_text = ft.Text("", size=12, font_family="Consolas")
+        self.backlog_source = ft.Dropdown(
+            width=120, value="ignored",
+            options=[ft.dropdown.Option("ignored"), ft.dropdown.Option("stale"), ft.dropdown.Option("all")])
+        self.backlog_batch_size = ft.TextField(width=80, value="30", label="batch")
+
         self.keep_source_checkbox = ft.Checkbox(
             label="\u4fdd\u7559\u6e90\u76ee\u5f55\uff0c\u7a0d\u540e\u7edf\u4e00\u6e05\u7406",
             value=True,
@@ -62,7 +73,17 @@ class ToolsView(ft.Container):
                 ft.Text("诊断日志", size=20, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
                 ft.ElevatedButton("运行一键诊断", icon=ft.icons.HEALTH_AND_SAFETY, on_click=self.run_diagnostic)
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            Styles.glass_container(self.log_area, padding=10)
+            Styles.glass_container(self.log_area, padding=10),
+            ft.Divider(height=20, color="transparent"),
+            ft.Text("Backlog - 历史任务恢复", size=20, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
+            self.backlog_summary,
+            ft.Row([
+                self.backlog_source,
+                self.backlog_batch_size,
+                ft.ElevatedButton("Preview", icon=ft.icons.PREVIEW, on_click=self.backlog_preview),
+                ft.ElevatedButton("Re-enable", icon=ft.icons.REFRESH, on_click=self.backlog_reenable, bgcolor=WARNING),
+            ], spacing=10),
+            ft.Container(self.backlog_preview_text, padding=10, border_radius=8, bgcolor="#1a1a2e"),
         ])
 
     def log(self, message: str, color: str = "white"):
@@ -534,3 +555,129 @@ class ToolsView(ft.Container):
             self.log("网络模块 (aiohttp): ✗ (未安装)", ERROR)
             
         self.log("=== 诊断完成 ===", ACCENT_PRIMARY)
+
+    # ══════════════════════════════════════════════
+    #  Backlog: History recovery task manager
+    # ══════════════════════════════════════════════
+    def _backlog_stats(self):
+        """Return current backlog summary from DB."""
+        db = self.app_controller.db
+        try:
+            stale_rjs = db.conn.execute(
+                "SELECT COUNT(DISTINCT rj_id) FROM downloads WHERE status='stale'").fetchone()[0]
+            stale_rows = db.conn.execute(
+                "SELECT COUNT(*) FROM downloads WHERE status='stale'").fetchone()[0]
+            ignored_rjs = db.conn.execute(
+                "SELECT COUNT(DISTINCT rj_id) FROM downloads WHERE status='ignored'").fetchone()[0]
+            ignored_rows = db.conn.execute(
+                "SELECT COUNT(*) FROM downloads WHERE status='ignored'").fetchone()[0]
+            queued_rows = db.conn.execute(
+                "SELECT COUNT(*) FROM downloads WHERE status='queued'").fetchone()[0]
+            paused_rows = db.conn.execute(
+                "SELECT COUNT(*) FROM downloads WHERE status='paused'").fetchone()[0]
+            return {"stale_rjs": stale_rjs, "stale_rows": stale_rows,
+                    "ignored_rjs": ignored_rjs, "ignored_rows": ignored_rows,
+                    "queued_rows": queued_rows, "paused_rows": paused_rows}
+        except Exception:
+            return {}
+
+    def refresh_backlog(self, e=None):
+        stats = self._backlog_stats()
+        self.backlog_summary.value = (
+            f"Backlog: {stats.get('stale_rjs',0)} stale RJs ({stats.get('stale_rows',0)} rows) | "
+            f"{stats.get('ignored_rjs',0)} ignored RJs ({stats.get('ignored_rows',0)} rows) | "
+            f"queued: {stats.get('queued_rows',0)} | paused: {stats.get('paused_rows',0)}"
+        )
+        self.backlog_summary.update()
+
+    def backlog_preview(self, e):
+        """Dry-run: show what a batch would re-enable. NO DB write."""
+        source = self.backlog_source.value
+        try:
+            limit = int(self.backlog_batch_size.value or "30")
+        except ValueError:
+            limit = 30
+
+        db = self.app_controller.db
+        where = "WHERE d.status IN ('stale','ignored') AND d.rj_id != 'RJ01510133'"
+        if source == "ignored":
+            where += " AND d.status = 'ignored'"
+        elif source == "stale":
+            where += " AND d.status = 'stale'"
+
+        rows = db.conn.execute(f"""
+            SELECT d.rj_id, COUNT(*) as cnt FROM downloads d
+            {where} GROUP BY d.rj_id ORDER BY cnt ASC LIMIT ?
+        """, (limit,)).fetchall()
+
+        rj_ids = [r[0] for r in rows]
+        total = sum(r[1] for r in rows)
+        preview = f"Preview ({source}, limit={limit}): {len(rj_ids)} RJs, {total} rows\n"
+        for r in rows[:5]:
+            preview += f"  {r[0]}: {r[1]} rows\n"
+        if len(rows) > 5:
+            preview += f"  ... and {len(rows)-5} more\n"
+        preview += "\nNo DB write performed."
+        self.backlog_preview_text.value = preview
+        self._backlog_candidate_ids = rj_ids
+        self.backlog_preview_text.update()
+
+    def backlog_reenable(self, e):
+        """Execute re-enable with confirmation, backup, and rollback."""
+        rj_ids = getattr(self, "_backlog_candidate_ids", [])
+        if not rj_ids:
+            self.app_controller.show_snack("Run Preview first to select candidates.")
+            return
+
+        # Confirmation
+        def do_execute():
+            from datetime import datetime
+            from pathlib import Path
+            import json, shutil
+
+            db = self.app_controller.db
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_dir = Path(".local_backups") / f"backlog_reenable_ui_{ts}"
+            os.makedirs(backup_dir, exist_ok=True)
+
+            # Backup
+            shutil.copy2("history.db", backup_dir / "history.before_reenable.db")
+
+            # Execute
+            try:
+                placeholders = ",".join("?" * len(rj_ids))
+                now = datetime.now().isoformat(timespec="seconds")
+                db.execute_write(
+                    f"UPDATE downloads SET status='queued', downloaded_bytes=0, error=NULL, updated_at=? WHERE rj_id IN ({placeholders}) AND status IN ('stale','ignored')",
+                    [now] + rj_ids)
+                db.commit()
+            except Exception as ex:
+                self.app_controller.show_snack(f"Re-enable failed: {ex}")
+                return
+
+            integrity = db.conn.execute("PRAGMA integrity_check").fetchone()[0]
+            queued_now = db.conn.execute("SELECT COUNT(*) FROM downloads WHERE status='queued'").fetchone()[0]
+
+            result = f"Re-enabled {len(rj_ids)} RJs ({queued_now} total queued). integrity={integrity}. Backup: {backup_dir}"
+            self.backlog_preview_text.value = result
+            self.backlog_preview_text.update()
+            self.refresh_backlog()
+            self.app_controller.show_snack(result[:80])
+
+        self.app_controller.page.dialog = ft.AlertDialog(
+            title=ft.Text(f"Re-enable {len(rj_ids)} RJs?"),
+            content=ft.Text(f"This will move {len(rj_ids)} RJs from stale/ignored to queued.\nBackup will be created.\nNo files deleted."),
+            actions=[
+                ft.TextButton("Cancel", on_click=lambda e: self._close_dialog()),
+                ft.TextButton("Execute", on_click=lambda e: [self._close_dialog(), do_execute()]),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self.app_controller.page.dialog.open = True
+        self.app_controller.page.update()
+
+    def _close_dialog(self):
+        self.app_controller.page.dialog.open = False
+        self.app_controller.page.update()
+
+    # end backlog

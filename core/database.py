@@ -731,3 +731,62 @@ class LibraryVault:
         ).fetchone()[0]
 
         return result
+
+    # ──────────────────────────────────────────────
+    #  Library items (P5/P6)
+    # ──────────────────────────────────────────────
+    def get_library_items(self, search="", offset=0, limit=0,
+                          filter_audio=False, filter_cover=False, filter_warnings=False) -> list:
+        try:
+            conditions, params = [], []
+            if search:
+                q = f"%{search}%"
+                conditions.append("(rj_id LIKE ? OR folder_name LIKE ?)")
+                params.extend([q, q])
+            if filter_audio:
+                conditions.append("has_audio = 1")
+            if filter_cover:
+                conditions.append("has_cover = 0")
+            if filter_warnings:
+                conditions.append("warnings_json IS NOT NULL AND warnings_json != '[]' AND warnings_json != ''")
+            where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+            sql = f"SELECT * FROM library_items {where} ORDER BY total_size DESC"
+            if limit > 0:
+                sql += f" LIMIT {limit} OFFSET {offset}"
+            return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
+        except Exception as e:
+            logging.error(f"get_library_items error: {e}")
+            return []
+
+    def count_library_items(self, search="", filter_audio=False, filter_cover=False, filter_warnings=False) -> int:
+        try:
+            conditions, params = [], []
+            if search:
+                q = f"%{search}%"
+                conditions.append("(rj_id LIKE ? OR folder_name LIKE ?)")
+                params.extend([q, q])
+            if filter_audio:
+                conditions.append("has_audio = 1")
+            if filter_cover:
+                conditions.append("has_cover = 0")
+            if filter_warnings:
+                conditions.append("warnings_json IS NOT NULL AND warnings_json != '[]' AND warnings_json != ''")
+            where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+            return self.conn.execute(f"SELECT COUNT(*) FROM library_items {where}", params).fetchone()[0]
+        except Exception as e:
+            logging.error(f"count_library_items error: {e}")
+            return 0
+
+    def get_library_summary(self) -> dict:
+        try:
+            total = self.conn.execute("SELECT COUNT(*), SUM(total_files), SUM(total_size) FROM library_items").fetchone()
+            return {"total_works": total[0] or 0, "total_files": total[1] or 0,
+                    "total_size": total[2] or 0,
+                    "with_audio": self.conn.execute("SELECT COUNT(*) FROM library_items WHERE has_audio=1").fetchone()[0],
+                    "with_cover": self.conn.execute("SELECT COUNT(*) FROM library_items WHERE has_cover=1").fetchone()[0],
+                    "with_warnings": self.conn.execute(
+                        "SELECT COUNT(*) FROM library_items WHERE warnings_json IS NOT NULL AND warnings_json != '[]' AND warnings_json != ''"
+                    ).fetchone()[0]}
+        except Exception as e:
+            logging.error(f"get_library_summary error: {e}")
+            return {}

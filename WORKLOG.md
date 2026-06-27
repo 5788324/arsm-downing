@@ -1763,6 +1763,111 @@ bulk_download_postcheck_20260627_161106/
 Download this batch of 30 RJs via Flet UI (they are now in the queue).
 After completion → postcheck → re-enable next batch of ~30 from backlog.
 Continue batch-by-batch until backlog is cleared or user stops.
+
+---
+
+## 22. 2026-06-27 RC10: backlog batch workflow + P6 library UI MVP
+
+### 日期
+```text
+2026-06-27
+```
+
+### 执行者
+```text
+DeepSeek/OpenCode
+```
+
+### 阶段
+```text
+RC10 / backlog CLI enhancement + backlog UI + P6 library UI MVP
+```
+
+### 本轮目标
+Large unified task:
+A. Enhance backlog CLI (list, re-enable, batch)
+B. Add backlog management tab to ToolsView
+C. P6 Library UI MVP reading library_items
+D. Verify download page compatibility
+E. Tests
+
+### 实际完成
+```text
+A1. backlog_list.py enhanced:
+    - --source ignored/stale/all, --limit N, --sort downloads_asc/desc/rj_asc
+    - --output-selected-rjs to write RJ IDs file
+    
+A2. backlog_reenable.py enhanced:
+    - --from-file to read RJ IDs from file
+    - --force-large-batch guard (>100 RJs)
+    - --allow-large-existing-queue guard (>3000 queued)
+    
+A3. backlog_batch.py new:
+    - Chains list + dry-run + execute in one command
+    - Default dry-run
+    
+B. Backlog UI in ToolsView:
+    - Summary stats (stale/ignored/queued/paused counts)
+    - Source selector (ignored/stale/all) + batch size input
+    - Preview button (dry-run DB query, no write)
+    - Re-enable button (dialog confirmation + backup + execute)
+    
+C. P6 Library UI MVP:
+    - Rewrote library_view.py to read library_items via LibraryVault
+    - Search by RJ ID / folder_name
+    - Filters: has_audio, missing_cover, warnings
+    - Pagination (30 per page)
+    - Click to open folder
+    - Added get_library_items, count_library_items, get_library_summary to LibraryVault
+    
+D. Download page compatibility:
+    - Verified stale/ignored excluded from get_pending_downloads and get_pending_rj_ids
+    - queued+paused visible, resume_all safe
+
+E. Tests:
+    - 28 new tests in scripts/test_rc10.py (backlog list/sort/filter, re-enable, library items query/search/filter/summary, download queue isolation)
+    - All existing tests still pass (test_bulk_guardrails: 18/18)
+```
+
+### 文件
+```text
+added:
+  tools/backlog_batch.py
+  scripts/test_rc10.py
+modified:
+  core/database.py          (+3 library_items query methods)
+  tools/backlog_list.py     (CLI args: source/limit/sort/output)
+  tools/backlog_reenable.py (from-file + safety guards)
+  ui/views/library_view.py  (rewrite: reads library_items)
+  ui/views/tools_view.py    (+backlog tab)
+```
+
+### 是否改代码
+```text
+yes — multiple files, no download core modifications
+```
+
+### 是否改 DB
+```text
+no (tools dry-run only in this session)
+```
+
+### 是否删除文件
+```text
+no
+```
+
+### 是否改下载核心
+```text
+no (only added query methods to LibraryVault, no change to download flow)
+```
+
+### 下一步
+```text
+Codex reviews RC10 → user uses backlog UI to re-enable remaining batches →
+  continues bulk downloading → downloader stabilizes →
+  next: P7 media player MVP
+```
 ```
 ```
 ```
