@@ -241,6 +241,8 @@ class AppController:
                 self.views[1].load_library()
             elif idx == 2:
                 self.views[2].load_data()
+            elif idx == 3:
+                self.views[3].refresh_backlog()
 
     # ──────────────────────────────────────────────────────
     #  Actions (called from UI thread / Flet event loop)

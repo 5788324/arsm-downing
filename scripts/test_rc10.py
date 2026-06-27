@@ -59,7 +59,8 @@ if test_rj_ids:
     check("reads file correctly", len(rj_ids_from_file) == len(test_rj_ids))
     rd = reenable_dry(rj_ids_from_file)
     check("from-file dry-run works", rd["totals"]["total_rows"] > 0)
-    tmp.unlink(missing_ok=True)
+    try: tmp.unlink(missing_ok=True)
+    except PermissionError: pass
 
 # ── Library items queries ──
 print("\n7. library_items query")

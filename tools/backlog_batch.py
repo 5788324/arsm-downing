@@ -35,11 +35,22 @@ def main():
     if not candidates:
         print("No candidates found."); return
 
-    rj_ids = [c["rj_id"] for c in candidates]
-    total_rows = summary["total_download_rows"]
+    # Step 2: Print summary
+    rj_ids_from_list = [c["rj_id"] for c in candidates]
+
+    # Re-count actual rows that would be updated (stale+ignored, not just filtered type)
+    conn = sqlite3.connect("history.db")
+    if rj_ids_from_list:
+        ph = ",".join("?" * len(rj_ids_from_list))
+        actual_count = conn.execute(f"SELECT COUNT(*) FROM downloads WHERE rj_id IN ({ph}) AND status IN ('stale','ignored')", rj_ids_from_list).fetchone()[0]
+    else:
+        actual_count = 0
+    conn.close()
+
+    total_rows = actual_count
 
     # Step 2: Print summary
-    print(f"\nBatch: {len(rj_ids)} RJs, {total_rows} download rows")
+    print(f"\nBatch: {len(rj_ids_from_list)} RJs, {total_rows} download rows")
     for c in candidates[:5]:
         print(f"  {c['rj_id']}: {c['ignored_count']}i/{c['stale_count']}s, {c['downloads_total']} total")
     if len(candidates) > 5:
@@ -47,7 +58,7 @@ def main():
 
     # Step 3: Dry-run re-enable
     print(f"\n{'='*60}\nSTEP 2: Dry-run re-enable\n{'='*60}")
-    dr = reenable_dry(rj_ids, mode=args.mode)
+    dr = reenable_dry(rj_ids_from_list, mode=args.mode)
     print(f"Would update: {dr['totals']['total_rows']} rows across {dr['totals']['rjs']} RJs")
     for r in dr["would_update"][:3]:
         print(f"  {r['rj_id']}: {r['count']} rows")
@@ -55,7 +66,7 @@ def main():
     # Step 4: Execute if requested
     if args.execute:
         print(f"\n{'='*60}\nSTEP 3: Execute\n{'='*60}")
-        actual = reenable_exec(rj_ids, mode=args.mode)
+        actual = reenable_exec(rj_ids_from_list, mode=args.mode)
         print(f"\nResult: {actual['updated_rows']} rows updated")
         print(f"Backup: {actual['backup_dir']}")
         print(f"Verdict: {'OK' if actual['completed_unchanged'] and actual['works_unchanged'] else 'CHECK'}")

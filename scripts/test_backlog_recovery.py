@@ -20,12 +20,12 @@ print("=== RC9.7 Backlog Recovery Tests ===\n")
 
 # ── backlog_list tests ──
 print("1. backlog_list groups")
-groups, summary = run_backlog_list()
+groups, summary, _ = run_backlog_list()
 check("has stale_backlog group", "stale_backlog" in groups)
 check("has ignored_backlog group", "ignored_backlog" in groups)
 check("total candidates > 0", summary["total_candidate_rjs"] > 0)
-check("total stale > 0", summary["total_stale_downloads"] > 0)
-check("total ignored > 0", summary["total_ignored_downloads"] > 0)
+check("total download rows > 0", summary["total_download_rows"] > 0)
+check("has groups", len(summary["groups"]) > 0)
 check("excludes completed_only", len([c for c in groups.get("stale_backlog", []) + groups.get("ignored_backlog", [])
                                       if c["completed_count"] > 0 and c["stale_count"] == 0 and c["ignored_count"] == 0]) == 0)
 check("keeps RJ01510133 as paused_current if present", "RJ01510133" not in [

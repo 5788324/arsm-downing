@@ -599,74 +599,80 @@ class ToolsView(ft.Container):
             limit = 30
 
         db = self.app_controller.db
+        # Find candidate RJs by the selected source filter
         where = "WHERE d.status IN ('stale','ignored') AND d.rj_id != 'RJ01510133'"
         if source == "ignored":
             where += " AND d.status = 'ignored'"
         elif source == "stale":
             where += " AND d.status = 'stale'"
 
-        rows = db.conn.execute(f"""
+        candidate_rows = db.conn.execute(f"""
             SELECT d.rj_id, COUNT(*) as cnt FROM downloads d
             {where} GROUP BY d.rj_id ORDER BY cnt ASC LIMIT ?
         """, (limit,)).fetchall()
 
-        rj_ids = [r[0] for r in rows]
-        total = sum(r[1] for r in rows)
-        preview = f"Preview ({source}, limit={limit}): {len(rj_ids)} RJs, {total} rows\n"
-        for r in rows[:5]:
+        rj_ids = [r[0] for r in candidate_rows]
+
+        # Re-count ALL stale+ignored for these RJs (not just the filtered type)
+        # because re-enable updates both stale AND ignored together
+        if rj_ids:
+            placeholders = ",".join("?" * len(rj_ids))
+            actual_rows = db.conn.execute(f"""
+                SELECT rj_id, COUNT(*) as cnt FROM downloads
+                WHERE rj_id IN ({placeholders}) AND status IN ('stale','ignored')
+                GROUP BY rj_id
+            """, rj_ids).fetchall()
+            actual_total = sum(r[1] for r in actual_rows)
+        else:
+            actual_total = 0
+            actual_rows = []
+
+        source_total = sum(r[1] for r in candidate_rows)
+        if actual_total != source_total:
+            preview = f"Preview ({source}, limit={limit}): {len(rj_ids)} RJs\n"
+            preview += f"  {source} rows: {source_total} | actual stale+ignored: {actual_total}\n"
+        else:
+            preview = f"Preview ({source}, limit={limit}): {len(rj_ids)} RJs, {actual_total} rows\n"
+        for r in actual_rows[:8]:
             preview += f"  {r[0]}: {r[1]} rows\n"
-        if len(rows) > 5:
-            preview += f"  ... and {len(rows)-5} more\n"
+        if len(actual_rows) > 8:
+            preview += f"  ... and {len(actual_rows)-8} more\n"
         preview += "\nNo DB write performed."
         self.backlog_preview_text.value = preview
         self._backlog_candidate_ids = rj_ids
         self.backlog_preview_text.update()
 
     def backlog_reenable(self, e):
-        """Execute re-enable with confirmation, backup, and rollback."""
+        """Execute re-enable via the auditable CLI tool (backup + preimage + rollback)."""
         rj_ids = getattr(self, "_backlog_candidate_ids", [])
         if not rj_ids:
             self.app_controller.show_snack("Run Preview first to select candidates.")
             return
 
-        # Confirmation
         def do_execute():
-            from datetime import datetime
-            from pathlib import Path
-            import json, shutil
+            import sys
+            from pathlib import Path as P
+            sys.path.insert(0, str(P(__file__).parent.parent.parent))
+            from tools.backlog_reenable import execute
 
-            db = self.app_controller.db
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_dir = Path(".local_backups") / f"backlog_reenable_ui_{ts}"
-            os.makedirs(backup_dir, exist_ok=True)
+            result = execute(rj_ids, mode="retry-from-zero")
+            integrity = result.get("integrity_after", "?")
+            updated = result.get("updated_rows", 0)
+            backup = result.get("backup_dir", "?")
+            completed_ok = result.get("completed_unchanged", False)
 
-            # Backup
-            shutil.copy2("history.db", backup_dir / "history.before_reenable.db")
-
-            # Execute
-            try:
-                placeholders = ",".join("?" * len(rj_ids))
-                now = datetime.now().isoformat(timespec="seconds")
-                db.execute_write(
-                    f"UPDATE downloads SET status='queued', downloaded_bytes=0, error=NULL, updated_at=? WHERE rj_id IN ({placeholders}) AND status IN ('stale','ignored')",
-                    [now] + rj_ids)
-                db.commit()
-            except Exception as ex:
-                self.app_controller.show_snack(f"Re-enable failed: {ex}")
-                return
-
-            integrity = db.conn.execute("PRAGMA integrity_check").fetchone()[0]
-            queued_now = db.conn.execute("SELECT COUNT(*) FROM downloads WHERE status='queued'").fetchone()[0]
-
-            result = f"Re-enabled {len(rj_ids)} RJs ({queued_now} total queued). integrity={integrity}. Backup: {backup_dir}"
-            self.backlog_preview_text.value = result
+            msg = f"Re-enabled {len(rj_ids)} RJs ({updated} rows). integrity={integrity}. Backup: {backup}"
+            self.backlog_preview_text.value = msg
             self.backlog_preview_text.update()
             self.refresh_backlog()
-            self.app_controller.show_snack(result[:80])
+            if not completed_ok:
+                self.app_controller.show_snack("WARN: completed count changed!")
+            self.app_controller.show_snack(msg[:80])
 
         self.app_controller.page.dialog = ft.AlertDialog(
             title=ft.Text(f"Re-enable {len(rj_ids)} RJs?"),
-            content=ft.Text(f"This will move {len(rj_ids)} RJs from stale/ignored to queued.\nBackup will be created.\nNo files deleted."),
+            content=ft.Text(f"Will update stale/ignored -> queued for {len(rj_ids)} RJs.\n"
+                           "Backup + preimage + rollback will be created.\nNo files deleted."),
             actions=[
                 ft.TextButton("Cancel", on_click=lambda e: self._close_dialog()),
                 ft.TextButton("Execute", on_click=lambda e: [self._close_dialog(), do_execute()]),

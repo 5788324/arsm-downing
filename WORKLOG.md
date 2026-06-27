@@ -1867,6 +1867,77 @@ no (only added query methods to LibraryVault, no change to download flow)
 Codex reviews RC10 → user uses backlog UI to re-enable remaining batches →
   continues bulk downloading → downloader stabilizes →
   next: P7 media player MVP
+
+---
+
+## 23. 2026-06-27 RC10 codex review fixes
+
+### 日期
+```text
+2026-06-27
+```
+
+### 执行者
+```text
+DeepSeek/OpenCode (fixing Codex STOP feedback)
+```
+
+### 阶段
+```text
+RC10 / codex review fixes
+```
+
+### Codex 发现问题
+```text
+1. UI re-enable directly wrote DB — bypassed CLI safety (backup, preimage, rollback, integrity).
+2. Preview row count (1016) ≠ execute row count (1049) — source filter mismatch.
+3. Tests failing: test_backlog_recovery.py (old API), test_rc10.py (PermissionError).
+4. Backlog summary doesn't auto-refresh on tab switch.
+```
+
+### 修复
+```text
+1. UI re-enable now calls tools.backlog_reenable.execute() directly — full safety:
+   backup, preimage JSON, rollback SQL, integrity check, completed/works verification.
+   
+2. Preview row count fixed — backlog_preview now re-counts ALL stale+ignored
+   for selected RJs (not just filtered source type). backlog_batch.py also fixed.
+   Before: 1016 vs 1049. After: 1049 = 1049.
+   
+3. test_backlog_recovery.py: updated for 3-value return from run_backlog_list().
+   test_rc10.py: added try/except PermissionError for temp file cleanup.
+   All 62 tests pass (16 + 28 + 18).
+   
+4. AppController.on_nav_change now calls refresh_backlog() when switching to tools tab (idx=3).
+```
+
+### 是否改代码
+```text
+yes — 5 files modified
+```
+
+### 是否改 DB
+```text
+no
+```
+
+### 是否删除文件
+```text
+no
+```
+
+### 测试
+```text
+test_backlog_recovery.py: 16/16 passed
+test_rc10.py:           28/28 passed
+test_bulk_guardrails.py: 18/18 passed
+TOTAL:                  62/62 passed
+```
+
+### 下一步
+```text
+Codex re-reviews RC10 fixes
+```
 ```
 ```
 ```
