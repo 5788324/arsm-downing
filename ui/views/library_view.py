@@ -1,205 +1,117 @@
-"""P6 Library UI MVP ? reads library_items table via LibraryVault only."""
-import json
-import os
-import platform
-import subprocess
+"""P6 Library UI — card view + anomaly list. Reads library_items + works."""
+import json, os, platform, subprocess
 from pathlib import Path
-
 import flet as ft
-
 from ui.theme import Styles, ACCENT_PRIMARY, SUCCESS, WARNING, ERROR, BG_SURFACE_LIGHT
 
-LIBRARY_PAGE_SIZE = 30
-STATUS_LABELS = {
-    "completed": ("Completed", SUCCESS),
-    "partial": ("Partial", WARNING),
-    "external": ("External", ACCENT_PRIMARY),
-    "verified": ("Verified", SUCCESS),
-    "missing": ("Missing", ERROR),
-}
-FILTER_OPTIONS = [
-    ("__all__", "\u5168\u90e8"),
-    ("has_audio", "\u6709\u97f3\u9891"),
-    ("missing_cover", "\u65e0\u5c01\u9762"),
-    ("warnings", "\u6709\u8b66\u544a"),
-]
-COVER_CANDIDATES = (
-    "cover.jpg", "cover.jpeg", "cover.png", "cover.webp",
-    "main.jpg", "main.png", "package.jpg", "package.png",
-)
-
-
-def safe_update(control):
-    try:
-        if control and hasattr(control, "page") and control.page:
-            control.update()
-    except Exception:
-        pass
-
+LIBRARY_PAGE_SIZE = 40
+E_ROOT = r"E:\arsm"
+OLD_ROOT = r"C:\Users\YANG\Music\arsm.one"
+FAKE_RJ = {"RJ00000000", "RJ00123456"}
+ALIAS_RJ = {"RJ00323125", "RJ323125"}
+COVER_CANDIDATES = ("cover.jpg", "cover.jpeg", "cover.png", "cover.webp",
+                     "main.jpg", "main.png", "package.jpg", "package.png")
 
 def fmt_size(b):
-    if b >= 1_000_000_000:
-        return f"{b/1_000_000_000:.1f} GB"
-    if b >= 1_000_000:
-        return f"{b/1_000_000:.0f} MB"
-    if b >= 1_000:
-        return f"{b/1_000:.0f} KB"
+    if b >= 1_000_000_000: return f"{b/1_000_000_000:.1f} GB"
+    if b >= 1_000_000: return f"{b/1_000_000:.0f} MB"
+    if b >= 1_000: return f"{b/1_000:.0f} KB"
     return f"{b} B"
-
 
 class LibraryView(ft.Container):
     def __init__(self, app_controller):
         super().__init__()
         self.app_controller = app_controller
-        self.expand = True
-        self.padding = 10
+        self.expand = True; self.padding = 10
+        self._current_page = 0; self._anomaly_group = "__all__"
+        self._mode = "cards"  # cards | anomalies
 
-        self._current_page = 0
-        self._current_filter = "__all__"
-        self._summary = {}
-
-        self.search_input = ft.TextField(
-            hint_text="\u641c\u7d22 RJ / \u6587\u4ef6\u5939...",
-            border_radius=10,
-            expand=True,
-            on_change=self.on_search,
-            on_submit=self.on_search,
-        )
-
-        self.filter_chips = ft.Row([], wrap=True, spacing=6)
+        self.search_input = ft.TextField(hint_text="搜索 RJ / 文件夹...", border_radius=10,
+            expand=True, on_change=self.on_search, on_submit=self.on_search)
         self.summary_bar = ft.Text("", size=12, color="grey")
         self.page_info = ft.Text("", size=12, color="grey")
-        self.btn_prev = ft.TextButton(content=ft.Text("\u4e0a\u4e00\u9875", color=ACCENT_PRIMARY), on_click=lambda e: self._go_page(-1))
-        self.btn_next = ft.TextButton(content=ft.Text("\u4e0b\u4e00\u9875", color=ACCENT_PRIMARY), on_click=lambda e: self._go_page(1))
+        self.btn_prev = ft.TextButton(content=ft.Text("上一页", color=ACCENT_PRIMARY), on_click=lambda e: self._go_page(-1))
+        self.btn_next = ft.TextButton(content=ft.Text("下一页", color=ACCENT_PRIMARY), on_click=lambda e: self._go_page(1))
+        self.mode_toggle = ft.Row([], spacing=6)
 
-        self.grid = ft.GridView(
-            expand=True,
-            max_extent=260,
-            child_aspect_ratio=0.72,
-            spacing=12,
-            run_spacing=12,
-            padding=ft.padding.only(bottom=16),
-        )
+        self.grid = ft.GridView(expand=True, max_extent=260, child_aspect_ratio=0.72, spacing=12, run_spacing=12)
+        self.list_view = ft.ListView(expand=True, spacing=4)
 
         self.content = ft.Column([
-            ft.Text("\u8d44\u6e90\u5e93", size=28, weight=ft.FontWeight.BOLD),
+            ft.Text("资源库", size=28, weight=ft.FontWeight.BOLD),
             self.summary_bar,
             ft.Row([self.search_input], spacing=10),
-            ft.Container(content=self.filter_chips, padding=ft.padding.only(top=4, bottom=4)),
-            ft.Row([
-                ft.Text("\u5c01\u9762\u4f18\u5148\u5c55\u793a\uff0c\u70b9\u51fb\u5361\u7247\u6253\u5f00\u76ee\u5f55", size=12, color="grey"),
-                ft.Container(expand=True),
-                self.page_info,
-                self.btn_prev,
-                self.btn_next,
-            ], alignment=ft.MainAxisAlignment.END),
+            self.mode_toggle,
+            ft.Row([ft.Text("", expand=True), self.page_info, self.btn_prev, self.btn_next],
+                alignment=ft.MainAxisAlignment.END),
+            ft.Divider(height=1, color="transparent"),
             self.grid,
-        ], expand=True, spacing=12)
+            self.list_view,
+        ], expand=True, spacing=8)
 
-    def _refresh_summary(self):
-        try:
-            self._summary = self.app_controller.db.get_library_summary()
-            self.summary_bar.value = (
-                f"\u5171 {self._summary.get('total_works', 0)} \u4e2a\u4f5c\u54c1, "
-                f"{self._summary.get('total_files', 0)} \u6587\u4ef6, "
-                f"{fmt_size(self._summary.get('total_size', 0))} | "
-                f"\u97f3\u9891: {self._summary.get('with_audio', 0)} | "
-                f"\u5c01\u9762: {self._summary.get('with_cover', 0)} | "
-                f"\u8b66\u544a: {self._summary.get('with_warnings', 0)}"
-            )
-        except Exception:
-            self.summary_bar.value = "Library not available"
-
-    def _build_filter_chips(self):
-        self.filter_chips.controls.clear()
-        for key, label in FILTER_OPTIONS:
-            is_active = self._current_filter == key
-            chip = ft.Chip(
-                label=ft.Text(label, size=12, color="white"),
-                bgcolor=ACCENT_PRIMARY if is_active else None,
+    def _build_mode_toggle(self):
+        self.mode_toggle.controls.clear()
+        for key, label in [("cards", "卡片"), ("anomalies", "异常")]:
+            active = self._mode == key
+            chip = ft.Chip(label=ft.Text(label, size=12, color="white"),
+                bgcolor=ACCENT_PRIMARY if active else None,
                 shape=ft.RoundedRectangleBorder(radius=10),
-                on_click=lambda e, k=key: self._on_filter_chip(k),
-            )
-            self.filter_chips.controls.append(chip)
+                on_click=lambda e, k=key: self._set_mode(k))
+            self.mode_toggle.controls.append(chip)
 
-    def _on_filter_chip(self, key):
-        self._current_filter = key
-        self._current_page = 0
-        self.load_library()
+    def _set_mode(self, mode):
+        self._mode = mode; self._current_page = 0; self.load_library()
 
+    def on_search(self, e=None): self._current_page = 0; self.load_library()
     def _go_page(self, delta):
-        new_page = self._current_page + delta
-        if new_page < 0:
-            return
-        self._current_page = new_page
-        self.load_library()
+        n = self._current_page + delta
+        if n < 0: return
+        self._current_page = n; self.load_library()
 
-    def _resolve_cover_source(self, folder_path: str, has_cover: int, rj_id: str = ""):
-        # 1. Local disk scan (fastest, no proxy)
-        if folder_path and has_cover:
-            root = Path(folder_path)
-            if root.exists():
-                for name in COVER_CANDIDATES:
-                    candidate = root / name
-                    if candidate.exists():
-                        return str(candidate)
-                try:
-                    for child in root.iterdir():
-                        if child.is_file() and child.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}:
-                            lower_name = child.name.lower()
-                            if "cover" in lower_name or "package" in lower_name or "main" in lower_name:
-                                return str(child)
-                except Exception:
-                    pass
-
-        # 2. Metadata cache fallback (works for works without local cover files)
-        if rj_id:
-            try:
-                cached = self.app_controller.db.get_metadata_cache(rj_id)
-                if cached and cached.get("cover_url"):
-                    return cached["cover_url"]
-            except Exception:
-                pass
-        return None
-
-    def _build_cover(self, folder_path: str, has_cover: int, rj_id: str = ""):
-        src = self._resolve_cover_source(folder_path, has_cover, rj_id)
-        if src:
-            return ft.Container(
-                height=180,
-                border_radius=14,
-                clip_behavior=ft.ClipBehavior.HARD_EDGE,
-                bgcolor=BG_SURFACE_LIGHT,
-                content=ft.Image(src=src, fit=ft.ImageFit.COVER),
-            )
-        return ft.Container(
-            height=180,
-            border_radius=14,
-            bgcolor=ft.colors.with_opacity(0.55, BG_SURFACE_LIGHT),
-            alignment=ft.alignment.center,
-            content=ft.Column([
-                ft.Icon(ft.icons.IMAGE_NOT_SUPPORTED_OUTLINED, color=WARNING, size=36),
-                ft.Text("\u65e0\u5c01\u9762", size=12, color="grey"),
-            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=6),
-        )
+    def _is_anomaly(self, rj_id, local_path, warnings):
+        if rj_id in FAKE_RJ or rj_id in ALIAS_RJ: return True
+        lp = local_path or ""
+        if lp and not os.path.exists(lp): return True
+        if is_on_e(lp) and rj_id not in self._lib_ids: return True
+        if is_old_lib(lp): return True
+        if not rj_id in self._lib_ids: return True
+        if "empty_directory" in warnings: return True
+        if "no_images" in warnings: return True
+        if "path_mismatch_with_works_local_path" in warnings: return True
+        return False
 
     def load_library(self):
-        self._refresh_summary()
-        self._build_filter_chips()
-        self.grid.controls.clear()
+        self._build_mode_toggle()
+        db = self.app_controller.db
+        lib_summary = db.get_library_summary()
+        self.summary_bar.value = (
+            f"共 {lib_summary.get('total_works',0)} 索引 | 音频 {lib_summary.get('with_audio',0)} "
+            f"| 封面 {lib_summary.get('with_cover',0)} | 警告 {lib_summary.get('with_warnings',0)}")
 
-        fa = self._current_filter == "has_audio"
-        fc = self._current_filter == "missing_cover"
-        fw = self._current_filter == "warnings"
-        search = self.search_input.value or ""
-        offset = self._current_page * LIBRARY_PAGE_SIZE
+        self.grid.controls.clear(); self.list_view.controls.clear()
+        self.grid.visible = self._mode == "cards"
+        self.list_view.visible = self._mode == "anomalies"
 
-        items = self.app_controller.db.get_library_items(
-            search=search, offset=offset, limit=LIBRARY_PAGE_SIZE,
-            filter_audio=fa, filter_cover=fc, filter_warnings=fw)
-        total = self.app_controller.db.count_library_items(
-            search=search, filter_audio=fa, filter_cover=fc, filter_warnings=fw)
-        total_pages = max(1, (total + LIBRARY_PAGE_SIZE - 1) // LIBRARY_PAGE_SIZE)
+        if self._mode == "cards":
+            self._build_cards(db)
+        else:
+            self._build_anomalies(db)
+
+        try:
+            if self.grid.page: self.grid.update()
+            if self.list_view.page: self.list_view.update()
+            if self.summary_bar.page: self.summary_bar.update()
+            if self.page_info.page: self.page_info.update()
+            if self.mode_toggle.page: self.mode_toggle.update()
+        except: pass
+
+    def _build_cards(self, db):
+        items = db.get_library_items(limit=LIBRARY_PAGE_SIZE, offset=self._current_page * LIBRARY_PAGE_SIZE)
+        total = db.count_library_items()
+        tp = max(1, (total + LIBRARY_PAGE_SIZE - 1) // LIBRARY_PAGE_SIZE)
+        self.page_info.value = f"第 {self._current_page+1}/{tp} 页"
+        self.btn_prev.disabled = self._current_page == 0
+        self.btn_next.disabled = self._current_page + 1 >= tp
 
         for item in items:
             rj_id = item["rj_id"]
@@ -209,142 +121,122 @@ class LibraryView(ft.Container):
             has_cover = item.get("has_cover", 0)
             folder_path = item.get("folder_path", "")
             folder_name = item.get("folder_name", rj_id)
-            warnings_raw = item.get("warnings_json", "[]")
+            dn = folder_name if len(folder_name) <= 36 else folder_name[:33] + ".."
+            cover_src = _resolve_local_cover(folder_path, has_cover, rj_id, db)
+            if not cover_src and folder_path:
+                cover_src = _remote_cover_fallback(rj_id, db)
+            cover_w = _cover_widget(cover_src, height=180) if cover_src else _no_cover_widget(180)
 
-            display_name = folder_name if len(folder_name) <= 36 else folder_name[:33] + "..."
-            try:
-                warn_list = json.loads(warnings_raw) if warnings_raw else []
-            except Exception:
-                warn_list = []
-
-            # Warning labels (Chinese) — prefix-based matching
-            WARN_PREFIXES = [
-                ("unusual_large_file:", "\u5f02\u5e38\u5927\u6587\u4ef6"),
-                ("no_images", "\u65e0\u56fe\u7247"),
-                ("no_audio_files", "\u65e0\u97f3\u9891"),
-                ("empty_directory", "\u7a7a\u76ee\u5f55"),
-                ("no_cover_candidate", "\u65e0\u5c01\u9762\u5019\u9009"),
-                ("path_mismatch", "\u8def\u5f84\u4e0d\u5339\u914d"),
-            ]
-            def _warn_label(w: str) -> str:
-                for prefix, cn in WARN_PREFIXES:
-                    if w == prefix.rstrip(":"):
-                        return cn
-                    if w.startswith(prefix):
-                        rest = w[len(prefix):].strip()
-                        return f"{cn}: {rest}" if rest else cn
-                return w
-            warn_texts = [_warn_label(w) for w in warn_list[:3]]
-
-            # Cover: when in missing_cover filter, don't use remote fallback
-            use_remote_cover = not fc
-            cover_src = None
-            if folder_path and has_cover:
-                root = Path(folder_path)
-                if root.exists():
-                    for name in COVER_CANDIDATES:
-                        c = root / name
-                        if c.exists():
-                            cover_src = str(c)
-                            break
-                    if not cover_src:
-                        try:
-                            for child in root.iterdir():
-                                if child.is_file() and child.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}:
-                                    if "cover" in child.name.lower() or "package" in child.name.lower():
-                                        cover_src = str(child)
-                                        break
-                        except Exception:
-                            pass
-            if not cover_src and use_remote_cover and rj_id:
-                try:
-                    cached = self.app_controller.db.get_metadata_cache(rj_id)
-                    if cached and cached.get("cover_url"):
-                        cover_src = cached["cover_url"]
-                except Exception:
-                    pass
-
-            if cover_src:
-                cover_widget = ft.Container(
-                    height=180, border_radius=14, clip_behavior=ft.ClipBehavior.HARD_EDGE,
-                    bgcolor=BG_SURFACE_LIGHT, content=ft.Image(src=cover_src, fit=ft.ImageFit.COVER))
-            else:
-                cover_widget = ft.Container(
-                    height=180, border_radius=14, bgcolor=ft.colors.with_opacity(0.55, BG_SURFACE_LIGHT),
-                    alignment=ft.alignment.center,
-                    content=ft.Column([
-                        ft.Icon(ft.icons.IMAGE_NOT_SUPPORTED_OUTLINED, color=WARNING, size=36),
-                        ft.Text("\u65e0\u5c01\u9762", size=12, color="grey"),
-                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=6))
-
-            badge_controls = [
-                ft.Text(rj_id, weight=ft.FontWeight.BOLD, size=14, color=ACCENT_PRIMARY),
-                ft.Text(f"{total_files}f / {fmt_size(total_size)}", size=11, color="grey"),
-            ]
+            badges = [ft.Text(rj_id, weight=ft.FontWeight.BOLD, size=14, color=ACCENT_PRIMARY),
+                      ft.Text(f"{total_files}f / {fmt_size(total_size)}", size=11, color="grey")]
             if audio_count > 0:
-                badge_controls.append(ft.Container(
-                    content=ft.Text(f"{audio_count} \u97f3\u9891", size=9, color="white"),
-                    bgcolor=SUCCESS, border_radius=999,
-                    padding=ft.padding.symmetric(horizontal=6, vertical=2)))
+                badges.append(ft.Container(content=ft.Text(f"{audio_count} 音频", size=9, color="white"),
+                    bgcolor=SUCCESS, border_radius=999, padding=ft.padding.symmetric(horizontal=6, vertical=2)))
             if not has_cover:
-                label = "\u65e0\u672c\u5730\u5c01\u9762"
-                if use_remote_cover:
-                    label = "\u8fdc\u7a0b\u5c01\u9762"
-                badge_controls.append(ft.Container(
-                    content=ft.Text(label, size=9, color="white"),
-                    bgcolor=WARNING, border_radius=999,
-                    padding=ft.padding.symmetric(horizontal=6, vertical=2)))
-            if warn_texts:
-                tooltip_text = "\n".join(warn_texts[:5])
-                badge_controls.append(ft.Container(
-                    content=ft.Text(f"{len(warn_list)}w", size=9, color="white"),
-                    bgcolor=ERROR, border_radius=999,
-                    tooltip=tooltip_text,
-                    padding=ft.padding.symmetric(horizontal=6, vertical=2)))
+                badges.append(ft.Container(content=ft.Text("无本地封面", size=9, color="white"),
+                    bgcolor=WARNING, border_radius=999, padding=ft.padding.symmetric(horizontal=6, vertical=2)))
+            card = ft.Column([cover_w, ft.Row(badges, wrap=True, spacing=4),
+                ft.Text(dn, size=13, weight=ft.FontWeight.W_600, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS)], spacing=6)
+            c = Styles.glass_container(card, padding=10)
+            if folder_path: c.on_click = lambda e, p=folder_path: open_folder(p)
+            self.grid.controls.append(c)
 
-            # Show first warning text as subtitle
-            warning_subtitle = None
-            if warn_texts and fw:
-                warning_subtitle = ft.Text(" | ".join(warn_texts[:2]), size=10, color=ERROR, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)
+    def _build_anomalies(self, db):
+        # Collect all works, detect anomalies
+        works = {r["rj_id"]: r for r in db.conn.execute("SELECT * FROM works").fetchall()}
+        lib_ids = set(r[0] for r in db.conn.execute("SELECT rj_id FROM library_items").fetchall())
+        self._lib_ids = lib_ids
 
-            card_content = [cover_widget, ft.Row(badge_controls, wrap=True, spacing=4)]
-            if warning_subtitle:
-                card_content.append(warning_subtitle)
-            card_content.append(ft.Text(display_name, size=13, weight=ft.FontWeight.W_600, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS))
+        groups = {"fake_or_test_rj": [], "legacy_alias_rj": [], "old_library_root_C": [],
+                  "on_target_but_not_indexed": [], "path_missing": [], "no_images": [],
+                  "empty_directory": [], "path_mismatch": [], "clean": []}
 
-            card = ft.Column(card_content, spacing=6)
-            container = Styles.glass_container(card, padding=10)
-            if folder_path:
-                container.on_click = lambda e, p=folder_path: self.open_folder(p)
-            self.grid.controls.append(container)
+        for rj_id, w in works.items():
+            lp = w["local_path"] or ""
+            lib = lib_ids
+            wjson = lib_data_get(db, rj_id)
+            warns = []
+            if wjson:
+                try: warns = json.loads(wjson.get("warnings_json", "[]") or "[]")
+                except: pass
 
-        start = offset + 1 if items else 0
-        end = offset + len(items)
-        self.page_info.value = f"Page {self._current_page + 1}/{total_pages} ({start}-{end} of {total})"
-        self.btn_prev.disabled = self._current_page == 0
-        self.btn_next.disabled = (self._current_page + 1) >= total_pages
+            if rj_id in FAKE_RJ: groups["fake_or_test_rj"].append((rj_id, w, warns, "假/测试RJ"))
+            elif rj_id in ALIAS_RJ: groups["legacy_alias_rj"].append((rj_id, w, warns, "别名RJ"))
+            elif lp and not os.path.exists(lp): groups["path_missing"].append((rj_id, w, warns, "路径丢失"))
+            elif is_on_e(lp) and rj_id not in lib_ids: groups["on_target_but_not_indexed"].append((rj_id, w, warns, "在E盘但未索引"))
+            elif is_old_lib(lp): groups["old_library_root_C"].append((rj_id, w, warns, "旧库路径"))
+            elif "empty_directory" in warns: groups["empty_directory"].append((rj_id, w, warns, "空目录"))
+            elif "no_images" in warns: groups["no_images"].append((rj_id, w, warns, "无图片"))
+            elif "path_mismatch_with_works_local_path" in warns: groups["path_mismatch"].append((rj_id, w, warns, "路径不匹配"))
+            else: groups["clean"].append((rj_id, w, warns, "正常"))
+
+        # Show all non-clean groups
+        all_anomalies = []
+        order = ["fake_or_test_rj", "legacy_alias_rj", "path_missing", "on_target_but_not_indexed",
+                 "old_library_root_C", "empty_directory", "no_images", "path_mismatch"]
+        for cat in order:
+            all_anomalies.extend(groups.get(cat, []))
+
+        total = len(all_anomalies)
+        self.page_info.value = f"共 {total} 项异常"
+        self.btn_prev.disabled = True; self.btn_next.disabled = True
+
+        last_cat = ""
+        for rj_id, w, warns, label in all_anomalies[:200]:
+            if label != last_cat:
+                last_cat = label
+                self.list_view.controls.append(ft.Container(
+                    content=ft.Text(f"── {label} ({len([x for x in all_anomalies if x[3] == label])}) ──",
+                        size=14, weight=ft.FontWeight.BOLD, color=WARNING if "丢失" in label or "缺失" in label else ACCENT_PRIMARY),
+                    padding=ft.padding.only(top=8, bottom=4)))
+            title = (w.get("title") or rj_id)[:60]
+            self.list_view.controls.append(ft.Text(
+                f"  {rj_id} | {w.get('status','')} | {fmt_size(w.get('size_bytes',0))} | {title} | {w.get('local_path','')[:50]}",
+                size=11, color="grey" if "正常" in label else "white"))
+
+def is_on_e(p): return p and p.replace("\\","/").startswith(E_ROOT.replace("\\","/"))
+def is_old_lib(p): return p and p.replace("\\","/").startswith(OLD_ROOT.replace("\\","/"))
+def _resolve_local_cover(folder_path, has_cover, rj_id, db):
+    if not folder_path or not has_cover: return None
+    root = Path(folder_path)
+    if not root.exists(): return None
+    for name in COVER_CANDIDATES:
+        c = root / name
+        if c.exists(): return str(c)
+    try:
+        for child in root.iterdir():
+            if child.is_file() and child.suffix.lower() in {".jpg",".jpeg",".png",".webp"}:
+                if "cover" in child.name.lower() or "package" in child.name.lower():
+                    return str(child)
+    except: pass
+    return None
+def _remote_cover_fallback(rj_id, db):
+    try:
+        c = db.get_metadata_cache(rj_id)
+        if c and c.get("cover_url"): return c["cover_url"]
+    except: pass
+    return None
+def _cover_widget(src, height=180):
+    return ft.Container(height=height, border_radius=14,
+        clip_behavior=ft.ClipBehavior.HARD_EDGE, bgcolor=BG_SURFACE_LIGHT,
+        content=ft.Image(src=src, fit=ft.ImageFit.COVER))
+def _no_cover_widget(height=180):
+    return ft.Container(height=height, border_radius=14,
+        bgcolor=ft.colors.with_opacity(0.55, BG_SURFACE_LIGHT),
+        alignment=ft.alignment.center,
+        content=ft.Column([ft.Icon(ft.icons.IMAGE_NOT_SUPPORTED_OUTLINED, color=WARNING, size=36),
+            ft.Text("无封面", size=12, color="grey")],
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=6))
+def lib_data_get(db, rj_id):
+    try:
+        r = db.conn.execute("SELECT * FROM library_items WHERE rj_id=?", (rj_id,)).fetchone()
+        return dict(r) if r else {}
+    except: return {}
+def open_folder(path_str):
+    p = Path(path_str)
+    if p.exists():
         try:
-            if self.grid.page: self.grid.update()
-            if self.page_info.page: self.page_info.update()
-            if self.btn_prev.page: self.btn_prev.update()
-            if self.btn_next.page: self.btn_next.update()
-            if self.filter_chips.page: self.filter_chips.update()
-        except Exception:
-            pass
-
-    def on_search(self, e=None):
-        self._current_page = 0
-        self.load_library()
-
-    def open_folder(self, path_str):
-        path = Path(path_str)
-        if path.exists():
-            try:
-                if platform.system() == "Windows":
-                    os.startfile(path)
-                elif platform.system() == "Darwin":
-                    subprocess.run(["open", path])
-                else:
-                    subprocess.run(["xdg-open", path])
-            except Exception:
-                pass
+            if platform.system() == "Windows": os.startfile(p)
+            elif platform.system() == "Darwin": subprocess.run(["open", p])
+            else: subprocess.run(["xdg-open", p])
+        except: pass
