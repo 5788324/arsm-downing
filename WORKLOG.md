@@ -1573,6 +1573,103 @@ no
 User adds 10-20 RJs via Flet UI (batch 1) → runs postcheck →
   adds 20-50 RJs (batch 2) → runs postcheck →
   if both batches stable → enter P6 library UI MVP
+Backlog recovery tools available: backlog_list.py + backlog_reenable.py
+
+---
+
+## 20. 2026-06-27 RC9.7 unfinished backlog recovery tool
+
+### 日期
+```text
+2026-06-27
+```
+
+### 执行者
+```text
+DeepSeek/OpenCode
+```
+
+### 阶段
+```text
+RC9.7 / unfinished backlog recovery tools
+```
+
+### 本轮目标
+Create tools to selectively re-enable stale/ignored downloads for user-chosen RJs.
+Don't restore everything. Don't delete anything. RJ-allowlist required.
+
+### 状态模型确认
+```text
+Read orchestrator, database, download_view code:
+
+New download initial status: 'queued' (prepare_work + resume_job)
+Active queue statuses: 'queued','paused','downloading','resuming' (restore)
+                       + 'failed' (UI display)
+Terminal statuses: 'completed','registered','failed','paused','stale','ignored'
+Re-enable target: 'queued' (matches prepare_work initial + resume_job target)
+
+Decision: UPDATE stale/ignored → 'queued', reset downloaded_bytes=0, error=NULL
+```
+
+### 实际完成
+```text
+1. Created tools/backlog_list.py:
+   - Scans stale/ignored downloads grouped by RJ
+   - Classifies into: stale_backlog, ignored_backlog, mixed_backlog, paused_current, blocked
+   - Reports: has_existing_files, has_part_files, error_samples
+   - 184 candidate RJs found: 92 stale_backlog + 92 ignored_backlog
+   - Output: JSON + TXT summary
+
+2. Created tools/backlog_reenable.py:
+   - Supports: --dry-run (default), --execute, --rj, --limit, --mode
+   - Target status: 'queued' (matching prepare_work + resume_job)
+   - Mode retry-from-zero: zeroes downloaded_bytes + clears error
+   - Execute path: integrity check → backup → preimage → rollback SQL → UPDATE → post-verify
+   - Protects: completed downloads, works table, files on disk
+   - Example: --rj RJ01588893 RJ01534605 --mode retry-from-zero (dry-run: 99 rows)
+
+3. Created scripts/test_backlog_recovery.py:
+   - 16 tests covering list groups, re-enable dry-run, completed protection, report files
+   - All 16 passed
+```
+
+### 是否改代码
+```text
+yes — added 3 new files (2 tools + 1 test), no modifications to existing code
+```
+
+### 是否改 DB
+```text
+no (tools built, dry-run tested, no --execute run)
+```
+
+### 是否删除文件
+```text
+no
+```
+
+### 是否改下载核心
+```text
+no
+```
+
+### 文件
+```text
+added:
+  tools/backlog_list.py
+  tools/backlog_reenable.py
+  scripts/test_backlog_recovery.py
+modified:
+  WORKLOG.md
+```
+
+### 下一步
+```text
+User selects 10-50 RJs from backlog_list.py output →
+  dry-run with backlog_reenable.py --rj ... →
+  review preview → execute with --execute →
+  then batch-download those RJs via Flet UI
+```
 ```
 ```
 ```
