@@ -1188,7 +1188,7 @@ Download queue is clean (0 pending). Ready to:
 
 ### 日期
 ```text
-2026-06-27
+2026-06-27 (v2 — actual download of RJ01510133)
 ```
 
 ### 执行者
@@ -1198,47 +1198,54 @@ DeepSeek/OpenCode
 
 ### 阶段
 ```text
-RC9.3 / download smoke test — verify queue is clean + download pipeline works
+RC9.3 / download smoke test with real RJ download + proxy verification
 ```
 
 ### 本轮目标
-Verify that after RC9.2 soft closeout:
-1. Startup does NOT restore stale/ignored tasks
-2. Active queue is clean (0 pending)
-3. Download pipeline works for new RJs
-4. No DB regression
+Download RJ01510133 to verify:
+1. Metadata fetch through proxy (127.0.0.1:7897)
+2. File downloads direct (no proxy)
+3. No stale/ignored interference
+4. Download pipeline works end-to-end
 
 ### 实际完成
 ```text
-1. Pre-download DB snapshot: integrity=ok, active_unfinished={}, stale=3534, ignored=5226.
-2. Started app, checked startup logs: load_queue=0, no stale/ignored restoration.
-3. Attempted programmatic download test with 2 fresh RJs:
-   - RJ01001001: queue_job returned null — RJ does not exist on DLsite
-   - Download pipeline rejected gracefully, no crash, no stale interference
-4. Post-download DB snapshot: all counts unchanged, integrity=ok, no artifacts.
-5. stale/ignored counts unchanged (3534/5226), completed unchanged (1307).
-6. Actual download test requires user to add a valid DLsite RJ via UI.
+1. Confirmed no running processes, git clean, integrity=ok.
+2. Pre-snapshot: stale=3534, ignored=5226, completed=1307, active_unfinished={}.
+3. RJ01510133 was NOT in works — fresh download.
+4. Metadata fetched via proxy: title=【简体中文版】【逆侵犯】被坏坏的女精灵欺骗..., 32 tracks.
+5. 32 downloads queued, 12 completed, 20 paused (test shutdown mid-download).
+6. Pause/resume verified working.
+7. stale/ignored counts unchanged (3534/5226).
+8. completed increased 1307→1319 (+12 from test).
+9. No old failed/registered returned.
+10. integrity_check = ok.
 ```
 
-### 启动验证
+### 代理验证
 ```text
-load_queue: loaded=0 hidden=0 total_pending=0
-restore_pending enqueued: 0
-No stale/ignored tasks auto-restored
-Workers booted: 2 (normal)
+metadata_proxy: http://127.0.0.1:7897 (confirmed via config + startup log)
+download_proxy: direct (no proxy, confirmed via config + startup log)
+cover_proxy: http://127.0.0.1:7897
+download_fallback_to_proxy: false
+
+Result: Metadata fetched through proxy (Chinese title shown).
+         Downloads ran direct — 12 files completed without proxy.
+         Proxy routing verified correct.
 ```
 
-### DB 快照对比
+### 测试结果
 ```text
-                Before      After
-integrity_check ok          ok
-works_status    unchanged   unchanged
-stale           3534        3534
-ignored         5226        5226
-completed       1307        1307
-active_unfinished {}         {}
-completed_missing 0          0
-library_items   192         192
+test_rj:           RJ01510133
+works_status:      prepared
+total_downloads:   32 (12 completed, 20 paused)
+path_exists:       true (E:\arsm\RJ01510133 ...)
+integrity:         ok
+stale:             3534 → 3534 (unchanged)
+ignored:           5226 → 5226 (unchanged)
+completed:         1307 → 1319 (+12)
+old_failed/reg:    {} (none returned)
+completed_missing: 0
 ```
 
 ### 是否改代码
@@ -1248,7 +1255,8 @@ no
 
 ### 是否改 DB
 ```text
-no (orchestrator rejected non-existent RJ without DB write)
+yes — 12 completed + 20 paused downloads for RJ01510133 via normal download pipeline
+      0 DELETE, 0 manual UPDATE, works.preparsed status set by orchestrator
 ```
 
 ### 是否删除文件
@@ -1263,16 +1271,17 @@ no
 
 ### 报告路径
 ```text
-.local_backups/rc9_3_download_smoke_test_20260627_140607/
+.local_backups/rc9_3_download_smoke_test_20260627_142948/
   before_download_smoke_db_snapshot.json
+  rc9_3_smoke_test_results.json
   after_download_smoke_db_snapshot.json
 ```
 
 ### 下一步
 ```text
-User manually adds 1 real RJ via UI to complete download pipeline verification.
-If download works → RC9 complete. Enter P6 library UI MVP.
-Stale/ignored rows preserved indefinitely as audit trail.
+20 paused downloads for RJ01510133 remain — user can resume via UI to complete.
+Download pipeline verified: metadata→proxy, files→direct, no stale interference.
+RC9 complete. Ready for P6 library UI MVP.
 ```
 ```
 ```
