@@ -792,6 +792,91 @@ no
 Codex 重新审查修订后的 P4 (conservative, no DELETE) →
   若通过: 实现 mark_downloads_stale() → 执行 state transitions (UPDATE not DELETE) →
 P5 library_index dry-run (并行进行, P4.5 已通过)
+
+---
+
+## 13. 2026-06-27 P5 library index dry-run
+
+### 日期
+```text
+2026-06-27
+```
+
+### 执行者
+```text
+DeepSeek/OpenCode
+```
+
+### 阶段
+```text
+P5 / library index dry-run (preview only, no DB writes)
+```
+
+### 本轮目标
+基于 P3 扫描结果 + P4.5 schema decision，生成 library_items / library_scan_runs 的 dry-run 入库计划。交叉对照 works 表。处理 duplicate + fake RJ。
+
+### 实际完成
+```text
+1. Generated library_index_schema_preview.sql (2 CREATE TABLE + 5 INDEX, no execution).
+2. Generated library_index_insert_preview.json (194 candidates → 191 would_update, 1 would_insert, 2 excluded).
+3. Cross-referenced with live works table: 192 exists_in_works, 191 path_matches, 1 path_differs.
+4. Resolved 2 duplicate RJs per P4.5 5-rule policy:
+   - RJ01583802: rule2_top_level, winner=127 files, loser=1 file (warning)
+   - RJ01277591: rule1_works_local_path_match, winner=130 files, loser=67 files (warning)
+5. Excluded 2 fake/test RJs: RJ00000000 (184 files), RJ00123456 (57 files) — files preserved.
+6. 0 DB writes executed.
+```
+
+### P5 dry-run 统计
+```text
+candidate_count:              194
+would_insert_count:           1    (RJ01583802 — path differs from works.local_path)
+would_update_count:           191
+would_exclude_count:          2    (fake/test RJ)
+duplicate_rj_count:           2
+duplicate_loser_count:        2
+fake_rj_excluded_count:       2
+exists_in_works_count:        192
+not_in_works_count:           0
+path_matches_works_count:     191
+path_differs_from_works_count:1
+```
+
+### 是否改代码
+```text
+no
+```
+
+### 是否改 DB
+```text
+no
+```
+
+### 是否删除文件
+```text
+no
+```
+
+### 是否改下载核心
+```text
+no
+```
+
+### 报告路径
+```text
+.local_backups/library_index_dry_run_20260627_123000/
+  library_index_schema_preview.sql
+  library_index_insert_preview.json
+  library_index_duplicate_decisions.json
+  library_index_excluded_items.json
+  LIBRARY_INDEX_DRY_RUN_SUMMARY.txt
+```
+
+### 下一步
+```text
+Codex 审查 P5 dry-run → 批准后执行 P5 actual DB write (CREATE TABLE + INSERT/REPLACE) →
+  后续: P6 资源库管理 UI MVP
+```
 ```
 ```
 ```
