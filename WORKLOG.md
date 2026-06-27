@@ -1282,6 +1282,96 @@ no
 20 paused downloads for RJ01510133 remain — user can resume via UI to complete.
 Download pipeline verified: metadata→proxy, files→direct, no stale interference.
 RC9 complete. Ready for P6 library UI MVP.
+
+---
+
+## 17. 2026-06-27 RC9.4 continued download verification
+
+### 日期
+```text
+2026-06-27
+```
+
+### 执行者
+```text
+DeepSeek/OpenCode
+```
+
+### 阶段
+```text
+RC9.4 / resume RJ01510133 paused downloads + establish batch download baseline
+```
+
+### 本轮目标
+1. Resume RJ01510133 20 paused downloads from RC9.3
+2. Verify download completion + DB integrity
+3. Establish small-batch download guideline for user
+
+### 实际完成
+```text
+1. Resume session 1: 12→24 completed (2 WAV size mismatches retried, 1 timeout).
+2. Resume session 2: 24→26 completed, 6 paused (text files with CDN size mismatch).
+3. All 6 WAV audio files completed with correct sizes + file_exists.
+4. 6 paused text files (.txt) are secondary content — CDN returns 0-byte size mismatch.
+5. stale=3534 (unchanged), ignored=5226 (unchanged), old ret=0.
+6. integrity_check = ok.
+```
+
+### 结果
+```text
+RJ01510133:
+  before: 12 completed, 20 paused
+  after:  26 completed, 6 paused (6 text files, secondary content)
+  works_status: prepared
+  audio complete: YES (6 WAVs, all sizes match, files exist)
+
+DB:
+  stale: 3534 → 3534 (unchanged)
+  ignored: 5226 → 5226 (unchanged)
+  completed: 1307 → 1333 (+26 from test)
+  old failed/registered: 0
+  integrity: ok
+  completed_missing: 0
+```
+
+### 批量下载规范
+```text
+推荐用户继续小批量下载新 RJ:
+  1. 每批 2-5 个 RJ
+  2. 保持 auto_resume_on_start = false
+  3. CI启动时不应有旧历史队列自动恢复
+  4. 下载稳定两批后再进入 P6 UI MVP
+  5. metadata 走 proxy，download 走 direct（已验证正确）
+  6. 不要一次添加太多 RJ（避免内存/网络压力）
+```
+
+### 是否改代码
+```text
+no
+```
+
+### 是否改 DB
+```text
+yes — resumed paused downloads → +14 completed for RJ01510133
+      0 DELETE, 0 manual UPDATE
+```
+
+### 是否删除文件
+```text
+no
+```
+
+### 是否改下载核心
+```text
+no
+```
+
+### 下一步
+```text
+User continues batch downloading 2-5 RJs at a time via Flet UI.
+After 2 stable batches → enter P6 library UI MVP.
+6 paused text files for RJ01510133 are low-priority, can be ignored or retried later.
+```
 ```
 ```
 ```
