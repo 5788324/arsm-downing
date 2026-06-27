@@ -109,7 +109,7 @@ class WorkStatus(Enum):
             "元数据失败",
             "获取元数据失败",
             "获取文件列表失败",
-        ) or s.startswith("???????"):
+        ):
             return WorkStatus.METADATA_FAILED
 
         if any(k in s_lower for k in ("no pending", "no_pending", "no pending tracks")) or s in (
@@ -129,7 +129,7 @@ class WorkStatus(Enum):
         if s.startswith("Failed") or s.startswith("Error") or s in ("failed", "下载失败", "错误") or s.startswith("错误"):
             return WorkStatus.FAILED
 
-        if s in ("已完成", "Completed", "completed") or s.startswith("????"):
+        if s in ("已完成", "Completed", "completed"):
             return WorkStatus.COMPLETED
         if s in ("已登记", "registered"):
             return WorkStatus.REGISTERED
@@ -137,20 +137,20 @@ class WorkStatus(Enum):
         if "Partially completed" in s or s in ("部分完成", "partial"):
             return WorkStatus.PARTIAL
 
-        if s in ("已暂停", "Paused", "Paused (partial)", "paused") or s.startswith("????"):
+        if s in ("已暂停", "Paused", "Paused (partial)", "paused"):
             return WorkStatus.PAUSED
 
         if s in ("Preparing", "准备中..."):
             return WorkStatus.PREPARING
         if s in ("Prepared", "Prepared (cached)", "已就绪", "已就绪 [缓存]"):
             return WorkStatus.PREPARED
-        if s in ("Queued", "Queued (cached)", "队列中", "队列排队中", "队列排队中 [缓存]") or s.startswith("????"):
+        if s in ("Queued", "Queued (cached)", "队列中", "队列排队中", "队列排队中 [缓存]"):
             return WorkStatus.QUEUED
         if s in ("Downloading", "下载中"):
             return WorkStatus.DOWNLOADING
         if s in ("Resuming...", "恢复中..."):
             return WorkStatus.RESUMING
-        if s in ("external", "外部资源") or s.startswith("??????"):
+        if s in ("external", "外部资源"):
             return WorkStatus.EXTERNAL
         if s in ("verified", "已验证"):
             return WorkStatus.VERIFIED

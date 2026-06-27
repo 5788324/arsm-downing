@@ -140,6 +140,22 @@ class DownloadView(ft.Container):
                 if not derived["visible"]:
                     continue
 
+                # Restore tracks from queue.json only for paused/failed states
+                # (preserves per-file progress context). Queued/resuming get fresh empty tracks.
+                tracks = {}
+                if derived["enum"] in (WorkStatus.PAUSED, WorkStatus.FAILED):
+                    if QUEUE_FILE.exists():
+                        try:
+                            with open(QUEUE_FILE, "r", encoding="utf-8") as f:
+                                saved = json.load(f)
+                            for key, data in saved.items():
+                                norm = f"RJ{key}" if not key.upper().startswith("RJ") else key
+                                if norm == rj_id:
+                                    tracks = data.get("tracks", {})
+                                    break
+                        except Exception:
+                            pass
+
                 self.active_downloads[rj_id] = {
                     "status": derived["status"],
                     "tracks": {},  # fresh — no stale queue.json progress
@@ -204,10 +220,11 @@ class DownloadView(ft.Container):
         for rj_num in codes:
             rj_id = f"RJ{rj_num}"
 
-            # Check if work already completed locally
+            # Check if work already has active/downloaded content
             ws = self.app_controller.db.get_works_status(rj_id)
-            if ws in ("completed", "verified"):
-                self.app_controller.show_snack(f"{rj_id} 已完成，如需重新下载请先清除旧任务")
+            if ws and ws not in ("prepared", "metadata_failed"):
+                # completed, verified, external, partial, indexed — has content or is in progress
+                self.app_controller.show_snack(f"{rj_id} 已存在 (状态: {ws})")
                 continue
 
             if rj_id not in self.active_downloads or \
@@ -356,6 +373,17 @@ class DownloadView(ft.Container):
 
     def _refresh_queue(self):
         """Rebuild queue list from DB-derived state. Reads only — no DB writes."""
+        now = time.time()
+        # Remove items that completed > 3 seconds ago (Flet-thread-safe)
+        to_remove = []
+        for rj_id, data in self.active_downloads.items():
+            if data.get("_completed_at") and now - data["_completed_at"] > 3:
+                to_remove.append(rj_id)
+        for rj_id in to_remove:
+            data = self.active_downloads.pop(rj_id, None)
+            if data and data.get("control") and data["control"] in self.queue_list.controls:
+                self.queue_list.controls.remove(data["control"])
+
         visible_items = []
         self.queue_list.controls.clear()
         for rj_id in list(self.active_downloads.keys()):
@@ -761,20 +789,7 @@ class DownloadView(ft.Container):
                     data["prog_bar"].color = SUCCESS
                     data["speed_text"].value = ""
                     self.app_controller.check_achievements()
-                    # Remove completed item from queue after brief delay
-                    import threading
-                    def _remove_later():
-                        time.sleep(3)
-                        if rj_id in self.active_downloads:
-                            self.active_downloads.pop(rj_id, None)
-                            try:
-                                if data.get("control") and data["control"] in self.queue_list.controls:
-                                    self.queue_list.controls.remove(data["control"])
-                                    if self.queue_list.page:
-                                        self.queue_list.update()
-                            except Exception:
-                                pass
-                    threading.Thread(target=_remove_later, daemon=True).start()
+                    data["_completed_at"] = time.time()
                 elif status.startswith("Failed") or status.startswith("Error"):
                     data["status_text"].color = ERROR
                     data["prog_bar"].color = ERROR
@@ -792,8 +807,38 @@ class DownloadView(ft.Container):
                     data["status_text"].color = WARNING
                     data["speed_text"].value = ""
 
-                # Rebuild to update action buttons
+                # Rebuild card + re-sort if status priority changed
+                old_priority = None
+                for i, c in enumerate(self.queue_list.controls):
+                    if getattr(c, 'data', None) == rj_id:
+                        old_priority = i
+                        break
                 self.build_queue_item(rj_id)
+                # If priority likely changed, do lightweight re-sort
+                if ns in ("downloading", "queued", "paused"):
+                    # Move card to correct sorted position
+                    cards = self.queue_list.controls
+                    new_idx = 0
+                    for c in cards:
+                        c_rj = getattr(c, 'data', None)
+                        if c_rj and c_rj == rj_id:
+                            break
+                        new_idx += 1
+                    if new_idx < len(cards) and new_idx != old_priority and old_priority is not None:
+                        card = cards.pop(new_idx)
+                        # Find insertion point
+                        insert_at = 0
+                        for i, c in enumerate(cards):
+                            c_rj = getattr(c, 'data', None)
+                            if c_rj and self._queue_sort_key(rj_id) < self._queue_sort_key(c_rj):
+                                break
+                            insert_at = i + 1
+                        cards.insert(insert_at, card)
+                        try:
+                            if self.queue_list.page:
+                                self.queue_list.update()
+                        except Exception:
+                            pass
                 self.save_queue()
 
     def toggle_pause(self, rj_id: str):
@@ -925,6 +970,16 @@ class DownloadView(ft.Container):
         if now - last_ui < 0.3:
             return
         data["_last_ui_update"] = now
+
+        # Periodic cleanup of completed items
+        to_remove = []
+        for rid, rd in list(self.active_downloads.items()):
+            if rd.get("_completed_at") and now - rd["_completed_at"] > 3:
+                to_remove.append(rid)
+        for rid in to_remove:
+            rd = self.active_downloads.pop(rid, None)
+            if rd and rd.get("control") and rd["control"] in self.queue_list.controls:
+                self.queue_list.controls.remove(rd["control"])
 
         # Rebuild card to refresh per-file progress bars
         try:
