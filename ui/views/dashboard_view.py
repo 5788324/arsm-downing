@@ -9,26 +9,32 @@ class DashboardView(ft.Container):
         self.app_controller = app_controller
         self.expand = True
         
-        self.stats_grid = ft.Row(spacing=20)
+        self.stats_grid = ft.Row(spacing=20, wrap=True)
         self.achievements_list = ft.ListView(expand=True, spacing=10)
-        
+        self.source_note = ft.Text("", size=10, color="grey")
+
         self.content = ft.Column([
             ft.Text("统计与成就", size=32, weight=ft.FontWeight.BOLD),
+            self.source_note,
             ft.Text("数据概览", size=20, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
             self.stats_grid,
             ft.Divider(height=20, color="transparent"),
             ft.Text("成就系统", size=20, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
             self.achievements_list
-        ])
+        ], expand=True)
 
     def load_data(self):
-        # Load statistics
-        cnt, sz = self.app_controller.db.get_summary()
-        
+        db = self.app_controller.db
+        cnt, sz = db.get_summary()  # works table
+        lib = db.get_library_summary()  # library_items table
+
         self.stats_grid.controls = [
-            self._build_stat_card("总下载数", str(cnt), "📈"),
-            self._build_stat_card("总存储量", f"{sz/1024**3:.2f} GB", "💾"),
+            self._build_stat_card("作品总数", str(cnt), "📚", "(works 表)"),
+            self._build_stat_card("总存储量", f"{sz/1024**3:.2f} GB", "💾", "(works 表)"),
+            self._build_stat_card("已索引", str(lib.get("total_works", 0)), "📋", "(library_items)"),
+            self._build_stat_card("索引文件", str(lib.get("total_files", 0)), "📁", "(library_items)"),
         ]
+        self.source_note.value = "数据来源: works 表 (作品) + library_items 表 (资源库索引)"
         
         # Load achievements
         achievements_data = [
@@ -65,11 +71,11 @@ class DashboardView(ft.Container):
             
         self.update()
 
-    def _build_stat_card(self, title, value, icon):
+    def _build_stat_card(self, title, value, icon, source="", width=150):
         col = ft.Column([
             ft.Text(icon, size=30),
             ft.Text(value, size=24, weight=ft.FontWeight.BOLD, color=SUCCESS),
-            ft.Text(title, size=14, color="grey")
+            ft.Text(title, size=14, color="grey"),
+            ft.Text(source, size=9, color="grey") if source else ft.Text(""),
         ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER)
-        
-        return Styles.glass_container(col, padding=20, width=150)
+        return Styles.glass_container(col, padding=20, width=width)

@@ -195,19 +195,10 @@ class LibraryView(ft.Container):
         offset = self._current_page * LIBRARY_PAGE_SIZE
 
         items = self.app_controller.db.get_library_items(
-            search=search,
-            offset=offset,
-            limit=LIBRARY_PAGE_SIZE,
-            filter_audio=fa,
-            filter_cover=fc,
-            filter_warnings=fw,
-        )
+            search=search, offset=offset, limit=LIBRARY_PAGE_SIZE,
+            filter_audio=fa, filter_cover=fc, filter_warnings=fw)
         total = self.app_controller.db.count_library_items(
-            search=search,
-            filter_audio=fa,
-            filter_cover=fc,
-            filter_warnings=fw,
-        )
+            search=search, filter_audio=fa, filter_cover=fc, filter_warnings=fw)
         total_pages = max(1, (total + LIBRARY_PAGE_SIZE - 1) // LIBRARY_PAGE_SIZE)
 
         for item in items:
@@ -223,48 +214,92 @@ class LibraryView(ft.Container):
             display_name = folder_name if len(folder_name) <= 36 else folder_name[:33] + "..."
             try:
                 warn_list = json.loads(warnings_raw) if warnings_raw else []
-                warn_count = len(warn_list)
             except Exception:
-                warn_count = 0
+                warn_list = []
+
+            # Warning labels (Chinese)
+            WARN_LABELS = {"no_images": "无图片", "no_audio_files": "无音频",
+                           "empty_directory": "空目录", "no_cover_candidate": "无封面候选",
+                           "unusual_large_file": "异常大文件"}
+            warn_texts = [WARN_LABELS.get(w, w) for w in warn_list[:3]]
+
+            # Cover: when in missing_cover filter, don't use remote fallback
+            use_remote_cover = not fc
+            cover_src = None
+            if folder_path and has_cover:
+                root = Path(folder_path)
+                if root.exists():
+                    for name in COVER_CANDIDATES:
+                        c = root / name
+                        if c.exists():
+                            cover_src = str(c)
+                            break
+                    if not cover_src:
+                        try:
+                            for child in root.iterdir():
+                                if child.is_file() and child.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}:
+                                    if "cover" in child.name.lower() or "package" in child.name.lower():
+                                        cover_src = str(child)
+                                        break
+                        except Exception:
+                            pass
+            if not cover_src and use_remote_cover and rj_id:
+                try:
+                    cached = self.app_controller.db.get_metadata_cache(rj_id)
+                    if cached and cached.get("cover_url"):
+                        cover_src = cached["cover_url"]
+                except Exception:
+                    pass
+
+            if cover_src:
+                cover_widget = ft.Container(
+                    height=180, border_radius=14, clip_behavior=ft.ClipBehavior.HARD_EDGE,
+                    bgcolor=BG_SURFACE_LIGHT, content=ft.Image(src=cover_src, fit=ft.ImageFit.COVER))
+            else:
+                cover_widget = ft.Container(
+                    height=180, border_radius=14, bgcolor=ft.colors.with_opacity(0.55, BG_SURFACE_LIGHT),
+                    alignment=ft.alignment.center,
+                    content=ft.Column([
+                        ft.Icon(ft.icons.IMAGE_NOT_SUPPORTED_OUTLINED, color=WARNING, size=36),
+                        ft.Text("\u65e0\u5c01\u9762", size=12, color="grey"),
+                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=6))
 
             badge_controls = [
                 ft.Text(rj_id, weight=ft.FontWeight.BOLD, size=14, color=ACCENT_PRIMARY),
                 ft.Text(f"{total_files}f / {fmt_size(total_size)}", size=11, color="grey"),
             ]
             if audio_count > 0:
-                badge_controls.append(
-                    ft.Container(
-                        content=ft.Text(f"{audio_count} \u97f3\u9891", size=9, color="white"),
-                        bgcolor=SUCCESS,
-                        border_radius=999,
-                        padding=ft.padding.symmetric(horizontal=6, vertical=2),
-                    )
-                )
+                badge_controls.append(ft.Container(
+                    content=ft.Text(f"{audio_count} \u97f3\u9891", size=9, color="white"),
+                    bgcolor=SUCCESS, border_radius=999,
+                    padding=ft.padding.symmetric(horizontal=6, vertical=2)))
             if not has_cover:
-                badge_controls.append(
-                    ft.Container(
-                        content=ft.Text("no cover", size=9, color="white"),
-                        bgcolor=WARNING,
-                        border_radius=999,
-                        padding=ft.padding.symmetric(horizontal=6, vertical=2),
-                    )
-                )
-            if warn_count > 0:
-                badge_controls.append(
-                    ft.Container(
-                        content=ft.Text(f"{warn_count}w", size=9, color="white"),
-                        bgcolor=ERROR,
-                        border_radius=999,
-                        padding=ft.padding.symmetric(horizontal=6, vertical=2),
-                    )
-                )
+                label = "\u65e0\u672c\u5730\u5c01\u9762"
+                if use_remote_cover:
+                    label = "\u8fdc\u7a0b\u5c01\u9762"
+                badge_controls.append(ft.Container(
+                    content=ft.Text(label, size=9, color="white"),
+                    bgcolor=WARNING, border_radius=999,
+                    padding=ft.padding.symmetric(horizontal=6, vertical=2)))
+            if warn_texts:
+                tooltip_text = "\n".join(warn_texts[:5])
+                badge_controls.append(ft.Container(
+                    content=ft.Text(f"{len(warn_list)}w", size=9, color="white"),
+                    bgcolor=ERROR, border_radius=999,
+                    tooltip=tooltip_text,
+                    padding=ft.padding.symmetric(horizontal=6, vertical=2)))
 
-            card = ft.Column([
-                self._build_cover(folder_path, has_cover, rj_id),
-                ft.Row(badge_controls, wrap=True, spacing=4),
-                ft.Text(display_name, size=13, weight=ft.FontWeight.W_600, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
-            ], spacing=8)
+            # Show first warning text as subtitle
+            warning_subtitle = None
+            if warn_texts and fw:
+                warning_subtitle = ft.Text(" | ".join(warn_texts[:2]), size=10, color=ERROR, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)
 
+            card_content = [cover_widget, ft.Row(badge_controls, wrap=True, spacing=4)]
+            if warning_subtitle:
+                card_content.append(warning_subtitle)
+            card_content.append(ft.Text(display_name, size=13, weight=ft.FontWeight.W_600, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS))
+
+            card = ft.Column(card_content, spacing=6)
             container = Styles.glass_container(card, padding=10)
             if folder_path:
                 container.on_click = lambda e, p=folder_path: self.open_folder(p)
@@ -280,6 +315,7 @@ class LibraryView(ft.Container):
             if self.page_info.page: self.page_info.update()
             if self.btn_prev.page: self.btn_prev.update()
             if self.btn_next.page: self.btn_next.update()
+            if self.filter_chips.page: self.filter_chips.update()
         except Exception:
             pass
 
