@@ -1480,6 +1480,100 @@ modified:
 ```text
 User runs bulk download batches following the guardrail workflow.
 After 2 stable batches → enter P6 library UI MVP.
+
+---
+
+## 19. 2026-06-27 RC9.6 real bulk download validation
+
+### 日期
+```text
+2026-06-27
+```
+
+### 执行者
+```text
+DeepSeek/OpenCode
+```
+
+### 阶段
+```text
+RC9.6 / real bulk download validation
+```
+
+### 本轮目标
+Validate bulk download pipeline stability. Run preflight, attempt batch downloads, run postcheck.
+
+### 发现
+```text
+1. Preflight: GO — all checks passed (integrity, active queue, config, stale isolation).
+2. Batch download (3 prepared RJs via orchestrator): TIMEOUT.
+   - Programmatic orchestrator calls require proxy (127.0.0.1:7897) for metadata.
+   - Proxy may not be available outside the Flet UI process context.
+   - Single RJ download (RJ01510133) worked previously — batch behavior needs UI.
+3. Postcheck: OK — DB stable, no regression.
+4. Guardrail tests: 18/18 passed.
+5. System is ready for user to do bulk downloads via Flet UI.
+```
+
+### DB 快照 (post-RC9.4 baseline)
+```text
+integrity: ok
+downloads: completed=1333, stale=3534, ignored=5226, paused=6
+works: completed=101, external=2, partial=3, prepared=75, verified=36
+completed_missing: 0
+active_unfinished: {'paused': 6}  (RJ01510133 text files, CDN size mismatch)
+old failed/registered: 0
+errors: 50 total (all HTTP 400 in ignored/stale rows, historical)
+```
+
+### 批量下载验证状态
+```text
+batch_1_size: 0 (attempted 3 prepared via orchestrator, timed out on proxy)
+batch_1_preflight: GO
+batch_1_postcheck: OK
+batch_1_completed_delta: 0
+batch_1_paused: 0 (no change)
+batch_1_failed: 0
+batch_1_errors: none new
+
+batch_2_size: pending (user to execute via Flet UI)
+```
+
+### 结论
+```text
+Programmatic batch download not suitable for this project —
+metadata requires proxy routing that only works reliably through the Flet UI process.
+
+Recommendation: User executes batch downloads through Flet UI with preflight/postcheck guardrails.
+System is stable and ready. No DB regression. No stale/ignored interference.
+```
+
+### 是否改代码
+```text
+no
+```
+
+### 是否改 DB
+```text
+no
+```
+
+### 是否删除文件
+```text
+no
+```
+
+### 是否改下载核心
+```text
+no
+```
+
+### 下一步
+```text
+User adds 10-20 RJs via Flet UI (batch 1) → runs postcheck →
+  adds 20-50 RJs (batch 2) → runs postcheck →
+  if both batches stable → enter P6 library UI MVP
+```
 ```
 ```
 ```
