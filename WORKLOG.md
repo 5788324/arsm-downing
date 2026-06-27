@@ -1371,6 +1371,116 @@ no
 User continues batch downloading 2-5 RJs at a time via Flet UI.
 After 2 stable batches → enter P6 library UI MVP.
 6 paused text files for RJ01510133 are low-priority, can be ignored or retried later.
+
+---
+
+## 18. 2026-06-27 RC9.5 bulk download guardrails
+
+### 日期
+```text
+2026-06-27
+```
+
+### 执行者
+```text
+DeepSeek/OpenCode
+```
+
+### 阶段
+```text
+RC9.5 / bulk download guardrail tools
+```
+
+### 本轮目标
+Add lightweight pre/post batch diagnostic tools for user's bulk download workflow.
+No download core changes. No DB writes. No P6 UI.
+
+### 实际完成
+```text
+1. Created tools/bulk_download_preflight.py:
+   - DB integrity check
+   - Active queue check (STOP if failed/registered returned; paused OK)
+   - config verification (output_dir, proxy settings, auto_resume)
+   - stale/ignored isolation confirmation
+   - completed_missing scan
+   - Verdict: GO or STOP
+
+2. Created tools/bulk_download_postcheck.py:
+   - DB integrity
+   - completed_missing count
+   - stale/ignored preservation verification
+   - active unfinished scan (failed/registered=0)
+   - Recent works + download summary
+   - Error prefix classification (size mismatch, timeout, HTTP)
+
+3. Created scripts/test_bulk_guardrails.py:
+   - 18 tests covering preflight + postcheck on live DB
+   - All 18 passed
+
+4. Both tools output JSON + TXT reports to .local_backups/
+```
+
+### 批量下载策略
+```text
+用户大批量下载推荐规范:
+  - 试运行批: 5 RJ
+  - 正常批: 10-20 RJ
+  - 激进批: 30-50 RJ
+  - 不建议一次 100+ RJ
+
+每批操作:
+  1. 运行 tools\bulk_download_preflight.py → 确认 GO
+  2. 启动 python main.py, 添加 RJ, 等待下载
+  3. 关闭程序
+  4. 运行 tools\bulk_download_postcheck.py → 确认 OK
+  5. 如有 WARN, 检查报告再决定是否继续下一批
+
+硬规则:
+  - auto_resume_on_start = false
+  - metadata 走 proxy 7897
+  - download 直连
+  - fallback = false
+  - 不恢复 stale/ignored
+  - 不边下载边迁移/清理/改库
+  - preflight 返回 STOP 时必须停下来检查
+```
+
+### 是否改代码
+```text
+yes — added 2 new tools + 1 test file
+      no modifications to existing core modules
+```
+
+### 是否改 DB
+```text
+no
+```
+
+### 是否删除文件
+```text
+no
+```
+
+### 是否改下载核心
+```text
+no
+```
+
+### 文件
+```text
+added:
+  tools/bulk_download_preflight.py
+  tools/bulk_download_postcheck.py
+  scripts/test_bulk_guardrails.py
+modified:
+  WORKLOG.md
+```
+
+### 下一步
+```text
+User runs bulk download batches following the guardrail workflow.
+After 2 stable batches → enter P6 library UI MVP.
+```
 ```
 ```
 ```
