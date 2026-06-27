@@ -209,7 +209,6 @@ class DownloadView(ft.Container):
             rj_id = f"RJ{rj_num}"
 
             # ── P3.4: duplicate detection ──
-            from core.database import LibraryVault
             dup_entries = self.app_controller.db.find_in_library(rj_id)
             if dup_entries:
                 dup_paths = ", ".join(e["work_dir"] for e in dup_entries[:3])
@@ -730,12 +729,8 @@ class DownloadView(ft.Container):
 
     def _open_work_dir(self, rj_id: str):
         """Open the download directory for this work."""
-        from core.config import ConfigManager
-        cfg = ConfigManager.load()
-        # Try to find path from metadata cache
-        from core.database import LibraryVault
-        db = LibraryVault()
-        cached = db.get_metadata_cache(rj_id)
+        cfg = self.app_controller.config
+        cached = self.app_controller.db.get_metadata_cache(rj_id)
         if cached:
             title = Orchestrator.sanitize(cached.get("title", ""))
             dir_template = cfg.dir_template
