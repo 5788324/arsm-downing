@@ -173,19 +173,21 @@ class DownloadView(ft.Container):
         import asyncio
 
         async def _resume_all():
-            for rj_id in rj_ids:
+            for i, rj_id in enumerate(rj_ids):
                 r = await orc._resume_one(rj_id)
                 st = r.get("status", "unknown")
                 if st == "queued":
                     self.update_work_status(rj_id, "Queued")
                 elif st == "already_queued":
-                    pass  # silently skip, already in queue
+                    pass
                 elif st == "already_running":
-                    pass  # silently skip, already active
+                    pass
                 elif st == "no_pending":
                     self.update_work_status(rj_id, "No pending tracks")
                 else:
                     self.update_work_status(rj_id, f"恢复失败: {r.get('message', st)}")
+                if i % 5 == 0:
+                    await asyncio.sleep(0.5)
             self._refresh_queue()
 
         asyncio.run_coroutine_threadsafe(_resume_all(), loop)
@@ -202,19 +204,10 @@ class DownloadView(ft.Container):
         for rj_num in codes:
             rj_id = f"RJ{rj_num}"
 
-            # ── P3.4: duplicate detection ──
-            dup_entries = self.app_controller.db.find_in_library(rj_id)
-            if dup_entries:
-                dup_paths = ", ".join(e["work_dir"] for e in dup_entries[:3])
-                self.app_controller.show_snack(
-                    f"{rj_id} 已存在于仓库: {dup_paths}")
-                self.active_downloads[rj_id] = {
-                    "status": "重复 (跳过)",
-                    "tracks": {}, "control": None,
-                    "last_time": time.time(), "last_bytes": 0,
-                    "cache_hit": False
-                }
-                self._refresh_queue()
+            # Check if work already completed locally
+            ws = self.app_controller.db.get_works_status(rj_id)
+            if ws in ("completed", "verified"):
+                self.app_controller.show_snack(f"{rj_id} 已完成，如需重新下载请先清除旧任务")
                 continue
 
             if rj_id not in self.active_downloads or \
@@ -737,6 +730,20 @@ class DownloadView(ft.Container):
                     data["prog_bar"].color = SUCCESS
                     data["speed_text"].value = ""
                     self.app_controller.check_achievements()
+                    # Remove completed item from queue after brief delay
+                    import threading
+                    def _remove_later():
+                        time.sleep(3)
+                        if rj_id in self.active_downloads:
+                            self.active_downloads.pop(rj_id, None)
+                            try:
+                                if data.get("control") and data["control"] in self.queue_list.controls:
+                                    self.queue_list.controls.remove(data["control"])
+                                    if self.queue_list.page:
+                                        self.queue_list.update()
+                            except Exception:
+                                pass
+                    threading.Thread(target=_remove_later, daemon=True).start()
                 elif status.startswith("Failed") or status.startswith("Error"):
                     data["status_text"].color = ERROR
                     data["prog_bar"].color = ERROR
