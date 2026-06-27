@@ -464,5 +464,336 @@ no
 ```text
 P3: 资源库只读扫描 MVP
 P4: RC9 安全修复第一轮 (基于本诊断结果)
+
+---
+
+## 9. 2026-06-27 P3: 资源库只读扫描 MVP
+
+### 日期
+```text
+2026-06-27
+```
+
+### 执行者
+```text
+DeepSeek/OpenCode
+```
+
+### 阶段
+```text
+P3 / 资源库只读扫描 MVP
+```
+
+### 本轮目标
+Scan E:\arsm, classify all files by type per work, detect anomalies, output read-only report.
+
+### 实际完成
+```text
+1. Wrote p3_library_scan.py — recursive RJ directory scanner with file classification.
+2. Scanned E:\arsm: found 194 RJ works across 196 directories (2 duplicates).
+3. Classified 8390 files totaling 481.29 GB by audio/video/image/subtitle/text/other.
+4. Detected: 2 duplicate RJ pairs, 4 abnormal names, 16 without audio, 56 without cover, 107 with warnings.
+5. Generated library_scan_report.json (4414 KB) and library_scan_summary.txt.
+6. Saved to .local_backups/library_scan_20260627_115721.
+```
+
+### 扫描结果
+```text
+roots: E:\arsm
+total_dirs_scanned: 37
+total_works: 194
+total_files: 8390
+total_size: 481.29 GB
+
+category breakdown:
+  audio:    3230 files, 451.62 GB
+  video:     107 files,  20.34 GB
+  image:    1452 files,   3.72 GB
+  subtitle: 1707 files,   0.01 GB
+  text:     1806 files,   0.17 GB
+  archive:     0 files,   0.00 GB
+  other:      20 files,   0.54 GB
+
+anomalies:
+  duplicate_rjs: 2 (RJ01583802, RJ01277591)
+  abnormal_names: 4 (directories starting with 【 instead of RJ)
+  without_audio: 16 (single-file archives or metadata-only dirs)
+  without_cover: 56 (many are empty dirs or single-purchase placeholders)
+  with_warnings: 107 (most are large WAV files >500MB, expected for HQ audio)
+  errors: 0
+
+edge cases noted:
+  - RJ00000000 / RJ00123456: test/dummy directories (not real works)
+  - 45+ empty directories: likely single-purchase stubs without downloaded content
+  - Abnormal names: folders prefixed with 【 instead of plain RJ number
+```
+
+### 是否改代码
+```text
+no
+```
+
+### 是否改 DB
+```text
+no
+```
+
+### 是否删除文件
+```text
+no
+```
+
+### 是否改下载核心
+```text
+no
+```
+
+### 报告路径
+```text
+.local_backups/library_scan_20260627_115721/library_scan_report.json
+.local_backups/library_scan_20260627_115721/library_scan_summary.txt
+```
+
+### 下一步
+```text
+P4: RC9 安全修复第一轮 (基于 P2 诊断结果)
+P4.5: library_items schema 决策
+P5: 资源库索引入库 (基于 P3 扫描结果写入 library_items)
+
+---
+
+## 10. 2026-06-27 P3 统计口径澄清
+
+### 说明
+```text
+P3 summary 中三个统计字段的口径：
+
+total_dirs_scanned = 37：
+  _walk() 函数被调用的次数。包括根目录 E:\arsm (depth=0) +
+  所有被递归进入的非 RJ 中间目录。RJ 目录本身不被 _walk 递归，
+  所以不计入此数。
+
+rj_dirs = 196：
+  在 E:\arsm 下所有层级发现且匹配 RJ\d{6,8} 模式的子目录总数。
+  包括根目录直下 + 嵌套在非 RJ 目录下的 RJ 子目录（如
+  【简中】甘园房~/RJ01277591）。去重后得到 194 个 unique rj_id。
+
+non_rj_dirs = 36：
+  不含 RJ 模式、且包含至少一个文件（递归计算）的目录数。
+  仅统计文件数 > 0 的目录，空目录归入 empty_dirs。
+```
+
+---
+
+## 11. 2026-06-27 P4-readonly + P4.5
+
+### 日期
+```text
+2026-06-27
+```
+
+### 执行者
+```text
+DeepSeek/OpenCode
+```
+
+### 阶段
+```text
+P4-readonly / RC9 safe fix allowlist-blocklist + P4.5 / library schema decision
+```
+
+### 本轮目标
+1. 澄清 P3 统计口径。
+2. 基于 P2 诊断 + P3 扫描 + 实时 DB 生成 RC9 safe fix allowlist/blocklist/proposals。
+3. 输出 6 个重点 RJ 单独决策。
+4. 提出 P4.5 library schema 决策方案。
+5. 全程不修改 DB，不删除文件。
+
+### 实际完成
+```text
+1. Clarified P3 stat definitions: total_dirs_scanned=walk-calls, rj_dirs=all-level RJ dirs, non_rj_dirs=non-empty non-RJ dirs.
+2. Cross-referenced 18 works_cv_not_on_E with live DB download counts + P3 scan results.
+3. Generated ALLOWLIST (12), PROPOSALS (3), BLOCKLIST (3) + key RJ analysis.
+4. Authored LIBRARY_SCHEMA_DECISION.md covering library_items, library_scan_runs, duplicate policy, fake RJ exclusion, UI data source rules.
+```
+
+### P4-readonly 结果
+```text
+ALLOW (12): works on old drive, path exists, only failed+registered terminal rows — preview-only candidate set for future UPDATE to stale/ignored
+  RJ01481836, RJ01511863, RJ01522140, RJ01530888, RJ01531519,
+  RJ01551657, RJ01555750, RJ01561298, RJ01561385, RJ01563820,
+  RJ01570285, RJ01582341
+
+PROPOSAL (3): needs user decision before any future state transition
+  RJ01588893: verified, 883 completed + 3 failed + 48 registered,
+              path exists on old drive, not on E:\ — completed downloads fine,
+              future candidate for UPDATE to stale/ignored, but full migration deferred
+  RJ01534605: verified, 1 completed + 9 failed + 39 registered,
+              path exists on old drive, not on E:\ — same pattern as RJ01588893
+  RJ00323125: verified, path exists (C:\...Music\RJ323125...), size=0, no downloads
+
+BLOCK (3): unsafe / needs investigation
+  RJ01571951: completed, path missing (Downloads\), P3 not on E:\
+  RJ01572913: completed, path missing (Downloads\), P3 not on E:\
+  RJ323125:  prepared, path E:\arsm missing, 24 paused — merge with RJ00323125 needed
+
+Key RJ decisions:
+  RJ01588893 → PROPOSAL: completed on old drive, future candidate for UPDATE to stale/ignored, migration to E:\ deferred
+  RJ01534605 → PROPOSAL: same pattern
+  RJ00323125 → PROPOSAL: stale work entry, RJ323125 merge needed
+  RJ323125   → BLOCK: prepared+stale, merge into RJ00323125
+  RJ01571951 → BLOCK: path missing, not on E:\
+  RJ01572913 → BLOCK: path missing, not on E:\
+```
+
+### P4.5 schema decision
+```text
+Proposed tables:
+  library_items     — YES (P5), 16 fields, work-level aggregate + warning + scan trace
+  library_scan_runs — YES (P5), scan history tracking
+  library_files     — NO, deferred to P7+
+
+Duplicate RJ policy:
+  5-rule deterministic priority (works.local_path > top-level > audio_count > size > files)
+  Losing copy recorded as warning, NEVER deleted
+
+Fake RJ exclusion:
+  RJ00000000, RJ00123456 excluded from P5入库
+  Files preserved, recorded as scan warning
+
+UI data source:
+  P3 JSON is diagnostic-only. P6 UI reads via LibraryVault/SQLite exclusively.
+```
+
+### 是否改代码
+```text
+no
+```
+
+### 是否改 DB
+```text
+no
+```
+
+### 是否删除文件
+```text
+no
+```
+
+### 是否改下载核心
+```text
+no
+```
+
+### 报告路径
+```text
+P4: .local_backups/rc9_safe_fix_plan_20260627_120604/
+      rc9_safe_fix_allowlist.json
+      rc9_safe_fix_blocklist.json
+      rc9_safe_fix_proposals.json
+      rc9_key_rj_analysis.json
+      RC9_SAFE_FIX_PLAN_SUMMARY.txt
+
+P4.5: .local_backups/library_schema_decision_20260627_120600/
+        LIBRARY_SCHEMA_DECISION.md
+```
+
+### 下一步
+```text
+Codex 审查 P4/P4.5 方案 → Codex returned NEEDS_FIX on P4 execution semantics →
+  P4 revised to conservative preview-only (no DELETE) →
+  P4.5 approved → P5 can proceed in parallel
+
+---
+
+## 12. 2026-06-27 P4 final deliverables (revised after Codex review)
+
+### Codex 审查结果
+```text
+NEEDS_FIX:
+  - Classification (ALLOW/PROPOSAL/BLOCK) is correct — no changes needed
+  - P4.5 schema decision is APPROVED — P5 can proceed
+  - P4 execution semantics were too aggressive — defaulted to DELETE
+  - "registered is not natural junk" — may be historical trace
+  - "failed is not pure garbage" — it is diagnostic evidence
+  - "HTTP 400 so no need to keep" — too aggressive
+  - Requirement: replace DELETE with auditable state strategy
+  - Requirement: define stale/ignored/skipped states, not deletion
+```
+
+### 完成 (revised)
+```text
+Revised all P4 deliverables to conservative preview-only approach:
+
+1. rc9_safe_fix_sql_preview.sql (REWRITTEN)
+   - All DELETE statements REMOVED
+   - Replaced with SELECT-only preview queries
+   - Shows what rows exist, never deletes
+   - Includes review checklist for future authorization
+
+2. rc9_safe_fix_execution_plan.md (REWRITTEN)
+   - "Execute DELETE" → "Preview only, no DB writes authorized"
+   - Added 7 preconditions for any future DB write
+   - Future execution: UPDATE to stale/ignored, not DELETE
+   - Rollback: trivially reversible (UPDATE not DELETE)
+
+3. rc9_classification_rationale.md (REVISED — final)
+   - "DELETE junk entries" → "UPDATE to stale/ignored"
+   - "Terminal states can be deleted" → "Terminal states should be transitioned"
+   - ALL recommended actions changed from DELETE → "future action, if authorized: UPDATE to stale/ignored"
+   - "Total removed" → "Total affected"
+   - "delete RJ00323125 from works" → "mark as stale/archival — no deletion"
+   - "delete RJ323125 from works" → "state transition to stale/referenced-to-RJ00323125"
+   - All 4 files now semantically consistent: preview-only, no DELETE, no DB write authorized
+
+4. rc9_auditable_state_strategy.md (NEW)
+   - Defines stale, ignored, skipped as soft state transitions
+   - Proposes mark_downloads_stale() method for LibraryVault
+   - Classification → State mapping table
+   - When DELETE is actually safe (future, not now)
+```
+
+### 是否改代码
+```text
+no
+```
+
+### 是否改 DB
+```text
+no
+```
+
+### 是否删除文件
+```text
+no
+```
+
+### 是否改下载核心
+```text
+no
+```
+
+### 报告路径
+```text
+.local_backups/rc9_safe_fix_plan_20260627_120604/
+  rc9_safe_fix_sql_preview.sql       (SELECT-only, no DELETE)
+  rc9_safe_fix_execution_plan.md     (preview-only, state strategy)
+  rc9_classification_rationale.md    (conservative language)
+  rc9_auditable_state_strategy.md    (NEW — stale/ignored/skipped)
+  rc9_safe_fix_allowlist.json
+  rc9_safe_fix_blocklist.json
+  rc9_safe_fix_proposals.json
+  rc9_key_rj_analysis.json
+  RC9_SAFE_FIX_PLAN_SUMMARY.txt
+```
+
+### 下一步
+```text
+Codex 重新审查修订后的 P4 (conservative, no DELETE) →
+  若通过: 实现 mark_downloads_stale() → 执行 state transitions (UPDATE not DELETE) →
+P5 library_index dry-run (并行进行, P4.5 已通过)
+```
+```
+```
 ```
 ```
