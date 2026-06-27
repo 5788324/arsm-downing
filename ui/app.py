@@ -165,11 +165,6 @@ class AppController:
                 except Exception as e:
                     logging.debug(f"UI queue processing error: {e}")
 
-            if processed:
-                try:
-                    self.page.update()
-                except Exception:
-                    pass
         finally:
             self.ui_processing = False
 

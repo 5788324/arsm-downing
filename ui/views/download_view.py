@@ -856,35 +856,37 @@ class DownloadView(ft.Container):
     #  Track progress (P3: store speed/eta)
     # ══════════════════════════════════════════════
     def update_track_progress(self, event):
-        """Accept ProgressEvent — display speed/eta from core.
-
-        When paused: update downloaded/total data but do NOT
-        animate progress bar or show speed changes.
-        """
+        """Accept ProgressEvent — throttled UI updates to prevent freeze."""
         rj_id = event.rj_id
         track_title = event.track_title
         downloaded = event.downloaded_bytes
         total = event.total_bytes
-        status = event.status
 
         if rj_id not in self.active_downloads:
             return
 
         data = self.active_downloads[rj_id]
+        now = time.time()
+
         if "tracks" not in data:
             data["tracks"] = {}
 
         data["tracks"][track_title] = {
             "downloaded": downloaded,
             "total": total,
-            "status": status
+            "status": event.status
         }
 
-        # Store latest speed/eta from core (data only)
         data["current_track"] = event.track_title
         data["last_speed_bps"] = event.global_speed_bps
         data["last_track_speed"] = event.track_speed_bps
         data["last_eta"] = event.eta_seconds
+
+        # Throttle: max 3 UI updates per second to prevent freeze
+        last_ui = data.get("_last_ui_update", 0)
+        if now - last_ui < 0.3:
+            return
+        data["_last_ui_update"] = now
 
         # ── RC7.3: paused items — update data ONLY, no visual animation ──
         ui_status = data.get("status", "")
