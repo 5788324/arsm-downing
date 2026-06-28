@@ -16,7 +16,7 @@ class ToolsView(ft.Container):
         self.delete_source_confirm_pending = False
 
         # Backlog widgets
-        self.backlog_summary = ft.Text("Backlog: loading...", size=13, color="grey")
+        self.backlog_summary = ft.Text("", size=13, color="grey")
         self._backlog_source_val = "ignored"
         self._backlog_batch_val = "30"
         self.backlog_preview_text = ft.Text("", size=12, font_family="Consolas")
@@ -599,9 +599,9 @@ class ToolsView(ft.Container):
     def refresh_backlog(self, e=None):
         stats = self._backlog_stats()
         self.backlog_summary.value = (
-            f"Backlog: {stats.get('stale_rjs',0)} stale RJs ({stats.get('stale_rows',0)} rows) | "
-            f"{stats.get('ignored_rjs',0)} ignored RJs ({stats.get('ignored_rows',0)} rows) | "
-            f"queued: {stats.get('queued_rows',0)} | paused: {stats.get('paused_rows',0)}"
+            f"可恢复: {stats.get('stale_rjs',0)+stats.get('ignored_rjs',0)} 个作品 "
+            f"({stats.get('stale_rows',0)+stats.get('ignored_rows',0)} 条记录) | "
+            f"当前队列: {stats.get('queued_rows',0)} | 暂停: {stats.get('paused_rows',0)}"
         )
         self.backlog_summary.update()
 

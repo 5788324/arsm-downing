@@ -36,7 +36,7 @@ class AppController:
 
     def __init__(self, page: ft.Page):
         self.page = page
-        self.page.title = "EchoVault Premium"
+        self.page.title = "ARSM Suite"
         self.page.theme = PremiumTheme.get_theme()
         self.page.theme_mode = ft.ThemeMode.DARK
         self.page.bgcolor = BG_DARK

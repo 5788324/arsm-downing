@@ -29,13 +29,13 @@ class DashboardView(ft.Container):
         lib = db.get_library_summary()  # library_items table
 
         self.stats_grid.controls = [
-            self._build_stat_card("作品总数", str(cnt), "📚", "(works 表)"),
+            self._build_stat_card("下载器记录", str(cnt), "📥", "(works 表)"),
             self._build_stat_card("总存储量", f"{sz/1024**3:.2f} GB", "💾", "(works 表)"),
-            self._build_stat_card("已索引", str(lib.get("total_works", 0)), "📋", "(library_items)"),
-            self._build_stat_card("索引文件", str(lib.get("total_files", 0)), "📁", "(library_items)"),
+            self._build_stat_card("资源库索引", str(lib.get("total_works", 0)), "📋", "(library_items)"),
+            self._build_stat_card("索引文件数", str(lib.get("total_files", 0)), "📁", "(library_items)"),
         ]
         self.source_note.value = (
-            f"数据来源: 扫描发现 232 | works 表 {cnt} | library_items 索引 {lib.get('total_works', 0)}")
+            f"数据来源: 磁盘扫描 227 | 下载器记录(works) {cnt} | 资源库索引(library_items) {lib.get('total_works', 0)} | 差异见资源库异常页")
         
         # Load achievements
         achievements_data = [
