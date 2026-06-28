@@ -421,13 +421,12 @@ class LibraryVault:
         return ""
 
     def scan_library_paths(self, paths: List[str]) -> int:
-        """Scan library paths for RJ folders. Returns count found."""
+        """Scan library paths for RJ folders. Returns count of unique rj_id found."""
         import re as _re
         rj_re = _re.compile(r'(?:RJ)?(\d{6,8})', _re.IGNORECASE)
-        found = 0
+        found_ids = set()
 
         def _scan_dir(d: Path, lib_path: str):
-            nonlocal found
             if not d.is_dir():
                 return
             m = rj_re.search(d.name)
@@ -439,7 +438,7 @@ class LibraryVault:
                 self.upsert_library_entry(
                     rj_id, lib_path, str(d),
                     size_bytes, file_count, 'found')
-                found += 1
+                found_ids.add(rj_id)
                 return True
             return False
 
@@ -451,7 +450,7 @@ class LibraryVault:
                 if not _scan_dir(d, lib_path):
                     for sub in d.iterdir():
                         _scan_dir(sub, lib_path)
-        return found
+        return len(found_ids)
 
     def rebuild_library(self, paths: List[str]) -> dict:
         """Scan library paths and sync to works table. Returns stats."""
