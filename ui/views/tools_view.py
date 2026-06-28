@@ -61,6 +61,17 @@ class ToolsView(ft.Container):
             ], spacing=12, wrap=True),
             ft.Row([self.keep_source_checkbox, self.delete_source_checkbox], spacing=12, wrap=True),
 
+            # ── 外部资源导入 ──
+            ft.Text("外部资源整理", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
+            ft.Row([
+                ft.ElevatedButton("扫描外部资源", icon=ft.icons.FOLDER_SPECIAL, on_click=self.external_scan,
+                    tooltip="扫描 E:\\arsm 顶层，检测文件树规范化需求"),
+                ft.ElevatedButton("整理 dry-run", icon=ft.icons.PREVIEW, on_click=self.external_dry_run,
+                    tooltip="预览规范化操作，不实际修改"),
+                ft.ElevatedButton("执行整理", icon=ft.icons.PLAY_ARROW, on_click=self.external_execute,
+                    tooltip="执行文件树规范化 + 更新 DB", bgcolor=WARNING),
+            ], spacing=12, wrap=True),
+
             ft.Text("\u961f\u5217\u6e05\u7406", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
             ft.Row([
                 ft.ElevatedButton("\u6e05\u7406\u65e0\u6548\u961f\u5217", icon=ft.icons.CLEANING_SERVICES, on_click=self.clean_queue,
@@ -689,6 +700,52 @@ class ToolsView(ft.Container):
 
     def _close_dialog(self):
         self.app_controller.page.dialog.open = False
+        self.app_controller.page.update()
+
+    # ── External intake ──
+    def external_scan(self, e):
+        import sys
+        from pathlib import Path as P
+        sys.path.insert(0, str(P(__file__).parent.parent.parent))
+        from tools.external_intake import scan_structure
+        plan = scan_structure()
+        self.log(f"扫描 {plan['scanned_top_dirs']} 目录, {plan['unique_rj']} 唯一RJ", ACCENT_PRIMARY)
+        self.log(f"  已规范: {plan['already_normalized']} | 需改名: {plan['needs_rename_top_level']} | 需加Title层: {plan['needs_title_layer']}", SUCCESS)
+        if plan['duplicate_rj']: self.log(f"  重复: {plan['duplicate_rj']}", WARNING)
+        if plan['quarantine_required']: self.log(f"  需隔离: {plan['quarantine_required']}", ERROR)
+
+    def external_dry_run(self, e):
+        import sys
+        from pathlib import Path as P
+        sys.path.insert(0, str(P(__file__).parent.parent.parent))
+        from tools.external_intake import scan_structure
+        plan = scan_structure()
+        self.log(f"DRY-RUN: 将规范 {plan['needs_rename_top_level']} 个目录 + {plan['needs_title_layer']} 个加层 + {plan['quarantine_required']} 个隔离", ACCENT_PRIMARY)
+        for a in plan["actions"][:15]:
+            self.log(f"  [{a['action']}] {a.get('name', a.get('dir',''))[:60]}", "white")
+
+    def external_execute(self, e):
+        def _do():
+            import sys
+            from pathlib import Path as P
+            sys.path.insert(0, str(P(__file__).parent.parent.parent))
+            from tools.external_intake import execute_plan, scan_structure
+            plan = scan_structure()
+            result = execute_plan(plan)
+            for k, v in result.items():
+                if v > 0: self.log(f"  {k}: {v}", SUCCESS)
+            self.log("Done.", ACCENT_PRIMARY)
+
+        self.app_controller.page.dialog = ft.AlertDialog(
+            title=ft.Text("执行外部资源整理?"),
+            content=ft.Text("将规范化 E:\\arsm 文件树结构。会备份 DB。不可撤销。"),
+            actions=[
+                ft.TextButton("Cancel", on_click=lambda e: self._close_dialog()),
+                ft.TextButton("Execute", on_click=lambda e: [self._close_dialog(), _do()]),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self.app_controller.page.dialog.open = True
         self.app_controller.page.update()
 
     # end backlog
