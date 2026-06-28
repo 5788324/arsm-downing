@@ -59,7 +59,38 @@ def scan_top_dirs():
 
     plan["scanned_top_dirs"] = len(dirs_info)
     plan["unique_rj"] = len(rj_seen)
+    blockers = compute_blockers(dirs_info)
+    plan["blockers"] = len(blockers)
+    plan["blocker_list"] = blockers[:20]
+    plan["can_execute"] = len(blockers) == 0
     return dirs_info, dict(plan)
+
+
+def compute_blockers(dirs_info: list) -> list:
+    """Return hard blockers that must be resolved before bulk execution."""
+    blockers = []
+    for info in dirs_info:
+        action = info.get("action")
+        reason = info.get("reason", "")
+        rj_id = info.get("rj_id") or info.get("name") or info.get("dir") or "UNKNOWN"
+        if action == "quarantine":
+            blockers.append(f"{rj_id}: {reason or 'quarantine'}")
+        if info.get("has_part"):
+            msg = f"{rj_id}: has_part"
+            if msg not in blockers:
+                blockers.append(msg)
+        if info.get("is_empty"):
+            msg = f"{rj_id}: empty"
+            if msg not in blockers:
+                blockers.append(msg)
+    return blockers
+
+
+def scan_structure():
+    """UI-compatible read-only scan result."""
+    dirs_info, plan = scan_top_dirs()
+    plan["actions"] = dirs_info
+    return plan
 
 
 def _classify_dir(d: Path, rj_id: str) -> dict:
@@ -303,22 +334,12 @@ def main():
     dirs_info, plan = scan_top_dirs()
     print(f"Scanned: {plan['scanned_top_dirs']} dirs, {plan['unique_rj']} unique RJ")
 
-    # Blockers
-    blockers = []
-    for info in dirs_info:
-        if info["action"] in ("quarantine",): blockers.append(f"{info['rj_id']}: {info['reason']}")
-        if info.get("has_part"): blockers.append(f"{info['rj_id']}: has_part")
-        if info.get("is_empty"): blockers.append(f"{info['rj_id']}: empty")
-
-    plan["blockers"] = len(blockers) == 0  # True = no blockers
-    if not plan["blockers"]:
-        plan["blocker_list"] = blockers[:10]
-
     print(f"  already_normalized: {plan.get('already_normalized',0)}")
     print(f"  needs_rename_top_level: {plan.get('needs_rename_top_level',0)}")
     print(f"  needs_title_layer: {plan.get('needs_title_layer',0)}")
     print(f"  quarantine: {plan.get('quarantine_required',0)}")
-    print(f"  blockers: {len(blockers)}")
+    blockers = plan.get("blocker_list", [])
+    print(f"  blockers: {plan.get('blockers', 0)}")
     if blockers:
         for b in blockers[:5]: print(f"    - {b}")
 
@@ -345,7 +366,7 @@ def main():
         for m in mismatch[:10]:
             print(f"  {m['rj_id']}: {m['verdict']} (missing_audio={len(m['missing_audio'])})")
 
-    if args.execute and args.confirm_bulk and plan["blockers"] == 0:
+    if args.execute and args.confirm_bulk and plan.get("can_execute"):
         print("\nEXECUTING...")
         stats, bkp = execute_normalize(dirs_info)
         for k, v in stats.items(): print(f"  {k}: {v}")
@@ -355,7 +376,10 @@ def main():
         print(f"  integrity: {conn.execute('PRAGMA integrity_check').fetchone()[0]}")
         conn.close()
     elif args.execute:
-        print(f"\nBLOCKED: {len(blockers)} blockers exist. Use --confirm-bulk to override.")
+        if not args.confirm_bulk:
+            print("\nBLOCKED: --confirm-bulk is required for actual organize.")
+        else:
+            print(f"\nBLOCKED: {plan.get('blockers', 0)} blockers exist. Resolve blockers before execute.")
 
     # Report
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")

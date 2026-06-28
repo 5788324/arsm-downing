@@ -730,11 +730,11 @@ class ToolsView(ft.Container):
         from tools.external_intake import scan_top_dirs, execute_normalize
         dirs_info, plan = scan_top_dirs()
 
-        if not plan.get("blockers", False):
+        if plan.get("blockers", 0) > 0 or not plan.get("can_execute", False):
             bl = plan.get("blocker_list", [])
-            self.log(f"STOP: {len(bl)} blockers exist", ERROR)
+            self.log(f"STOP: {plan.get('blockers', len(bl))} blockers exist", ERROR)
             for b in bl[:3]: self.log(f"  {b}", WARNING)
-            self.app_controller.show_snack(f"存在阻塞项，无法执行")
+            self.app_controller.show_snack("\u5b58\u5728\u963b\u585e\u9879，\u65e0\u6cd5\u6267\u884c")
             return
 
         n_move = plan.get("needs_rename_top_level", 0) + plan.get("needs_title_layer", 0)

@@ -3,7 +3,8 @@ import sys, os, tempfile, json
 from pathlib import Path
 sys.path.insert(0, ".")
 
-from tools.external_intake import norm_rj, _classify_dir, safe_name, _extract_track_names
+from tools import external_intake as ext
+from tools.external_intake import norm_rj, _classify_dir, safe_name, _extract_track_names, compute_blockers
 
 passed = failed = 0
 def check(name, condition):
@@ -12,6 +13,8 @@ def check(name, condition):
     else: failed += 1; print(f"  FAIL: {name}")
 
 print("=== External Intake Tests ===\n")
+TMP_BASE = Path(".tmp_tests")
+TMP_BASE.mkdir(exist_ok=True)
 
 # norm_rj
 check("norm_rj pure", norm_rj("RJ01087430") == "RJ01087430")
@@ -26,7 +29,7 @@ check("safe_name special chars", safe_name("test:file<name>") == "testfilename")
 check("safe_name truncate", len(safe_name("a" * 100)) <= 80)
 
 # _classify_dir
-with tempfile.TemporaryDirectory() as td:
+with tempfile.TemporaryDirectory(dir=TMP_BASE) as td:
     root = Path(td)
     # Pure RJ + subdirs = already_normalized
     d1 = root / "RJ01087430"
@@ -79,11 +82,34 @@ check("extract_leaf_tracks", len(names) == 3)
 check("extract_includes_inner", "inner.mp3" in names)
 check("extract_includes_root", "track01.mp3" in names)
 
+
+# blocker / scan_structure semantics
+with tempfile.TemporaryDirectory(dir=TMP_BASE) as td:
+    old_root = ext.E_ROOT
+    ext.E_ROOT = Path(td)
+    try:
+        ok = ext.E_ROOT / "RJ01087500"
+        ok.mkdir()
+        (ok / "title").mkdir()
+        dirs_info, plan = ext.scan_top_dirs()
+        check("no_blockers_count_zero", plan["blockers"] == 0)
+        check("no_blockers_can_execute", plan["can_execute"] is True)
+        check("scan_structure_has_actions", isinstance(ext.scan_structure().get("actions"), list))
+
+        bad = ext.E_ROOT / "RJ01087501"
+        bad.mkdir()
+        dirs_info, plan = ext.scan_top_dirs()
+        check("empty_dir_blocks_execute", plan["blockers"] >= 1 and plan["can_execute"] is False)
+        check("compute_blockers_reports_empty", any("empty" in b for b in compute_blockers(dirs_info)))
+    finally:
+        ext.E_ROOT = old_root
+
 # scan_top_dirs runs on live E:\arsm (read-only)
 from tools.external_intake import scan_top_dirs
 dirs_info, plan = scan_top_dirs()
 check("scan_returns_dirs", len(dirs_info) > 0)
 check("scan_has_unique_rj", plan["unique_rj"] > 0)
+check("scan_blockers_is_count", isinstance(plan.get("blockers"), int))
 check("scan_no_crashes", True)
 
 print(f"\n{'='*40}")
