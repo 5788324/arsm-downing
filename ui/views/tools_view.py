@@ -37,67 +37,57 @@ class ToolsView(ft.Container):
         )
 
         self.content = ft.Column([
-            ft.Text("系统工具", size=28, weight=ft.FontWeight.BOLD),
+            ft.Text("\u7cfb\u7edf\u5de5\u5177", size=28, weight=ft.FontWeight.BOLD),
 
-            # ── 诊断 ──
-            ft.Text("诊断", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
+            ft.Text("\u8bca\u65ad", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
             ft.Row([
-                ft.ElevatedButton("运行一键诊断", icon=ft.icons.HEALTH_AND_SAFETY, on_click=self.run_diagnostic),
-                ft.ElevatedButton("测试网络", icon=ft.icons.NETWORK_CHECK, on_click=self.test_network),
+                ft.ElevatedButton("\u8fd0\u884c\u4e00\u952e\u8bca\u65ad", icon=ft.icons.HEALTH_AND_SAFETY, on_click=self.run_diagnostic),
+                ft.ElevatedButton("\u6d4b\u8bd5\u7f51\u7edc", icon=ft.icons.NETWORK_CHECK, on_click=self.test_network),
             ], spacing=12, wrap=True),
 
-            # ── 仓库与元数据 ──
-            ft.Text("仓库与元数据", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
+            ft.Text("\u4ed3\u5e93\u4e0e\u5143\u6570\u636e", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
             ft.Row([
-                ft.ElevatedButton("扫描仓库", icon=ft.icons.FOLDER_SPECIAL, on_click=self.scan_library,
-                    tooltip="扫描 library_paths 中的 RJ 目录并更新 library_index"),
-                ft.ElevatedButton("诊断失败任务", icon=ft.icons.BUG_REPORT, on_click=self.diagnose_failed,
-                    tooltip="分析 downloads 中 failed 状态的错误分类"),
+                ft.ElevatedButton("\u626b\u63cf\u4ed3\u5e93", icon=ft.icons.FOLDER_SPECIAL, on_click=self.scan_library,
+                    tooltip="\u626b\u63cf library_paths \u4e2d\u7684 RJ \u76ee\u5f55\u5e76\u66f4\u65b0 library_index"),
+                ft.ElevatedButton("\u8bca\u65ad\u5931\u8d25\u4efb\u52a1", icon=ft.icons.BUG_REPORT, on_click=self.diagnose_failed,
+                    tooltip="\u5206\u6790 downloads \u8868\u4e2d\u7684\u5931\u8d25\u72b6\u6001"),
             ], spacing=12, wrap=True),
 
-            # ── 迁移 ──
-            ft.Text("迁移", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
+            ft.Text("\u8fc1\u79fb", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
             ft.Row([
-                ft.ElevatedButton("迁移已完成作品", icon=ft.icons.DRIVE_FILE_MOVE, on_click=self.migrate_dry_run,
-                    tooltip="扫描 completed/verified 作品迁移到 output_dir"),
-                ft.ElevatedButton("验证迁移", icon=ft.icons.VERIFIED_USER, on_click=self.verify_migrated),
+                ft.ElevatedButton("\u8fc1\u79fb\u5df2\u5b8c\u6210\u4f5c\u54c1", icon=ft.icons.DRIVE_FILE_MOVE, on_click=self.migrate_dry_run,
+                    tooltip="\u626b\u63cf completed/verified \u4f5c\u54c1\u5e76\u8fc1\u79fb\u5230 output_dir"),
+                ft.ElevatedButton("\u9a8c\u8bc1\u8fc1\u79fb", icon=ft.icons.VERIFIED_USER, on_click=self.verify_migrated),
             ], spacing=12, wrap=True),
+            ft.Row([self.keep_source_checkbox, self.delete_source_checkbox], spacing=12, wrap=True),
+
+            ft.Text("\u961f\u5217\u6e05\u7406", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
             ft.Row([
-                self.keep_source_checkbox,
-                self.delete_source_checkbox,
+                ft.ElevatedButton("\u6e05\u7406\u65e0\u6548\u961f\u5217", icon=ft.icons.CLEANING_SERVICES, on_click=self.clean_queue,
+                    tooltip="\u6e05\u7406 queue.json \u548c downloads \u4e2d\u7684\u65e0\u6548\u4efb\u52a1\u8bb0\u5f55"),
             ], spacing=12, wrap=True),
 
-            # ── 队列清理 ──
-            ft.Text("队列清理", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
+            ft.Text("\u7f13\u5b58\u4e0e\u6570\u636e\u5e93", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
             ft.Row([
-                ft.ElevatedButton("清理无效队列", icon=ft.icons.CLEANING_SERVICES, on_click=self.clean_queue,
-                    tooltip="清理 queue.json 中无效/已完成的任务记录"),
+                ft.ElevatedButton("\u538b\u7f29\u6570\u636e\u5e93(VACUUM)", icon=ft.icons.STORAGE, on_click=self.repair_db,
+                    tooltip="\u6267\u884c SQLite VACUUM \u538b\u7f29\u6570\u636e\u5e93\u6587\u4ef6"),
+                ft.ElevatedButton("\u6e05\u7406\u5143\u6570\u636e\u7f13\u5b58", icon=ft.icons.DELETE_SWEEP, on_click=self.clear_cache,
+                    tooltip="\u6e05\u7406\u8fc7\u671f metadata_cache \u6761\u76ee"),
             ], spacing=12, wrap=True),
 
-            # ── 缓存/数据库 ──
-            ft.Text("缓存与数据库", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
-            ft.Row([
-                ft.ElevatedButton("压缩数据库(VACUUM)", icon=ft.icons.STORAGE, on_click=self.repair_db,
-                    tooltip="执行 VACUUM 压缩 SQLite 数据库文件"),
-                ft.ElevatedButton("清理元数据缓存", icon=ft.icons.DELETE_SWEEP, on_click=self.clear_cache,
-                    tooltip="清理过期的 metadata_cache 条目（7 天以上）"),
-            ], spacing=12, wrap=True),
-
-            # ── Backlog ──
             ft.Divider(height=10, color="transparent"),
-            ft.Text("历史任务恢复", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
+            ft.Text("\u5386\u53f2\u4efb\u52a1\u6062\u590d", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
             self.backlog_summary,
             ft.Row([
                 self.backlog_source,
                 self.backlog_batch_size,
-                ft.ElevatedButton("Preview", icon=ft.icons.PREVIEW, on_click=self.backlog_preview),
-                ft.ElevatedButton("Re-enable", icon=ft.icons.REFRESH, on_click=self.backlog_reenable, bgcolor=WARNING),
+                ft.ElevatedButton("\u9884\u89c8", icon=ft.icons.PREVIEW, on_click=self.backlog_preview),
+                ft.ElevatedButton("\u6062\u590d\u961f\u5217", icon=ft.icons.REFRESH, on_click=self.backlog_reenable, bgcolor=WARNING),
             ], spacing=10),
             ft.Container(self.backlog_preview_text, padding=10, border_radius=8, bgcolor="#1a1a2e"),
 
-            # ── 日志 ──
             ft.Divider(height=10, color="transparent"),
-            ft.Text("操作日志", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
+            ft.Text("\u64cd\u4f5c\u65e5\u5fd7", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
             Styles.glass_container(self.log_area, padding=10),
         ], spacing=12, scroll=ft.ScrollMode.AUTO, expand=True)
 
@@ -130,7 +120,7 @@ class ToolsView(ft.Container):
             return False
         if not self.delete_source_confirm_pending:
             self.delete_source_confirm_pending = True
-            self.log("  WARNING: ??????????????????????????", WARNING)
+            self.log("  WARNING: \u5c06\u5220\u9664\u6e90\u76ee\u5f55\uff0c\u8bf7\u518d\u6b21\u70b9\u51fb\u786e\u8ba4\u6267\u884c\u3002", WARNING)
             return True
         self.delete_source_confirm_pending = False
         return False
@@ -287,12 +277,12 @@ class ToolsView(ft.Container):
         cfg = self.app_controller.config
         output_dir = getattr(cfg, "output_dir", None)
         if not output_dir:
-            self.log("  ERROR: output_dir ?????????????", ERROR)
+            self.log("  ERROR: output_dir \u672a\u914d\u7f6e\uff0c\u8fc1\u79fb\u5df2\u505c\u6b62\u3002", ERROR)
             return None
 
         target_base = Path(output_dir).expanduser().resolve(strict=False)
         if not target_base.exists():
-            self.log(f"  ERROR: output_dir ???: {target_base}", ERROR)
+            self.log(f"  ERROR: output_dir \u4e0d\u5b58\u5728: {target_base}", ERROR)
             return None
 
         source_roots = self.list_migration_source_roots(target_base)
@@ -324,7 +314,7 @@ class ToolsView(ft.Container):
         if not target_base:
             return
 
-        self.log(f"> ?????? dry-run target={target_base}", "white")
+        self.log(f"> \u8fc1\u79fb\u5019\u9009 dry-run target={target_base}", "white")
         self.log(
             f"  migration_mode={self.current_migration_mode()} "
             f"source_will_be_preserved={'yes' if self.keep_source_mode else 'no'}",
@@ -346,7 +336,7 @@ class ToolsView(ft.Container):
         self.log_space_check(dry['space_check'])
 
         if dry["candidate_count"] == 0:
-            self.log("  ???????", WARNING)
+            self.log("  \u6ca1\u6709\u53ef\u8fc1\u79fb\u5019\u9009\u3002", WARNING)
             return
 
         self.log("")
@@ -358,14 +348,14 @@ class ToolsView(ft.Container):
             self.log(f"    source: {item['source']}", "grey")
             self.log(f"    target: {item['target']}", ACCENT_PRIMARY)
         if dry["candidate_count"] > 20:
-            self.log(f"  ... ?? {dry['candidate_count'] - 20} ???", "grey")
+            self.log(f"  ... \u8fd8\u6709 {dry['candidate_count'] - 20} \u4e2a\u5019\u9009", "grey")
 
         self.log("")
         self.log(
             f"> mode={self.current_migration_mode()} / copy_keep_source mode source will be preserved={self.keep_source_mode}",
             ACCENT_PRIMARY,
         )
-        self.log("  ??: ???? history.db ?????????", WARNING)
+        self.log("  \u63d0\u793a\uff1adry-run \u4e0d\u4f1a\u4fee\u6539 history.db \u6216\u6587\u4ef6\u3002", WARNING)
 
     def migrate_execute(self, e, batch_limit: int):
         """RC8.4: Real migration using config.output_dir with keep-source default."""
@@ -403,15 +393,15 @@ class ToolsView(ft.Container):
                 break
 
         if not batch:
-            self.log("  ???????(??? active/queued/invalid ??)", WARNING)
+            self.log("  \u6ca1\u6709\u53ef\u6267\u884c\u5019\u9009\uff0c\u53ef\u80fd\u88ab active/queued/invalid \u8fc7\u6ee4\u3002", WARNING)
             return
 
-        self.log(f"> ???? {len(batch)} ?????...", ACCENT_PRIMARY)
+        self.log(f"> \u6267\u884c\u8fc1\u79fb {len(batch)} \u4e2a\u4f5c\u54c1...", ACCENT_PRIMARY)
         self.log(
             f"  mode={self.current_migration_mode()} copy_keep_source mode source will be preserved={'yes' if self.keep_source_mode else 'no'}",
             ACCENT_PRIMARY,
         )
-        self.log("  ??: ?????? history.db!", WARNING)
+        self.log("  \u6ce8\u610f\uff1a\u8fd9\u662f\u5b9e\u9645\u8fc1\u79fb\uff0c\u4f1a\u66f4\u65b0 history.db\u3002", WARNING)
 
         ok, fail = 0, 0
         delete_source = not self.keep_source_mode
@@ -450,7 +440,7 @@ class ToolsView(ft.Container):
                     )
                 fail += 1
 
-        self.log(f"  ????: {ok} ??, {fail} ??", ACCENT_PRIMARY)
+        self.log(f"  \u8fc1\u79fb\u5b8c\u6210: {ok} \u4e2a\u6210\u529f, {fail} \u4e2a\u5931\u8d25", ACCENT_PRIMARY)
 
     def verify_migrated(self, e):
         """RC8.4: Verify migrated works against output_dir and keep-source plan."""
@@ -463,7 +453,7 @@ class ToolsView(ft.Container):
             return
 
         source_roots = self.list_migration_source_roots(target_base)
-        self.log("> ?????????...", "white")
+        self.log("> \u9a8c\u8bc1\u5df2\u8fc1\u79fb\u4f5c\u54c1...", "white")
         rows = db.conn.execute(
             "SELECT rj_id, local_path, status FROM works "
             "WHERE status IN ('completed','verified') ORDER BY rj_id"
@@ -476,7 +466,7 @@ class ToolsView(ft.Container):
                 verified_rows.append(row)
 
         if not verified_rows:
-            self.log("  ?????????? completed/verified ?????", "grey")
+            self.log("  \u6ca1\u6709\u4f4d\u4e8e\u76ee\u6807\u76d8\u7684 completed/verified \u4f5c\u54c1\u3002", "grey")
             return
 
         ok, issues = 0, 0
@@ -503,7 +493,7 @@ class ToolsView(ft.Container):
                 )
                 issues += 1
 
-        self.log(f"  ????: {ok} ??, {issues} ??", ACCENT_PRIMARY)
+        self.log(f"  \u9a8c\u8bc1\u5b8c\u6210: {ok} \u4e2a\u901a\u8fc7, {issues} \u4e2a\u5f02\u5e38", ACCENT_PRIMARY)
 
     def diagnose_failed(self, e):
         """RC7.10: Diagnose failed downloads — categories + write report."""
