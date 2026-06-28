@@ -725,27 +725,8 @@ class ToolsView(ft.Container):
             self.log(f"  [{a['action']}] {a.get('name', a.get('dir',''))[:60]}", "white")
 
     def external_execute(self, e):
-        def _do():
-            import sys
-            from pathlib import Path as P
-            sys.path.insert(0, str(P(__file__).parent.parent.parent))
-            from tools.external_intake import execute_plan, scan_structure
-            plan = scan_structure()
-            result = execute_plan(plan)
-            for k, v in result.items():
-                if v > 0: self.log(f"  {k}: {v}", SUCCESS)
-            self.log("Done.", ACCENT_PRIMARY)
-
-        self.app_controller.page.dialog = ft.AlertDialog(
-            title=ft.Text("执行外部资源整理?"),
-            content=ft.Text("将规范化 E:\\arsm 文件树结构。会备份 DB。不可撤销。"),
-            actions=[
-                ft.TextButton("Cancel", on_click=lambda e: self._close_dialog()),
-                ft.TextButton("Execute", on_click=lambda e: [self._close_dialog(), _do()]),
-            ],
-            actions_alignment=ft.MainAxisAlignment.END,
-        )
-        self.app_controller.page.dialog.open = True
-        self.app_controller.page.update()
+        self.log("STOP: \u5916\u90e8\u8d44\u6e90\u6574\u7406\u6d89\u53ca\u6279\u91cf\u6539\u76ee\u5f55\uff0cUI \u6682\u4e0d\u5141\u8bb8\u76f4\u63a5\u6267\u884c\u3002", ERROR)
+        self.log("\u8bf7\u5148\u5ba1\u67e5 dry-run \u62a5\u544a\uff1b\u786e\u8ba4\u540e\u5728\u547d\u4ee4\u884c\u6267\u884c: python tools\\external_intake.py --execute --confirm-bulk", WARNING)
+        self.app_controller.show_snack("\u5916\u90e8\u8d44\u6e90\u6574\u7406\u5df2\u88ab\u5b89\u5168\u62e6\u622a\uff1a\u8bf7\u5148\u5ba1\u67e5 dry-run\u3002")
 
     # end backlog

@@ -54,13 +54,13 @@ def scan_structure():
         rj_id = normalize_rj(d.name)
         if not rj_id:
             plan["quarantine_required"] += 1
-            plan["actions"].append({"dir": str(d), "action": "quarantine", "reason": "no_rj_match"})
+            plan["actions"].append({"dir": str(d), "rj_id": "", "action": "quarantine", "reason": "no_rj_match"})
             continue
 
         # Check duplicates
         if rj_id in rj_seen:
             plan["duplicate_rj"] += 1
-            plan["actions"].append({"dir": str(d), "action": "quarantine", "reason": f"duplicate_rj: {rj_id}, winner={rj_seen[rj_id]}"})
+            plan["actions"].append({"dir": str(d), "rj_id": rj_id, "action": "quarantine", "reason": f"duplicate_rj: {rj_id}, winner={rj_seen[rj_id]}"})
             continue
         rj_seen[rj_id] = d
 
@@ -85,10 +85,10 @@ def analyze_dir(d: Path, rj_id: str) -> dict:
               "is_pure_rj": is_pure_rj, "title": title,
               "has_subdirs": has_subdirs, "has_files_at_root": has_files_at_root}
 
-    if is_pure_rj and has_subdirs:
+    if is_pure_rj and has_subdirs and not has_files_at_root:
         # Already looks good: E:\arsm\RJxxxx\subdirs...
         result["action"] = "already_normalized"
-    elif is_pure_rj and not has_subdirs and has_files_at_root:
+    elif is_pure_rj and has_files_at_root:
         # Pure RJ dir but files at root: needs title layer
         result["action"] = "needs_title_layer"
     elif not is_pure_rj:
@@ -100,8 +100,33 @@ def analyze_dir(d: Path, rj_id: str) -> dict:
     return result
 
 
-def execute_plan(plan: dict, db_path: str = "history.db"):
+def validate_plan_for_execute(plan: dict, confirm_bulk: bool = False) -> list:
+    """Return blocking safety issues for execute."""
+    issues = []
+    bulk_count = plan.get("needs_rename_top_level", 0) + plan.get("needs_title_layer", 0)
+    if bulk_count > 0 and not confirm_bulk:
+        issues.append(
+            f"bulk_normalize_requires_confirm: {bulk_count} directory changes need --confirm-bulk"
+        )
+    if plan.get("duplicate_rj", 0) > 0:
+        issues.append("duplicate_rj_present: review quarantine winners before execute")
+    for action in plan.get("actions", []):
+        if action.get("action") == "quarantine" and "rj_id" not in action:
+            issues.append(f"invalid_quarantine_action_missing_rj_id: {action.get('dir')}")
+        path = Path(action.get("dir", ""))
+        try:
+            if path and path.exists() and not str(path.resolve()).lower().startswith(str(E_ROOT.resolve()).lower()):
+                issues.append(f"path_outside_E_root: {path}")
+        except OSError as exc:
+            issues.append(f"path_check_failed: {path}: {exc}")
+    return issues
+
+
+def execute_plan(plan: dict, db_path: str = "history.db", confirm_bulk: bool = False):
     """Execute normalization. Must have backup first."""
+    issues = validate_plan_for_execute(plan, confirm_bulk=confirm_bulk)
+    if issues:
+        raise RuntimeError("External intake execute blocked: " + "; ".join(issues))
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_dir = Path(".local_backups") / f"external_intake_{ts}"
     os.makedirs(backup_dir, exist_ok=True)
@@ -128,7 +153,7 @@ def execute_plan(plan: dict, db_path: str = "history.db"):
     for a in plan["actions"]:
         action = a["action"]
         d = Path(a["dir"])
-        rj_id = a["rj_id"]
+        rj_id = a.get("rj_id", "")
 
         if action == "quarantine":
             if not d.exists(): continue
@@ -136,11 +161,12 @@ def execute_plan(plan: dict, db_path: str = "history.db"):
             shutil.move(str(d), str(dest))
             rollback.append({"type": "unquarantine", "from": str(dest), "to": str(d)})
             executed["quarantined"] += 1
-            # Remove from DB
-            conn.execute("DELETE FROM works WHERE rj_id=?", (rj_id,))
-            conn.execute("DELETE FROM library_items WHERE rj_id=?", (rj_id,))
-            conn.execute("DELETE FROM library_index WHERE rj_id=?", (rj_id,))
-            executed["would_update_db"] += 3
+            # Remove from DB when the directory maps to a known RJ.
+            if rj_id:
+                conn.execute("DELETE FROM works WHERE rj_id=?", (rj_id,))
+                conn.execute("DELETE FROM library_items WHERE rj_id=?", (rj_id,))
+                conn.execute("DELETE FROM library_index WHERE rj_id=?", (rj_id,))
+                executed["would_update_db"] += 3
 
         elif action == "needs_rename_top_level":
             # Get metadata title
@@ -163,7 +189,7 @@ def execute_plan(plan: dict, db_path: str = "history.db"):
 
                 # Update DB
                 conn.execute("UPDATE works SET local_path=? WHERE rj_id=?", (str(new_root), rj_id))
-                conn.execute("UPDATE library_items SET folder_path=? WHERE rj_id=?", (str(new_root), rj_id))
+                conn.execute("UPDATE library_items SET folder_path=?, folder_name=? WHERE rj_id=?", (str(new_root), new_root.name, rj_id))
                 conn.execute("UPDATE library_index SET work_dir=? WHERE rj_id=?", (str(new_title_dir), rj_id))
                 executed["would_update_db"] += 3
 
@@ -205,18 +231,28 @@ def main():
     print(f"  needs_title_layer: {plan['needs_title_layer']}")
     print(f"  duplicate_rj: {plan['duplicate_rj']}")
     print(f"  quarantine_required: {plan['quarantine_required']}")
+    issues = validate_plan_for_execute(plan, confirm_bulk=("--confirm-bulk" in sys.argv))
+    if issues:
+        print("\nExecute blocked until reviewed:")
+        for issue in issues:
+            print(f"  - {issue}")
 
+    exit_code = 0
     if dry:
         print("\nActions (first 10):")
         for a in plan["actions"][:10]:
             print(f"  [{a['action']}] {a.get('name', a.get('dir',''))[:60]}")
-        print("\nUse --execute to apply.")
+        print("\nUse --execute --confirm-bulk to apply after review.")
     else:
-        result = execute_plan(plan)
-        print("\nExecuted:")
-        for k, v in result.items():
-            if v > 0: print(f"  {k}: {v}")
-        print("\nDone.")
+        if issues:
+            print("\nABORTED. No files or DB were modified.")
+            exit_code = 2
+        else:
+            result = execute_plan(plan, confirm_bulk=("--confirm-bulk" in sys.argv))
+            print("\nExecuted:")
+            for k, v in result.items():
+                if v > 0: print(f"  {k}: {v}")
+            print("\nDone.")
 
     # Write report
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -229,7 +265,8 @@ def main():
             if k != "actions":
                 f.write(f"{k}: {v}\n")
     print(f"Report: {rpt}")
+    return exit_code
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
