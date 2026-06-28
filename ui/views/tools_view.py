@@ -725,8 +725,35 @@ class ToolsView(ft.Container):
             self.log(f"  [{a['action']}] {a.get('name', a.get('dir',''))[:60]}", "white")
 
     def external_execute(self, e):
-        self.log("STOP: \u5916\u90e8\u8d44\u6e90\u6574\u7406\u6d89\u53ca\u6279\u91cf\u6539\u76ee\u5f55\uff0cUI \u6682\u4e0d\u5141\u8bb8\u76f4\u63a5\u6267\u884c\u3002", ERROR)
-        self.log("\u8bf7\u5148\u5ba1\u67e5 dry-run \u62a5\u544a\uff1b\u786e\u8ba4\u540e\u5728\u547d\u4ee4\u884c\u6267\u884c: python tools\\external_intake.py --execute --confirm-bulk", WARNING)
-        self.app_controller.show_snack("\u5916\u90e8\u8d44\u6e90\u6574\u7406\u5df2\u88ab\u5b89\u5168\u62e6\u622a\uff1a\u8bf7\u5148\u5ba1\u67e5 dry-run\u3002")
+        import sys; from pathlib import Path as P
+        sys.path.insert(0, str(P(__file__).parent.parent.parent))
+        from tools.external_intake import scan_top_dirs, execute_normalize
+        dirs_info, plan = scan_top_dirs()
+
+        if not plan.get("blockers", False):
+            bl = plan.get("blocker_list", [])
+            self.log(f"STOP: {len(bl)} blockers exist", ERROR)
+            for b in bl[:3]: self.log(f"  {b}", WARNING)
+            self.app_controller.show_snack(f"存在阻塞项，无法执行")
+            return
+
+        n_move = plan.get("needs_rename_top_level", 0) + plan.get("needs_title_layer", 0)
+        n_q = plan.get("quarantine_required", 0)
+
+        def _do():
+            d2, p2 = scan_top_dirs()
+            stats, bkp = execute_normalize(d2)
+            self.log(f"移动 {stats['moved']} | 隔离 {stats['quarantined']} | DB {stats['db_updated']}", SUCCESS)
+            self.log(f"备份: {bkp}")
+
+        self.app_controller.page.dialog = ft.AlertDialog(
+            title=ft.Text(f"整理 {n_move} 目录?"),
+            content=ft.Text(f"移动: {n_move} | 隔离: {n_q} | DB备份 | 可回滚"),
+            actions=[ft.TextButton("Cancel", on_click=lambda e: self._close_dialog()),
+                     ft.TextButton("Execute", on_click=lambda e: [self._close_dialog(), _do()])],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self.app_controller.page.dialog.open = True
+        self.app_controller.page.update()
 
     # end backlog
