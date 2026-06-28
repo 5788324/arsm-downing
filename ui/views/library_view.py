@@ -4,7 +4,7 @@ from pathlib import Path
 import flet as ft
 from ui.theme import Styles, ACCENT_PRIMARY, SUCCESS, WARNING, ERROR, BG_SURFACE_LIGHT
 
-LIBRARY_PAGE_SIZE = 40
+LIBRARY_PAGE_SIZE = 20
 E_ROOT = r"E:\arsm"
 OLD_ROOT = r"C:\Users\YANG\Music\arsm.one"
 FAKE_RJ = {"RJ00000000", "RJ00123456"}
@@ -154,18 +154,23 @@ class LibraryView(ft.Container):
         self._anomaly_filter = key; self.load_library()
 
     def _build_anomalies(self, db):
+        # Load all data once — avoid per-work queries
         works = {r["rj_id"]: r for r in db.conn.execute("SELECT * FROM works").fetchall()}
         lib_ids = set(r[0] for r in db.conn.execute("SELECT rj_id FROM library_items").fetchall())
+        # Batch-load all library_items once
+        lib_data = {}
+        for r in db.conn.execute("SELECT * FROM library_items").fetchall():
+            lib_data[r["rj_id"]] = dict(r)
 
         groups = {"fake_or_test_rj": [], "legacy_alias_rj": [], "old_library_root_C": [],
                   "on_target_but_not_indexed": [], "path_missing": [], "no_images": [],
                   "empty_directory": [], "path_mismatch": []}
         for rj_id, w in works.items():
             lp = w["local_path"] or ""
-            li_data = _lib_data_get(db, rj_id)
+            li = lib_data.get(rj_id, {})
             warns = []
-            if li_data:
-                try: warns = json.loads(li_data.get("warnings_json", "[]") or "[]")
+            if li:
+                try: warns = json.loads(li.get("warnings_json", "[]") or "[]")
                 except: pass
             cat = None
             if rj_id in FAKE_RJ: cat = "fake_or_test_rj"
@@ -182,7 +187,7 @@ class LibraryView(ft.Container):
                     "rj_id": rj_id, "title": w.get("title","")[:40],
                     "works_status": w.get("status",""), "local_path": lp,
                     "in_lib": rj_id in lib_ids, "on_E": is_e,
-                    "disk_files": li_data.get("total_files",0), "disk_size": li_data.get("total_size",0),
+                    "disk_files": li.get("total_files",0), "disk_size": li.get("total_size",0),
                     "warnings": warns, "category": cat,
                 })
 

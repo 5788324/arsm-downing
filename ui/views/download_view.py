@@ -188,6 +188,21 @@ class DownloadView(ft.Container):
             return
         import asyncio
 
+        # Check which RJs actually have resumable downloads
+        db = self.app_controller.db
+        resumable = []
+        failed_only = []
+        for rid in rj_ids:
+            dl = db.get_downloads_summary(rid)
+            can_resume = (dl.get("paused", 0) + dl.get("queued", 0) + dl.get("downloading", 0)) > 0
+            if can_resume: resumable.append(rid)
+            else: failed_only.append(rid)
+
+        if not resumable and failed_only:
+            self.app_controller.show_snack(
+                f"无法自动恢复 — {len(failed_only)} 个任务仅有失败记录，需手动逐项重试")
+            return
+
         async def _resume_all():
             for i, rj_id in enumerate(rj_ids):
                 r = await orc._resume_one(rj_id)
