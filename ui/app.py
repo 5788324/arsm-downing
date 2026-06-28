@@ -99,10 +99,27 @@ class AppController:
     def _on_window_event(self, e):
         """Graceful shutdown on window close."""
         if e.data == "close":
+            self.page.window_prevent_close = True
+            self.page.update()
+
             async def _do_shutdown():
-                await self.orc.shutdown()
-                self.loop.stop()
-            asyncio.run_coroutine_threadsafe(_do_shutdown(), self.loop)
+                try:
+                    await self.orc.shutdown()
+                finally:
+                    self.loop.stop()
+
+            fut = asyncio.run_coroutine_threadsafe(_do_shutdown(), self.loop)
+
+            def _finish_close(_future):
+                try:
+                    self.page.window_destroy()
+                except Exception:
+                    try:
+                        self.page.window_close()
+                    except Exception:
+                        pass
+
+            fut.add_done_callback(_finish_close)
 
     # ──────────────────────────────────────────────────────
     #  Thread-safe message enqueue (called from any thread)

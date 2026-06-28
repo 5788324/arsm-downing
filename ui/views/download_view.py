@@ -306,6 +306,20 @@ class DownloadView(ft.Container):
         has_failed = dl_summary.get("failed", 0) > 0
         has_pending = has_queued or has_downloading or has_paused or has_failed
 
+        ws_enum = WorkStatus.normalize(works_status) if works_status else None
+
+        # Terminal works may carry historical failed/paused rows.
+        # They should not keep reappearing in the active queue.
+        if ws_enum and ws_enum.is_terminal and not has_queued and not has_downloading:
+            result = {
+                "visible": False,
+                "status": ws_enum.ui_label,
+                "enum": ws_enum,
+                "works_status": works_status,
+                "dl_summary": dl_summary,
+            }
+            return result
+
         result = {
             "visible": False,
             "status": "",
@@ -404,7 +418,7 @@ class DownloadView(ft.Container):
                 logging.warning(f"_refresh_queue skip {rj_id}: {e}")
 
         for rj_id in sorted(visible_items, key=self._queue_sort_key):
-            self.build_queue_item(rj_id)
+            self.build_queue_item(rj_id, update_list=False)
 
         self._update_queue_summary(visible_items)
         try:
@@ -520,12 +534,12 @@ class DownloadView(ft.Container):
             content=ft.Icon(ft.icons.ALBUM, color=ACCENT_PRIMARY, size=min(width, height) // 2),
         )
 
-    def build_queue_item(self, rj_id: str):
+    def build_queue_item(self, rj_id: str, update_list: bool = True):
         item_data = self.active_downloads[rj_id]
         status = item_data["status"]
         ns = self.normalize_status(status)
 
-        title_text = ft.Text(rj_id, weight=ft.FontWeight.BOLD, size=20)
+        title_text = ft.Text(rj_id, weight=ft.FontWeight.BOLD, size=20, selectable=True)
 
         cur_track = item_data.get("current_track", "")
         cur_title = ft.Text(
@@ -706,11 +720,12 @@ class DownloadView(ft.Container):
             container.data = rj_id
             self.queue_list.controls.append(container)
 
-        try:
-            if self.queue_list.page:
-                self.queue_list.update()
-        except Exception:
-            pass
+        if update_list:
+            try:
+                if self.queue_list.page:
+                    self.queue_list.update()
+            except Exception:
+                pass
 
     # ══════════════════════════════════════════════
     #  Status updates
