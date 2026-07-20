@@ -814,7 +814,11 @@ class ToolsView(ft.Container):
             self.external_report_text.update()
 
     async def _run_external_plan(self, write_report: bool) -> None:
-        from tools.external_intake import scan_structure, write_plan_report
+        from tools.external_intake import (
+            annotate_plan_with_database,
+            scan_structure,
+            write_plan_report,
+        )
 
         if self.external_scan_running:
             self.app_controller.show_snack("外部资源扫描正在进行，请勿重复启动")
@@ -825,6 +829,9 @@ class ToolsView(ft.Container):
         self._set_external_busy("正在后台扫描，只读操作不会修改文件或数据库…")
         try:
             plan = await asyncio.to_thread(scan_structure, root, quarantine_root)
+            plan = await asyncio.to_thread(
+                annotate_plan_with_database, plan, self.app_controller.db
+            )
             report_dir = None
             if write_report:
                 report_dir = await asyncio.to_thread(write_plan_report, plan)

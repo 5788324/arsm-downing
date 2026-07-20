@@ -13,20 +13,25 @@ import argparse
 import json
 import os
 import re
-import sqlite3
 import sys
-from contextlib import closing
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from core.database import LibraryVault
+from core.intake_db import paths_equivalent
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
 except (AttributeError, OSError):
     pass
 
-PLAN_SCHEMA_VERSION = 1
+PLAN_SCHEMA_VERSION = 2
 ACTION_CLASSIFICATIONS = (
     "already_normalized",
     "needs_title_layer",
@@ -86,6 +91,11 @@ class ExternalIntakeAction:
     has_symlink: bool = False
     is_empty: bool = False
     issues: list[str] = field(default_factory=list)
+    db_preimage_token: str = ""
+    db_primary_path: str = ""
+    db_pending_downloads: int = 0
+    db_library_item_paths: list[str] = field(default_factory=list)
+    db_library_index_paths: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.classification not in ACTION_CLASSIFICATIONS:
@@ -606,6 +616,110 @@ def build_external_intake_plan(
     return plan
 
 
+def _rebuild_plan_indexes(payload: dict[str, Any]) -> None:
+    """Recompute derived plan lists after read-only DB annotations."""
+    payload["counts"] = {name: 0 for name in ACTION_CLASSIFICATIONS}
+    payload["fatal_blockers"] = []
+    payload["review_required"] = []
+    payload["quarantine_actions"] = []
+
+    for action in payload["actions"]:
+        classification = action["classification"]
+        payload["counts"][classification] += 1
+        notice = {
+            "code": action["reason"],
+            "message": f"{action.get('rj_id') or action.get('source_name') or action.get('source')}: {action['reason']}",
+            "source": action.get("source", ""),
+            "rj_id": action.get("rj_id", ""),
+        }
+        if classification == "fatal":
+            payload["fatal_blockers"].append(notice)
+        elif classification == "duplicate_review" or action.get("issues"):
+            payload["review_required"].append(notice)
+        if classification == "quarantine_candidate":
+            payload["quarantine_actions"].append(action)
+
+    payload["ready_without_freeze"] = not payload["fatal_blockers"] and not payload["review_required"]
+    payload["can_execute"] = False
+
+
+def annotate_plan_with_database(
+    plan: ExternalIntakePlan | Mapping[str, Any], vault: LibraryVault
+) -> dict[str, Any]:
+    """Attach read-only DB preimage data and promote unsafe actions for review.
+
+    No SQLite connection is exposed to the planner.  The returned plan remains
+    execution-frozen and contains only JSON-serializable fields.
+    """
+    payload = json.loads(
+        json.dumps(plan.to_dict() if isinstance(plan, ExternalIntakePlan) else dict(plan), default=str)
+    )
+    rj_ids = [str(action.get("rj_id") or "") for action in payload["actions"]]
+    snapshots = vault.get_external_intake_snapshots(rj_ids)
+
+    for action in payload["actions"]:
+        rj_id = str(action.get("rj_id") or "")
+        if not rj_id:
+            continue
+        snapshot = snapshots.get(rj_id) or {}
+        work = snapshot.get("work") or {}
+        primary_path = str(work.get("local_path") or "")
+        source_path = str(action.get("source") or "")
+        target_path = str(action.get("target_root") or "")
+        item_paths = [
+            str(row.get("folder_path") or "")
+            for row in snapshot.get("library_items", [])
+            if row.get("folder_path")
+        ]
+        index_paths = [
+            str(row.get("work_dir") or "")
+            for row in snapshot.get("library_index", [])
+            if row.get("work_dir")
+        ]
+        pending = int(snapshot.get("pending_downloads") or 0)
+
+        action["db_preimage_token"] = str(snapshot.get("snapshot_token") or "")
+        action["db_primary_path"] = primary_path
+        action["db_pending_downloads"] = pending
+        action["db_library_item_paths"] = item_paths
+        action["db_library_index_paths"] = index_paths
+
+        if action["classification"] == "fatal":
+            continue
+        if pending:
+            action["classification"] = "fatal"
+            action["reason"] = "db_pending_downloads"
+            action["issues"].append(f"pending_downloads:{pending}")
+            continue
+        if primary_path and not paths_equivalent(primary_path, source_path):
+            action["classification"] = "duplicate_review"
+            action["reason"] = "db_primary_path_differs"
+            action["issues"].append(f"db_primary_path:{primary_path}")
+            continue
+        third_item_paths = [
+            path
+            for path in item_paths
+            if not paths_equivalent(path, source_path)
+            and not (target_path and paths_equivalent(path, target_path))
+        ]
+        if third_item_paths:
+            action["classification"] = "duplicate_review"
+            action["reason"] = "db_library_item_path_differs"
+            action["issues"].append(f"db_library_item_paths:{third_item_paths}")
+            continue
+        distinct_index_paths: list[str] = []
+        for path in index_paths:
+            if not any(paths_equivalent(path, existing) for existing in distinct_index_paths):
+                distinct_index_paths.append(path)
+        if len(distinct_index_paths) > 1:
+            action["classification"] = "duplicate_review"
+            action["reason"] = "db_multiple_library_paths"
+            action["issues"].append(f"db_library_index_paths:{index_paths}")
+
+    _rebuild_plan_indexes(payload)
+    return payload
+
+
 def scan_structure(
     root: str | os.PathLike[str] | None = None,
     quarantine_root: str | os.PathLike[str] | None = None,
@@ -678,8 +792,8 @@ def _extract_track_names(tracks: Any) -> list[str]:
     return names
 
 
-def verify_filelist(rj_id: str, disk_dir: Path, db_conn: sqlite3.Connection) -> dict[str, Any]:
-    """Compare cached metadata tracks with disk files using a read-only connection."""
+def verify_filelist(rj_id: str, disk_dir: Path, tracks: Any) -> dict[str, Any]:
+    """Compare metadata tracks with disk files without accessing SQLite directly."""
     result: dict[str, Any] = {
         "rj_id": rj_id,
         "total_tracks": 0,
@@ -691,17 +805,8 @@ def verify_filelist(rj_id: str, disk_dir: Path, db_conn: sqlite3.Connection) -> 
         "verdict": "ok",
     }
 
-    cached = db_conn.execute(
-        "SELECT tracks_json FROM metadata_cache WHERE rj_id=?", (rj_id,)
-    ).fetchone()
-    if not cached or not cached[0]:
+    if not isinstance(tracks, list) or not tracks:
         result["verdict"] = "no_metadata"
-        return result
-
-    try:
-        tracks = json.loads(cached[0])
-    except (TypeError, json.JSONDecodeError):
-        result["verdict"] = "bad_metadata"
         return result
 
     disk_files: dict[str, Path] = {}
@@ -763,29 +868,30 @@ def execute_normalize(
     raise ExternalIntakeExecutionDisabled(EXECUTION_STOP_MESSAGE)
 
 
-def _open_read_only_database(db_path: Path) -> sqlite3.Connection:
-    if not db_path.exists():
-        raise FileNotFoundError(db_path)
-    connection = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
-    connection.row_factory = sqlite3.Row
-    return connection
-
-
 def _verify_planned_filelists(
-    actions: Sequence[Mapping[str, Any]], db_path: Path
+    actions: Sequence[Mapping[str, Any]], vault: LibraryVault
 ) -> list[dict[str, Any]]:
+    """Verify planned works through LibraryVault's read-only query service."""
+    eligible = [
+        action
+        for action in actions
+        if action.get("classification")
+        not in {"fatal", "duplicate_review", "quarantine_candidate"}
+    ]
+    snapshots = vault.get_external_intake_snapshots(
+        str(action.get("rj_id") or "") for action in eligible
+    )
+
     mismatches: list[dict[str, Any]] = []
-    with closing(_open_read_only_database(db_path)) as connection:
-        for action in actions:
-            if action.get("classification") in {"fatal", "duplicate_review", "quarantine_candidate"}:
-                continue
-            rj_id = str(action.get("rj_id") or "")
-            source = Path(str(action.get("source") or ""))
-            if not rj_id or not source.exists():
-                continue
-            result = verify_filelist(rj_id, source, connection)
-            if result["verdict"] != "ok":
-                mismatches.append(result)
+    for action in eligible:
+        rj_id = str(action.get("rj_id") or "")
+        source = Path(str(action.get("source") or ""))
+        if not rj_id or not source.exists():
+            continue
+        metadata = (snapshots.get(rj_id) or {}).get("metadata") or {}
+        result = verify_filelist(rj_id, source, metadata.get("tracks", []))
+        if result["verdict"] != "ok":
+            mismatches.append(result)
     return mismatches
 
 
@@ -831,7 +937,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.verify_filelist:
         try:
-            mismatches = _verify_planned_filelists(payload["actions"], Path(args.db_path))
+            with LibraryVault.open_read_only(args.db_path) as vault:
+                mismatches = _verify_planned_filelists(payload["actions"], vault)
         except FileNotFoundError:
             print(
                 f"BLOCKED: {args.db_path} does not exist; read-only verification cannot run.",

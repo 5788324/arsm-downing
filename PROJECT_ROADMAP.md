@@ -28,11 +28,12 @@ Python + Flet + SQLite + asyncio + LibraryVault
 ```text
 1. external intake 真实执行硬冻结（已完成）
 2. external intake 固定计划模型与纯扫描收口（已完成）
-3. external intake 数据库服务与可恢复执行重构（当前）
-4. 下载核心 416 / Range / `.part` / 取消恢复修复
-5. 数据库 Schema 与资源库一致性
-6. UI、迁移和 backlog 稳定性修复
-7. 统一测试、CI、Windows 验收后再评估播放器
+3. external intake LibraryVault 快照与路径事务（已完成）
+4. external intake 逐作品文件执行与恢复状态机（当前）
+5. 下载核心 416 / Range / `.part` / 取消恢复修复
+6. 数据库 Schema 与资源库一致性
+7. UI、迁移和 backlog 稳定性修复
+8. 统一测试、CI、Windows 验收后再评估播放器
 ```
 
 ---

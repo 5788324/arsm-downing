@@ -1,6 +1,6 @@
 # arsm-downing 全功能代码审查
 
-> 修复状态：TAKEOVER-T0/T1 已完成 external intake 硬冻结、固定计划模型、路径配置、冲突分类、完整报告和后台 UI 扫描；其余下载、数据层、UI、迁移和工具问题仍按本文优先级推进。
+> 修复状态：TAKEOVER-T0/T1/T2 已完成 external intake 硬冻结、固定计划模型、数据库只读快照、四表路径事务、preimage/postimage 和重复 RJ 主记录保护；文件执行仍冻结。其余下载、数据层、UI、迁移和工具问题继续按本文优先级推进。
 
 > 日期：2026-07-20  
 > 审查基线：`chatgpt/takeover-20260718@7bacbf4`  
@@ -28,7 +28,7 @@
 - 重复 RJ 的隔离路径可能删除正常主记录。
 - 文件系统与数据库更新没有可靠原子恢复。
 
-处理：保持 Issue #2，先代码级冻结 execute，仅保留 scan/dry-run。
+处理状态（2026-07-20）：旧执行体已删除，核心/CLI/UI 已硬冻结；计划 schema v2 已接入 LibraryVault 快照，数据库路径更新服务具备四表事务与重复 RJ 保护。文件 staging、校验和自动恢复仍待 T3，真实执行继续冻结。
 
 ### P0-02 下载断点续传的 HTTP 416 处理不可信
 
@@ -54,7 +54,7 @@
 
 未更新/重建 `library_items`，资源库卡片仍可能指向旧路径；迁移验证也没有检查 `library_items`。
 
-处理：在同一数据库事务中更新或重建目标作品的 `library_items`，并加入 post-verify。
+处理状态（2026-07-20）：`move_work_to_path()` 已委托统一路径事务，同步 `works`、`downloads`、`library_items`、`library_index` 并返回 pre/postimage。迁移层 post-verify 对 `library_items` 的显式核验仍待后续补充。
 
 ### P0-05 迁移可能漏检嵌套 `.part`
 
@@ -66,7 +66,7 @@
 
 `LibraryVault._init_schema()` 创建 `works`、`metadata_cache`、`downloads`、`library_index`，但资源库 UI 直接查询 `library_items`。全新安装或新数据库可能出现资源库/统计为空或查询错误。
 
-处理：建立完整 schema 版本与迁移入口，至少覆盖 `library_items` 及其索引。
+处理状态（2026-07-20）：全新数据库已创建 `library_items` 基础 schema 与 `scan_run_id` 索引，并对旧表补列。正式 schema version 表和完整迁移框架仍待 DATA-CORE 阶段。
 
 ## P1：主要功能错误或高概率 UI/状态异常
 

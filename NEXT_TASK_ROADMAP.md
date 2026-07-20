@@ -4,7 +4,7 @@
 
 > 起点：2026-07-18  
 > 基线：`main@1f33595`  
-> 当前阶段：`TAKEOVER-T2`（`TAKEOVER-T0/T1` 已于 2026-07-20 完成）
+> 当前阶段：`TAKEOVER-T3`（`TAKEOVER-T0/T1/T2` 已于 2026-07-20 完成）
 
 ## 总原则
 
@@ -83,30 +83,37 @@ config round-trip tests passed
 
 ## TAKEOVER-T2：数据库服务收口
 
-### 目标
+### 状态
 
-external intake 不再直接连接业务 SQLite。
+```text
+PASS（2026-07-20）
+```
 
-### 任务
+### 已完成
 
-1. 在 `LibraryVault` 增加最小查询接口：
-   - 获取 RJ 主记录与当前路径
-   - 获取 metadata title/tracks
-   - 获取 library_items/library_index 路径信息
-2. 增加专用写入方法或 service：
-   - 更新作品路径
-   - 更新 library item 路径
-   - 更新 legacy index 路径
-3. 写入方法使用统一事务和写锁。
-4. 隔离副本不按 RJ 号删除正常主记录。
-5. 所有变更生成 preimage/postimage。
+- [x] `LibraryVault` 支持指定数据库路径、上下文关闭和 `mode=ro` 只读打开
+- [x] 增加 RJ 快照接口：works、metadata title/tracks、library_items、library_index、downloads
+- [x] `ExternalIntakePlan` schema v2 附加 preimage token、主路径、pending 和索引路径
+- [x] Tools 页复用 AppController 现有 Vault，不创建新实例
+- [x] external intake 工具移除业务 `sqlite3.connect`，只读核验通过 Vault
+- [x] 新增四表统一路径事务：works、downloads、library_items、library_index
+- [x] 使用 `BEGIN IMMEDIATE`、写锁和路径组件替换，不使用 SQL 字符串 `REPLACE`
+- [x] 成功结果包含 preimage/postimage/token/updated_rows/transaction_id
+- [x] SQLite 故障 rollback 全部表并保留 preimage
+- [x] 重复副本不能覆盖正常主记录；不按 RJ 号删除记录
+- [x] 同 RJ source/target index 冲突、其他 RJ 目标占用、第三路径不一致均 fail-closed
+- [x] 全新数据库补齐 `library_items` 基础 schema
 
 ### 验收
 
 ```text
-tools/external_intake.py 不出现业务写入 sqlite3.connect
-UI 不创建新的 LibraryVault
-重复 RJ 主记录保护测试通过
+tools/external_intake.py 无业务 sqlite3.connect
+UI 无新增 LibraryVault 实例
+40/40 external-intake portable tests passed
+重复 RJ 主记录保护 passed
+SQLite failure rollback passed
+read-only CLI database hash unchanged
+真实文件与真实数据库零副作用
 ```
 
 ## TAKEOVER-T3：逐作品执行与自动恢复
@@ -241,7 +248,7 @@ external intake 通过后再按以下顺序推进：
 ## 当前下一项
 
 ```text
-TAKEOVER-T2-01：为 external intake 增加 LibraryVault 只读查询接口
-TAKEOVER-T2-02：定义路径更新事务和 preimage/postimage 数据模型
-TAKEOVER-T2-03：重复 RJ 主记录保护测试
+TAKEOVER-T3-01：定义逐作品文件 action / journal 状态机
+TAKEOVER-T3-02：实现 staging + 相对路径/大小校验
+TAKEOVER-T3-03：注入文件失败与 DB 失败，验证自动恢复
 ```

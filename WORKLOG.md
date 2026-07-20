@@ -2163,3 +2163,103 @@ External intake 真实执行仍冻结。
 ```text
 进入 TAKEOVER-T2：LibraryVault 查询/写入服务、preimage/postimage、重复 RJ 主记录保护和可恢复执行设计。
 ```
+
+---
+
+## 27. 2026-07-20 ChatGPT 接手第三轮：LibraryVault 数据库事务收口
+
+### 范围
+
+```text
+TAKEOVER-T2：external intake 只读数据库上下文、四表路径事务、preimage/postimage 与重复 RJ 主记录保护
+```
+
+### 完成内容
+
+1. 新增 `core/intake_db.py`，集中实现数据库快照、稳定 SHA-256 token、路径组件映射、事务校验和四表路径更新。
+2. `LibraryVault` 支持显式 `db_path`、上下文关闭和真正 SQLite `mode=ro` 只读打开；缺少数据库时不会创建空文件。
+3. 全新数据库补齐 `library_items` 基础 schema 与 `scan_run_id` 索引，并为旧表执行安全补列。
+4. 新增 `get_external_intake_snapshot(s)`，统一读取 works、metadata title/tracks、library_items、library_index、downloads 和 pending 数量。
+5. `ExternalIntakePlan` 升级到 schema v2，每个 action 包含 DB preimage token、主记录路径、pending、library item/index 路径。
+6. Tools 页后台扫描复用 AppController 已存在的唯一 Vault；不在 UI 创建新的 LibraryVault。
+7. external intake 的文件列表核验不再直接 `sqlite3.connect` 或查询业务表，统一通过只读 Vault。
+8. 新增 `update_external_intake_paths()`：单一 `BEGIN IMMEDIATE` 事务同步 works、downloads、library_items、library_index。
+9. 路径更新按路径组件计算，不再使用 SQL `REPLACE()` 的字符串前缀替换。
+10. 成功结果返回 preimage/postimage、两个 token、逐表 updated_rows 和 transaction_id。
+11. SQLite 注入失败时全部表 rollback，返回 preimage；postimage 保持为空。
+12. 重复 RJ 副本不能因 RJ 号相同覆盖正常 `works.local_path`；同 RJ source/target index 冲突不再自动删除记录。
+13. 目标被其他 RJ 占用、canonical library item 指向第三路径、pending downloads、计划后 DB 漂移均 fail-closed。
+14. 旧 `move_work_to_path()` 委托统一事务，现同步 `library_items`；缺失 legacy index 时可在主记录成功更新后补建。
+15. 新增 `docs/EXTERNAL_INTAKE_DB_TRANSACTION_SPEC.md`，记录事务、错误码和 T3 边界。
+
+### 修改文件
+
+```text
+core/database.py
+core/intake_db.py
+tools/external_intake.py
+ui/views/tools_view.py
+tests/test_external_intake_database.py
+tests/test_external_intake_scan.py
+scripts/test_move_work_to_path_handles_stale_target_library_index.py
+README.md
+CURRENT_STATE.md
+NEXT_TASK_ROADMAP.md
+PROJECT_ROADMAP.md
+AI_WORKFLOW.md
+docs/ARSM_LIBRARY_SPEC.md
+docs/EXTERNAL_INTAKE_DB_TRANSACTION_SPEC.md
+docs/TAKEOVER_AUDIT_20260718.md
+docs/FULL_FUNCTION_AUDIT_20260720.md
+WORKLOG.md
+```
+
+### 数据和文件影响
+
+```text
+真实 history.db：未连接、未修改
+真实 E:\arsm：未读取、未移动、未隔离、未删除
+external intake 文件执行：仍冻结
+测试 SQLite：仅 tempfile 临时数据库
+现有迁移兼容测试：仅 tempfile 与 /tmp 样本
+```
+
+### 测试
+
+```text
+python -W error::ResourceWarning -m unittest discover -s tests -p "test_external_intake_*.py" -v
+结果：40/40 passed
+
+python scripts/test_external_intake.py
+结果：40/40 passed
+
+python scripts/test_database_no_shared_conn_writes.py
+结果：PASS
+
+python scripts/test_no_shared_conn_writes.py
+结果：PASS
+
+python scripts/test_move_work_to_path_handles_stale_target_library_index.py
+结果：PASS
+
+临时 cwd：
+- test_move_updates_works_local_path.py：PASS
+- test_move_updates_downloads_local_path.py：PASS
+- test_move_rejects_pending_work.py：PASS
+- test_migration_copy_verify_update_db_delete_source.py：PASS
+```
+
+### 已知限制
+
+```text
+当前环境未安装 Flet，未执行真实窗口视觉/交互验收。
+数据库事务已完成，但尚未连接 external intake 的文件 staging/move/restore 状态机。
+真实执行按钮、CLI --execute、metadata refresh 继续硬冻结。
+下载核心、资源库扫描、其他 ToolsView 和 backlog 问题仍按完整审计推进。
+```
+
+### 下一步
+
+```text
+进入 TAKEOVER-T3：逐作品文件 action/journal、staging、相对路径+大小校验、DB 失败后的文件恢复和失败注入测试。
+```

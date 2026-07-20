@@ -4,8 +4,13 @@ import sqlite3
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Iterable
 
+from core.intake_db import (
+    IntakePathUpdateRequest,
+    apply_path_update,
+    capture_external_intake_snapshot,
+)
 from core.models import WorkMetadata
 
 DB_FILE = Path("history.db")
@@ -22,23 +27,53 @@ class LibraryVault:
     Reads use the shared connection (check_same_thread=False) for speed.
     """
 
-    def __init__(self):
-        self.db_path = str(DB_FILE)
+    def __init__(self, db_path: str | Path = DB_FILE, *, read_only: bool = False):
+        self.db_path = str(Path(db_path))
+        self.read_only = read_only
         self._lock = threading.RLock()
-        # Shared read-only connection
         with self._lock:
-            self.conn = sqlite3.connect(self.db_path,
-                                        check_same_thread=False,
-                                        isolation_level=None)  # RC7.1: autocommit reads
-            self.conn.execute("PRAGMA journal_mode=WAL")
+            if read_only:
+                resolved = Path(self.db_path).expanduser().resolve(strict=True)
+                self.conn = sqlite3.connect(
+                    f"{resolved.as_uri()}?mode=ro",
+                    uri=True,
+                    check_same_thread=False,
+                    isolation_level=None,
+                )
+            else:
+                self.conn = sqlite3.connect(
+                    self.db_path,
+                    check_same_thread=False,
+                    isolation_level=None,
+                )
+                self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.execute("PRAGMA busy_timeout=5000")
             self.conn.row_factory = sqlite3.Row
-        self._init_schema()
+        if not read_only:
+            self._init_schema()
+
+    @classmethod
+    def open_read_only(cls, db_path: str | Path = DB_FILE) -> "LibraryVault":
+        """Open an existing database without creating files or changing schema."""
+        return cls(db_path, read_only=True)
+
+    def close(self) -> None:
+        with self._lock:
+            self.conn.close()
+
+    def __enter__(self) -> "LibraryVault":
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        self.close()
 
     def _write_conn(self):
-        """Return a new connection for a write, with lock held by caller."""
+        """Return a new write connection; read-only vaults fail closed."""
+        if self.read_only:
+            raise RuntimeError("LibraryVault is read-only")
         c = sqlite3.connect(self.db_path, timeout=10)
         c.row_factory = sqlite3.Row
+        c.execute("PRAGMA busy_timeout=5000")
         return c
 
     def _execute_write(self, sql: str, params=()):
@@ -165,6 +200,46 @@ class LibraryVault:
         conn.execute("""
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_library_rj_workdir
                 ON library_index(rj_id, work_dir)
+            """)
+
+        # ── library_items (P5/P6 current work-level index) ──
+        conn.execute("""
+                CREATE TABLE IF NOT EXISTS library_items (
+                    rj_id TEXT PRIMARY KEY,
+                    folder_path TEXT NOT NULL,
+                    folder_name TEXT NOT NULL,
+                    total_files INTEGER DEFAULT 0,
+                    total_size INTEGER DEFAULT 0,
+                    audio_count INTEGER DEFAULT 0,
+                    image_count INTEGER DEFAULT 0,
+                    video_count INTEGER DEFAULT 0,
+                    other_count INTEGER DEFAULT 0,
+                    has_audio INTEGER DEFAULT 0,
+                    has_cover INTEGER DEFAULT 0,
+                    warnings_json TEXT DEFAULT '[]',
+                    scan_run_id TEXT,
+                    scanned_at TIMESTAMP
+                )
+            """)
+        for col_name, col_type in [
+            ("folder_path", "TEXT"),
+            ("folder_name", "TEXT"),
+            ("total_files", "INTEGER DEFAULT 0"),
+            ("total_size", "INTEGER DEFAULT 0"),
+            ("audio_count", "INTEGER DEFAULT 0"),
+            ("image_count", "INTEGER DEFAULT 0"),
+            ("video_count", "INTEGER DEFAULT 0"),
+            ("other_count", "INTEGER DEFAULT 0"),
+            ("has_audio", "INTEGER DEFAULT 0"),
+            ("has_cover", "INTEGER DEFAULT 0"),
+            ("warnings_json", "TEXT DEFAULT '[]'"),
+            ("scan_run_id", "TEXT"),
+            ("scanned_at", "TIMESTAMP"),
+        ]:
+            self._safe_alter(conn, "library_items", col_name, col_type)
+        conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_library_items_scan_run
+                ON library_items(scan_run_id)
             """)
         conn.commit()
 
@@ -556,82 +631,102 @@ class LibraryVault:
             logging.error(f"get_safe_migratable_works error: {e}")
             return []
 
+    def get_external_intake_snapshot(self, rj_id: str) -> dict:
+        """Return one read-only, JSON-serializable intake database snapshot."""
+        with self._lock:
+            return capture_external_intake_snapshot(self.conn, rj_id)
+
+    def get_external_intake_snapshots(self, rj_ids: Iterable[str]) -> dict[str, dict]:
+        """Return deduplicated snapshots without exposing the SQLite connection."""
+        snapshots: dict[str, dict] = {}
+        with self._lock:
+            for raw_rj_id in rj_ids:
+                rj_id = str(raw_rj_id or "").strip().upper()
+                if rj_id and rj_id not in snapshots:
+                    snapshots[rj_id] = capture_external_intake_snapshot(self.conn, rj_id)
+        return snapshots
+
+    def update_external_intake_paths(
+        self,
+        rj_id: str,
+        source_path: str,
+        target_path: str,
+        *,
+        expected_preimage_token: str = "",
+        ensure_library_index: bool = True,
+    ) -> dict:
+        """Atomically update matching DB path references for one work.
+
+        The transaction never changes a row merely by RJ id: the stored path
+        must match ``source_path``.  This protects the primary record when a
+        duplicate RJ directory is being reviewed or quarantined.
+        """
+        request = IntakePathUpdateRequest(
+            rj_id=str(rj_id or "").strip().upper(),
+            source_path=str(source_path or "").strip(),
+            target_path=str(target_path or "").strip(),
+            expected_preimage_token=expected_preimage_token,
+            ensure_library_index=ensure_library_index,
+        )
+        if self.read_only:
+            return {
+                "success": False,
+                "updated": 0,
+                "error_code": "read_only_vault",
+                "error": "LibraryVault is read-only",
+                "rj_id": request.rj_id,
+                "source_path": request.source_path,
+                "target_path": request.target_path,
+            }
+
+        with self._lock:
+            conn = self._write_conn()
+            preimage: dict = {}
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                preimage = capture_external_intake_snapshot(conn, request.rj_id)
+                result = apply_path_update(conn, request, preimage)
+                if not result.success:
+                    conn.rollback()
+                    return result.to_dict()
+                conn.commit()
+                return result.to_dict()
+            except sqlite3.Error as exc:
+                conn.rollback()
+                logging.error(
+                    "external intake path transaction failed for %s: %s",
+                    request.rj_id,
+                    exc,
+                )
+                return {
+                    "success": False,
+                    "updated": 0,
+                    "updated_rows": {},
+                    "error_code": "sqlite_error",
+                    "error": str(exc),
+                    "rj_id": request.rj_id,
+                    "source_path": request.source_path,
+                    "target_path": request.target_path,
+                    "preimage": preimage,
+                    "postimage": {},
+                    "preimage_token": str(preimage.get("snapshot_token", "")),
+                    "postimage_token": "",
+                }
+            finally:
+                conn.close()
+
     def move_work_to_path(self, rj_id: str, old_path: str,
                           new_path: str) -> dict:
-        """Update all DB references for a moved work folder.
-
-        Returns {'success': bool, 'updated': int, 'error': str}.
-        Updates: works.local_path, downloads.local_path, library_index.work_dir.
-        Fails if the work has pending downloads.
-        """
-        try:
-            # Safety check: no pending downloads
-            pending = self.conn.execute(
-                """SELECT COUNT(*) FROM downloads
-                   WHERE rj_id = ? AND status IN
-                   ('queued','paused','downloading','failed')""",
-                (rj_id,)
-            ).fetchone()[0]
-            if pending > 0:
-                return {"success": False, "updated": 0,
-                        "error": f"{rj_id} has {pending} pending downloads — refuse to move"}
-
-            updated = 0
-            def _move(conn):
-                nonlocal updated
-                target_library_path = str(Path(new_path).parent)
-
-                before = conn.total_changes
-                conn.execute(
-                    "DELETE FROM library_index WHERE rj_id = ? AND work_dir = ? AND work_dir != ?",
-                    (rj_id, new_path, old_path))
-                updated += conn.total_changes - before
-
-                before = conn.total_changes
-                conn.execute(
-                    "UPDATE works SET local_path = ? WHERE rj_id = ? AND local_path = ?",
-                    (new_path, rj_id, old_path))
-                updated += conn.total_changes - before
-
-                before = conn.total_changes
-                conn.execute(
-                    "UPDATE downloads SET local_path = REPLACE(local_path, ?, ?) "
-                    "WHERE rj_id = ? AND local_path LIKE ?",
-                    (old_path, new_path, rj_id, f"{old_path}%"))
-                updated += conn.total_changes - before
-
-                before = conn.total_changes
-                conn.execute(
-                    "UPDATE library_index SET work_dir = ?, library_path = ? "
-                    "WHERE rj_id = ? AND work_dir = ?",
-                    (new_path, target_library_path, rj_id, old_path))
-                library_update_delta = conn.total_changes - before
-                updated += library_update_delta
-
-                if library_update_delta == 0:
-                    before = conn.total_changes
-                    conn.execute(
-                        "INSERT OR IGNORE INTO library_index "
-                        "(rj_id, library_path, work_dir, status, scanned_at) "
-                        "VALUES (?, ?, ?, 'found', ?)",
-                        (rj_id, target_library_path, new_path, datetime.now()))
-                    updated += conn.total_changes - before
-
-            with self._lock:
-                conn = self._write_conn()
-                try:
-                    _move(conn)
-                    conn.commit()
-                    return {"success": True, "updated": updated, "error": ""}
-                except sqlite3.Error as e:
-                    conn.rollback()
-                    return {"success": False, "updated": 0,
-                            "error": str(e)}
-                finally:
-                    conn.close()
-        except Exception as e:
-            logging.error(f"move_work_to_path error for {rj_id}: {e}")
-            return {"success": False, "updated": 0, "error": str(e)}
+        """Compatibility wrapper for the unified path-reference transaction."""
+        result = self.update_external_intake_paths(rj_id, old_path, new_path)
+        return {
+            "success": bool(result.get("success")),
+            "updated": int(result.get("updated", 0)),
+            "error": str(result.get("error", "")),
+            "error_code": str(result.get("error_code", "")),
+            "preimage": result.get("preimage", {}),
+            "postimage": result.get("postimage", {}),
+        }
 
     def get_external_works(self) -> List[sqlite3.Row]:
         """Get works needing metadata enrichment."""

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
+from core.database import LibraryVault
 from tools import external_intake as ext
 
 
@@ -40,6 +42,11 @@ REQUIRED_ACTION_KEYS = {
     "has_symlink",
     "is_empty",
     "issues",
+    "db_preimage_token",
+    "db_primary_path",
+    "db_pending_downloads",
+    "db_library_item_paths",
+    "db_library_index_paths",
 }
 
 
@@ -180,6 +187,64 @@ class ExternalIntakeScanTests(unittest.TestCase):
         self.assertEqual(plan["counts"]["fatal"], 1)
         self.assertEqual(plan["actions"][0]["reason"], "source_is_symlink")
         self.assertTrue(plan["actions"][0]["has_symlink"])
+
+
+    def test_database_context_promotes_primary_path_mismatch_to_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "intake"
+            source = root / "RJ01090004"
+            (source / "Title").mkdir(parents=True)
+            db_path = base / "history.db"
+            with LibraryVault(db_path) as vault:
+                vault.execute_write(
+                    "INSERT INTO works (rj_id, local_path, status) VALUES (?, ?, 'verified')",
+                    ("RJ01090004", str(base / "primary" / "RJ01090004")),
+                )
+                plan = ext.build_external_intake_plan(root, base / "quarantine")
+                annotated = ext.annotate_plan_with_database(plan, vault)
+
+        action = annotated["actions"][0]
+        self.assertEqual(action["classification"], "duplicate_review")
+        self.assertEqual(action["reason"], "db_primary_path_differs")
+        self.assertEqual(len(action["db_preimage_token"]), 64)
+        self.assertEqual(len(annotated["review_required"]), 1)
+        self.assertFalse(annotated["ready_without_freeze"])
+
+    def test_database_context_promotes_pending_downloads_to_fatal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "intake"
+            source = root / "RJ01090005"
+            (source / "Title").mkdir(parents=True)
+            db_path = base / "history.db"
+            with LibraryVault(db_path) as vault:
+                vault.execute_write(
+                    "INSERT INTO works (rj_id, local_path, status) VALUES (?, ?, 'prepared')",
+                    ("RJ01090005", str(source)),
+                )
+                vault.execute_write(
+                    """INSERT INTO downloads
+                       (id, rj_id, local_path, status)
+                       VALUES (?, ?, ?, 'paused')""",
+                    ("RJ01090005:t1", "RJ01090005", str(source / "track.mp3")),
+                )
+                plan = ext.build_external_intake_plan(root, base / "quarantine")
+                annotated = ext.annotate_plan_with_database(plan, vault)
+
+        action = annotated["actions"][0]
+        self.assertEqual(action["classification"], "fatal")
+        self.assertEqual(action["reason"], "db_pending_downloads")
+        self.assertEqual(action["db_pending_downloads"], 1)
+        self.assertEqual(len(annotated["fatal_blockers"]), 1)
+
+    def test_tools_view_reuses_app_controller_vault_for_db_annotation(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[1] / "ui" / "views" / "tools_view.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("annotate_plan_with_database", source)
+        self.assertIn("self.app_controller.db", source)
+        self.assertNotIn("LibraryVault(", source)
 
     def test_nested_track_names_are_extracted(self) -> None:
         tracks = [

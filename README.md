@@ -84,6 +84,9 @@ queue.json 不作为历史下载进度真源
 - 只读计划使用固定 `ExternalIntakePlan` schema，完整报告不会截断 actions。
 - 重复 RJ 的全部候选进入人工复核；不再自动选择主目录或删除主记录。
 - 扫描根目录、隔离目录由配置提供，不再硬编码 `E:\arsm`。
+- 计划 schema v2 通过现有 `LibraryVault` 附加数据库 preimage token、主记录路径和 pending 状态。
+- 数据库路径更新已收口为单一事务，同步 `works`、`downloads`、`library_items`、`library_index` 并返回 preimage/postimage。
+- 数据库事务服务尚未连接文件移动流程，真实执行按钮继续冻结。
 
 旧命令现在只会得到明确 STOP，不会移动文件或修改数据库：
 
@@ -105,7 +108,7 @@ docs/TAKEOVER_AUDIT_20260718.md
 python -m unittest discover -s tests -p "test_external_intake_*.py" -v
 ```
 
-当前结果：`20/20 passed`。默认测试仅使用临时目录和临时 SQLite。
+当前结果：`40/40 passed`。默认测试仅使用临时目录和临时 SQLite。
 
 ## 安装
 
@@ -174,6 +177,7 @@ main.py                     Flet 应用入口
 core/
   config.py                 配置
   database.py               LibraryVault / SQLite 数据层
+  intake_db.py               External intake 快照、路径事务与重复 RJ 保护
   network.py                网络与代理
   orchestrator.py           下载调度与状态流
   migration.py              资源迁移
@@ -188,7 +192,7 @@ CURRENT_STATE.md             当前事实基线
 NEXT_TASK_ROADMAP.md         当前详细执行路线图
 PROJECT_ROADMAP.md           历史/总体路线图
 WORKLOG.md                   历史工作日志
-AI_WORKFLOW.md               AI 协作规范（待按当前分工更新）
+AI_WORKFLOW.md               AI 协作与 Git 工作流规范
 ```
 
 ## 测试现状
@@ -225,6 +229,7 @@ chatgpt/* 分支
 - [`NEXT_TASK_ROADMAP.md`](NEXT_TASK_ROADMAP.md)：接手后的详细执行任务
 - [`docs/TAKEOVER_AUDIT_20260718.md`](docs/TAKEOVER_AUDIT_20260718.md)：代码与流程风险审计
 - [`docs/ARSM_LIBRARY_SPEC.md`](docs/ARSM_LIBRARY_SPEC.md)：资源库目录规范
+- [`docs/EXTERNAL_INTAKE_DB_TRANSACTION_SPEC.md`](docs/EXTERNAL_INTAKE_DB_TRANSACTION_SPEC.md)：外部接入数据库事务与恢复数据模型
 - [`docs/CURRENT_FUNCTIONS_REVIEW_20260628.md`](docs/CURRENT_FUNCTIONS_REVIEW_20260628.md)：2026-06-28 功能与本机历史快照
 - [`WORKLOG.md`](WORKLOG.md)：历史开发记录
 
