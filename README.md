@@ -72,9 +72,9 @@ queue.json 不作为历史下载进度真源
 - 下载状态诊断
 - 资源库扫描与索引重建
 - 迁移 dry-run / execute / verify
-- backlog 预览与重新启用
-- 数据库完整性检查与维护
-- 外部资源接入扫描与计划生成
+- backlog 只读预览与受控重新启用
+- 活跃任务感知的数据库维护、缓存安全清理和队列清理预览
+- 外部资源接入扫描、计划生成和复制资源库沙盒验收
 
 ## 当前重要状态
 
@@ -89,6 +89,9 @@ queue.json 不作为历史下载进度真源
 - 计划 schema v3 附加数据库 preimage、源文件 manifest token 和完整逐文件 source/target 映射。
 - 数据库路径更新已收口为单一事务，同步 `works`、`downloads`、`library_items`、`library_index` 并返回 preimage/postimage。
 - 新增沙盒文件事务：staging、Title 层映射、数量/大小/关键哈希校验、Journal、DB 失败回滚和崩溃恢复；仅允许临时资源库，真实执行按钮继续冻结。
+- T6 复制资源库验收已覆盖正常改名、Title 层复核、重复 RJ、空目录、`.part`、DB 失败和提交后恢复，结果 11/11 PASS。
+- 沙盒验收脚本不会删除普通现有目录；只有专用 marker 标识的验收目录才允许复用。
+- Tools 页队列清理当前只读预览；缓存只删除无恢复任务引用的过期项；VACUUM 和 backlog 执行在混合任务存在时固定拒绝。
 
 旧命令现在只会得到明确 STOP，不会移动文件或修改数据库：
 
@@ -111,7 +114,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-当前结果：`139/139 passed`。其中包括 62 项 external-intake 沙盒/事务测试、SQLite 在线快照、混合下载状态报告、HTTP 200/206/416 真实 aiohttp 集成、下载 UI 语义、资源库后台加载/搜索/异常分类和 UI 模块导入 smoke test。默认测试只使用临时目录和临时 SQLite，并在工作区出现 `history.db`、`config.json` 或 `queue.json` 时直接拒绝运行。
+当前结果：`158/158 passed`。其中包括 external-intake 沙盒/事务与 T6 复制资源库验收、Tools 维护和 backlog 安全测试、SQLite 在线快照、混合下载状态报告、HTTP 200/206/416 真实 aiohttp 集成、下载 UI 语义、资源库后台加载/搜索/异常分类和 UI 模块导入 smoke test。默认测试只使用临时目录和临时 SQLite，并在工作区出现 `history.db`、`config.json` 或 `queue.json` 时直接拒绝运行。
 
 隔离下载与 Flet UI 验收：
 
@@ -263,6 +266,8 @@ chatgpt/* 分支
 - [`docs/TAKEOVER_AUDIT_20260718.md`](docs/TAKEOVER_AUDIT_20260718.md)：代码与流程风险审计
 - [`docs/ARSM_LIBRARY_SPEC.md`](docs/ARSM_LIBRARY_SPEC.md)：资源库目录规范
 - [`docs/EXTERNAL_INTAKE_DB_TRANSACTION_SPEC.md`](docs/EXTERNAL_INTAKE_DB_TRANSACTION_SPEC.md)：外部接入数据库事务与恢复数据模型
+- [`docs/TAKEOVER_T6_SANDBOX_ACCEPTANCE.md`](docs/TAKEOVER_T6_SANDBOX_ACCEPTANCE.md)：复制资源库沙盒执行和故障恢复证据
+- [`docs/TOOLS_MAINTENANCE_SAFETY.md`](docs/TOOLS_MAINTENANCE_SAFETY.md)：队列、缓存、VACUUM 和 backlog 的维护边界
 - [`docs/TESTING_AND_CI.md`](docs/TESTING_AND_CI.md)：便携测试门、依赖和活跃数据保护
 - [`docs/WINDOWS_READ_ONLY_ACCEPTANCE.md`](docs/WINDOWS_READ_ONLY_ACCEPTANCE.md)：运行中下载器的只读验收步骤
 - [`docs/CURRENT_FUNCTIONS_REVIEW_20260628.md`](docs/CURRENT_FUNCTIONS_REVIEW_20260628.md)：2026-06-28 功能与本机历史快照

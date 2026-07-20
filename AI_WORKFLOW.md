@@ -124,11 +124,11 @@ dry-run 优先
 4. external intake 逐作品文件执行与自动恢复（沙盒已完成）
 5. 统一测试、CI、在线 DB snapshot（已完成）
 6. 下载核心 416 / Range / .part / 取消恢复与隔离 UI smoke（代码级已完成）
-7. Windows 在线快照、真实 ASMR.one 小样本与 Flet 视觉验收（当前）
-8. 数据库 Schema、缓存和资源库一致性
-9. ToolsView UI 行为、性能和线程安全（LibraryView 代码级收口已完成）
-10. 迁移和 backlog 安全闭环
-11. Codex Windows 小批量验收
+7. T6 复制资源库沙盒执行与故障恢复（已完成）
+8. Tools 缓存/VACUUM/队列预览和 backlog 安全闭环（已完成）
+9. Windows 在线快照、真实 ASMR.one 小样本与 Flet 视觉验收（并行待 Codex）
+10. 迁移、数据库 Schema 和资源库 rebuild 一致性（当前）
+11. 100+ 混合任务清空后进行 T7 Windows 小批量验收
 12. 最终合并、打包和交接
 ```
 

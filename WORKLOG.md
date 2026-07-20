@@ -2571,3 +2571,61 @@ Windows acceptance 非 Windows dry-run：PASS
 真实 ASMR.one：已再次尝试 metadata-only；所有镜像均因容器 DNS 解析失败，未声称通过
 Windows Desktop：验收器已准备，仍待 Codex 执行并提交截图证据
 ```
+
+## 2026-07-20 — TAKEOVER-T6/T6B：复制资源库沙盒验收与 Tools 安全收口
+
+### 背景
+
+用户正式下载器仍挂有 100 多个 completed/failed/paused/queued/downloading 混合状态任务。本轮继续禁止连接或维护正式 `history.db`、正式队列和 `E:\arsm`，只使用复制出的临时目录、临时 SQLite 和模拟故障。
+
+### 完成
+
+1. 新增 `scripts/intake_sandbox_acceptance.py`，实际执行正常改名、Title 层复核、重复 RJ、空目录、`.part`、数据库失败和提交后清理失败恢复。
+2. 第二次扫描验证已处理作品回到 `already_normalized`；数据库路径和最终目录一致。
+3. 沙盒脚本增加 marker 保护：不再删除任意现有目录，只允许新目录或带合法 `.arsm-intake-sandbox.json` 的验收目录。
+4. 新增 `core/tools_maintenance.py`，所有维护操作使用独立 SQLite 连接，preview 为真正只读。
+5. 队列清理改为只读预览，不执行 downloads DELETE、不改写 `queue.json`、不顺带 VACUUM。
+6. 元数据缓存改为真实安全清理：仅删除过期且不被 queued/paused/downloading/resuming/failed/stale/ignored 引用的缓存，preview token 变化时不删除。
+7. VACUUM 放入后台线程；任何活动或可恢复任务存在时固定拒绝。
+8. 网络诊断不再把代理地址当目标网页，异步结果统一回到 UI queue。
+9. 系统诊断改为只读，不再创建输出目录或修改数据库。
+10. 失败任务诊断和 backlog 统计改为独立只读连接及后台线程，避免在 Flet 线程扫描文件系统。
+11. backlog 预览删除特定 RJ 硬编码，混合作品统计包含 completed/paused 等全部行。
+12. backlog 执行默认 `continue`，保留断点；`.part` 存在时拒绝 `retry-from-zero`。
+13. backlog 执行要求运行时完全空闲，执行前生成 SQLite online backup、preimage、rollback SQL；获取写锁后再次核验队列和 preimage。
+14. 修复旧 backlog 备份/WAL、SQL NULL/引号、状态聚合和报告目录问题。
+15. `scripts/test_backlog_recovery.py` 与 `scripts/test_rc10.py` 改为 `TemporaryDirectory + 临时 SQLite`，不再在仓库根目录产生正式状态文件。
+16. 新增 `docs/TAKEOVER_T6_SANDBOX_ACCEPTANCE.md` 与 `docs/TOOLS_MAINTENANCE_SAFETY.md`。
+
+### 自动验证
+
+```text
+python -m compileall -q core ui tools tests scripts main.py：PASS
+python -W error::ResourceWarning -m pytest -q：158/158 passed
+T6 复制资源库 acceptance：11/11 checks PASS
+ToolsView handler：13/13 PASS
+Tools 队列清理安全结构：PASS
+LibraryVault shared-connection write checks：PASS
+Portable backlog compatibility：12/12 PASS
+Portable RC10 compatibility：16/16 PASS
+```
+
+### 数据和现场影响
+
+```text
+正式 100+ 下载任务：未暂停、未恢复、未重试、未清理
+正式 history.db/config.json/queue.json：未读取、未复制、未修改
+正式 Downloads/E:\arsm：未读取、未扫描、未移动
+VACUUM：只在临时空闲数据库测试
+backlog execute：只在临时 SQLite 测试
+真实 external intake：继续代码级冻结
+```
+
+### 当前边界
+
+```text
+T6 代码级复制资源库验收已通过。
+Windows 文件锁、长路径、杀毒软件和真实资源库仍未验收。
+T7 必须等待 100+ 混合任务清空并进入明确维护窗口。
+下一轮继续迁移模块和资源库 rebuild 一致性，不执行真实目录整理。
+```

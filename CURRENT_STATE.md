@@ -77,7 +77,7 @@ main 仅接收审查通过的 PR
 
 ### 4.2 最近代码阶段
 
-`TAKEOVER-T0/T1/T2/T3/T4` 已完成 external intake 安全收口及便携测试门建设；`TAKEOVER-T5A` 已完成下载核心和隔离 UI smoke 的代码级收口：
+`TAKEOVER-T0~T6` 已完成 external intake 安全收口、文件事务沙盒验收和便携测试门建设；`TAKEOVER-T5A/T5C` 已完成下载核心及资源库 UI 的代码级收口：
 
 - 固定 `ExternalIntakePlan` schema v3、六类目录分类、manifest token 和完整逐文件映射
 - 扫描根目录、隔离目录改为配置项
@@ -105,8 +105,11 @@ main 仅接收审查通过的 PR
 - 新增本地 ASMR.one 兼容服务器、真实 aiohttp Range 集成和隔离 Flet UI 启动器
 - 资源库 UI 移除 E 盘、用户名、假 RJ 和固定统计；搜索实际传入 SQLite，路径诊断在后台线程执行
 - 新增 Windows 一键验收器，集中输出 portable、snapshot、live download 和 UI evidence
+- 新增 T6 复制资源库沙盒验收：正常改名、Title 层复核、重复 RJ、空目录、`.part`、DB 失败和提交后恢复均有真实目录证据
+- Tools 维护操作改为独立连接和后台执行：队列清理只读预览、缓存安全清理、活跃任务阻止 VACUUM
+- backlog 预览不再硬编码排除特定 RJ；执行要求运行时完全空闲，默认保留断点并生成 online backup/preimage/rollback SQL
 
-真实资源库移动、隔离、元数据刷新和 UI/CLI 执行入口继续保持冻结。文件执行状态机已在 tempfile 沙盒中完成，但尚未经过 Windows 文件锁、真实路径和复制资源库验收。
+真实资源库移动、隔离、元数据刷新和 UI/CLI 执行入口继续保持冻结。文件执行状态机已通过 Linux/tempfile 复制资源库验收，但尚未经过 Windows 文件锁、长路径、杀毒软件和真实资源库验收。
 
 ## 5. 最近一次已记录的本机状态
 
@@ -129,18 +132,18 @@ PRAGMA integrity_check = ok
 
 ### P0 / 必须先修
 
-1. external intake 沙盒事务已完成，但尚未通过 Windows/T6 复制资源库执行验收，真实执行继续冻结。
+1. T6 复制资源库沙盒事务已通过，但 Windows 文件锁、长路径和真实资源库 T7 验收尚未执行，真实入口继续冻结。
 2. `needs_title_layer` 仍缺少基于 metadata title 的无歧义目标命名；当前不允许执行。
 3. 下载核心的 416、Range、`.part` 和主要暂停/恢复语义已完成代码级修复，但真实 ASMR.one/Windows UI 尚未验收。
 4. LibraryView 的搜索、硬编码路径、后台加载和异常显示已修；资源库扫描快照写入、旧索引清理仍未完成。
-5. Windows/Flet/真实网络只读与隔离下载验收尚未执行。
+5. 用户当前仍有 100 多个混合状态任务，真实 backlog 恢复、VACUUM、队列删除和 T7 目录整理不得执行。
 
 ### P1 / 接手后尽快修
 
 1. `PROJECT_ROADMAP.md` 仍包含历史阶段内容，当前执行以 `NEXT_TASK_ROADMAP.md` 为准。
 2. GitHub Actions 已在本地分支建立，但在最终推送前尚未由远端 Runner 验证 Python 3.10/Linux 与 Python 3.12/Windows。
-3. ToolsView 包含较多同步文件/DB 操作，可能阻塞 Flet UI。
-4. 下载、资源库、迁移和 backlog 仍有完整功能审计中记录的 P0/P1 问题。
+3. ToolsView 的缓存、VACUUM、队列预览、网络诊断和 backlog 已后台化/收紧；迁移和兼容资源库重建仍需继续审计。
+4. 下载、资源库和迁移仍有完整功能审计中记录的 P0/P1 问题。
 
 ## 7. 当前禁止事项
 
@@ -175,14 +178,16 @@ TAKEOVER-T4：已完成——统一 pytest、依赖锁定、CI 定义、在线 D
 TAKEOVER-T5A：已完成——下载响应、断点恢复、镜像切换、UI 控制语义和隔离 smoke 工具
 TAKEOVER-T5B：验收包已完成——等待 Codex 在 Windows 执行在线快照、真实小样本和视觉验收
 TAKEOVER-T5C：已完成——资源库搜索、后台加载、异常分类和动态统计代码级收口
-TAKEOVER-T6：沙盒执行验收
+TAKEOVER-T6：已完成——复制资源库执行、幂等、DB 失败回滚和提交后恢复
+TAKEOVER-T6B：已完成——Tools 维护操作和 backlog 安全收口
+TAKEOVER-T7：等待维护窗口——当前 100+ 混合任务存在，不执行真实小批量整理
 ```
 
 ## 8.1 当前验证结果
 
 ```text
 隔离虚拟环境：Flet 0.27.6 legacy API import PASS
-python -m pytest：139/139 passed
+python -m pytest：158/158 passed
 全项目 compileall：PASS
 pip check：PASS
 活跃状态文件保护：发现 history.db 时 pytest 固定 exit 2
@@ -194,7 +199,7 @@ SQLite 在线备份：WAL 并发写入期间 snapshot integrity_check=ok
 过期 metadata cache 恢复与嵌套音轨 UI fallback：PASS
 真实 ASMR.one：当前容器 DNS 阻塞，待 Windows sandbox
 Flet 视觉点击：当前容器浏览器策略/libmpv 阻塞，待 Windows sandbox
-external intake 62 项沙盒/事务测试：全部包含在统一 pytest 门内
+external intake 复制资源库验收：11/11 checks PASS；全部沙盒/事务测试包含在统一 pytest 门内
 GitHub Actions：Linux 3.10 + Windows 3.12 workflow 已生成，尚待最终推送后真实运行
 真实 history.db：未连接
 真实 E:\arsm：未读取或修改
@@ -217,5 +222,5 @@ DeepSeek/OpenCode：仅在明确分配时承担低风险、大批量实现，不
 ```text
 项目可继续维护，不需要推倒重写。
 下载器、SQLite 数据层和资源库 UI 已形成较完整基础。
-当前优先级不是播放器，而是完成 Windows 隔离下载/UI 验收，再继续资源库、迁移和 Tools 稳定性修复。
+当前优先级不是播放器。T7 在 100+ 活跃/可恢复任务清空前保持冻结；开发继续处理迁移、资源库一致性和剩余 UI 稳定性，同时等待 Windows 隔离下载/UI 证据。
 ```

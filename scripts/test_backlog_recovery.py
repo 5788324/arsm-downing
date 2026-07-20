@@ -1,73 +1,89 @@
-"""Tests for backlog_list.py and backlog_reenable.py."""
-import sys, os, json, sqlite3
+"""Portable compatibility checks for backlog list/re-enable tools.
+
+This script never opens a repository-root or live ``history.db``.  It builds a
+small disposable database and report directory for every run.
+"""
+from __future__ import annotations
+
+import sqlite3
+import sys
 from pathlib import Path
-from datetime import datetime
+from tempfile import TemporaryDirectory
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from core.database import LibraryVault
 from tools.backlog_list import run_backlog_list
-from tools.backlog_reenable import dry_run
+from tools.backlog_reenable import dry_run, execute
 
-DB_PATH = Path("history.db")
 passed = failed = 0
 
-def check(name, condition):
+
+def check(name: str, condition: bool) -> None:
     global passed, failed
-    if condition: passed += 1; print(f"  PASS: {name}")
-    else: failed += 1; print(f"  FAIL: {name}")
+    if condition:
+        passed += 1
+        print(f"  PASS: {name}")
+    else:
+        failed += 1
+        print(f"  FAIL: {name}")
 
-print("=== RC9.7 Backlog Recovery Tests ===\n")
 
-# ── backlog_list tests ──
-print("1. backlog_list groups")
-groups, summary, _ = run_backlog_list()
-check("has stale_backlog group", "stale_backlog" in groups)
-check("has ignored_backlog group", "ignored_backlog" in groups)
-check("total candidates > 0", summary["total_candidate_rjs"] > 0)
-check("total download rows > 0", summary["total_download_rows"] > 0)
-check("has groups", len(summary["groups"]) > 0)
-check("excludes completed_only", len([c for c in groups.get("stale_backlog", []) + groups.get("ignored_backlog", [])
-                                      if c["completed_count"] > 0 and c["stale_count"] == 0 and c["ignored_count"] == 0]) == 0)
-check("keeps RJ01510133 as paused_current if present", "RJ01510133" not in [
-    c["rj_id"] for c in groups.get("stale_backlog", []) + groups.get("ignored_backlog", [])])
+def add_download(vault: LibraryVault, rj_id: str, suffix: str, status: str, path: Path, size: int = 0) -> None:
+    vault.execute_write(
+        """INSERT INTO downloads
+           (id,rj_id,track_title,local_path,status,downloaded_bytes,total_bytes,error,updated_at)
+           VALUES (?,?,?,?,?,?,100,NULL,'2026-07-20T00:00:00')""",
+        (f"{rj_id}:{suffix}", rj_id, suffix, str(path), status, size),
+    )
 
-# ── backlog_reenable tests ──
-print("\n2. backlog_reenable dry-run")
-result = dry_run(["RJ01588893"])
-check("dry-run returns would_update", len(result["would_update"]) > 0)
-check("target status is queued", result["totals"]["target_status"] == "queued")
-check("dry_run flag is True", result["dry_run"] is True)
 
-print("\n3. backlog_reenable requires rj allowlist")
-result2 = dry_run(["RJ01588893", "RJ01534605"])
-check("multiple RJs handled", len(result2["would_update"]) == 2)
-check("only stale/ignored targeted", all(d.get("old_status") in ("stale","ignored")
-      for r in result2["would_update"] for d in r["details"]))
+print("=== Portable Backlog Recovery Compatibility ===\n")
+with TemporaryDirectory(prefix="arsm_backlog_test_") as raw:
+    root = Path(raw)
+    db_path = root / "history.db"
+    report_root = root / "reports"
+    vault = LibraryVault(db_path)
+    try:
+        add_download(vault, "RJ01510133", "ignored", "ignored", root / "ignored.mp3")
+        add_download(vault, "RJ01000002", "stale", "stale", root / "stale.mp3", 25)
+        add_download(vault, "RJ01000002", "done", "completed", root / "done.mp3", 100)
+    finally:
+        vault.close()
 
-print("\n4. backlog_reenable does not touch completed")
-conn = sqlite3.connect(str(DB_PATH))
-completed_before = conn.execute("SELECT COUNT(*) FROM downloads WHERE status='completed'").fetchone()[0]
-conn.close()
-# Dry run doesn't write — check that count is still same
-conn2 = sqlite3.connect(str(DB_PATH))
-completed_after = conn2.execute("SELECT COUNT(*) FROM downloads WHERE status='completed'").fetchone()[0]
-conn2.close()
-check("completed untouched by dry-run", completed_before == completed_after)
+    groups, summary, candidates = run_backlog_list(db_path=db_path, report_root=report_root)
+    ids = {item["rj_id"] for item in candidates}
+    check("product-specific RJ is not hidden", "RJ01510133" in ids)
+    check("stale group exists", "mixed_backlog" in groups)
+    check("ignored group exists", "ignored_backlog" in groups)
+    check("mixed rows counted", next(item for item in candidates if item["rj_id"] == "RJ01000002")["completed_count"] == 1)
+    check("reports are isolated", Path(summary["report_dir"]).is_relative_to(report_root))
 
-print("\n5. backlog_reenable retry-from-zero zeroes bytes")
-for r in result["would_update"]:
-    for d in r["details"]:
-        if d["old_downloaded_bytes"] != d["new_downloaded_bytes"]:
-            check(f"bytes zeroed: {d['id'][:20]}", d["new_downloaded_bytes"] == 0)
-            break
+    preview = dry_run(["RJ01000002"], db_path=db_path, mode="continue")
+    detail = preview["would_update"][0]["details"][0]
+    check("dry-run targets only stale/ignored", detail["old_status"] == "stale")
+    check("continue preserves partial bytes", detail["new_downloaded_bytes"] == 25)
+    check("dry-run is read-only", preview["dry_run"] is True)
 
-print("\n6. Reports exist")
-ts = datetime.now().strftime("%Y%m%d")
-bl_dirs = sorted(Path(".local_backups").glob("backlog_list_*"))
-check("backlog_list json exists", any((d / "backlog_recovery_candidates.json").exists() for d in bl_dirs))
-check("backlog_list summary exists", any((d / "BACKLOG_RECOVERY_CANDIDATES_SUMMARY.txt").exists() for d in bl_dirs))
+    result = execute(
+        ["RJ01000002"],
+        db_path=db_path,
+        mode="continue",
+        backup_root=root / "backups",
+    )
+    check("execute updates one row", result["updated_rows"] == 1)
+    check("SQLite backup exists", Path(result["sqlite_backup"]).exists())
+    with sqlite3.connect(db_path) as conn:
+        stale_status, stale_bytes = conn.execute(
+            "SELECT status,downloaded_bytes FROM downloads WHERE id='RJ01000002:stale'"
+        ).fetchone()
+        completed_status = conn.execute(
+            "SELECT status FROM downloads WHERE id='RJ01000002:done'"
+        ).fetchone()[0]
+    check("stale row queued with bytes preserved", (stale_status, stale_bytes) == ("queued", 25))
+    check("completed row untouched", completed_status == "completed")
 
-print(f"\n{'='*40}")
+print(f"\n{'=' * 40}")
 print(f"Results: {passed} passed, {failed} failed")
 print(f"Overall: {'PASS' if failed == 0 else 'FAIL'}")
-sys.exit(0 if failed == 0 else 1)
+raise SystemExit(0 if failed == 0 else 1)

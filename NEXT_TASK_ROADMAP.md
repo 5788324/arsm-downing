@@ -4,7 +4,7 @@
 
 > 起点：2026-07-18  
 > 基线：`main@1f33595`  
-> 当前阶段：`TAKEOVER-T5B Windows 执行待验收`（T0~T5A 与 T5C 代码级工作已完成）
+> 当前阶段：`TAKEOVER-T6B 已完成，T7 等待维护窗口`（用户当前仍有 100+ 混合状态任务）
 
 ## 总原则
 
@@ -237,7 +237,7 @@ Codex，仅执行必须依赖用户 Windows 本机的部分。
 
 ### 任务
 
-1. 在干净 Bundle/checkout 运行 138 项 portable tests。
+1. 在干净 Bundle/checkout 运行当前 158 项 portable tests。
 2. 保持当前 100+ 混合状态任务不变，创建在线 SQLite snapshot。
 3. 输出 completed/failed/paused/queued/downloading/resuming 状态报告。
 4. 在全新空 sandbox 运行 `live_download_smoke.py`，默认 RJ01575399 或其他小样本。
@@ -288,26 +288,59 @@ Windows acceptance dry-run report passed
 
 ## TAKEOVER-T6：沙盒执行验收
 
-### 目标
+### 状态
 
-在复制出的临时资源库与临时数据库上验证真实执行流程。
+```text
+PASS（2026-07-20，复制资源库代码级验收）
+```
 
-### 任务
+### 已完成
 
-- 选取正常、需加 Title 层、需改名、重复 RJ、空目录、part 文件等样本
-- 执行完整流程
-- 注入文件失败和 DB 失败
-- 验证恢复
-- 重跑扫描，确保结果幂等
+- [x] 构造正常改名、Title 层待复核、重复 RJ、空目录、`.part` 和已规范样本
+- [x] 在临时资源库和临时 SQLite 上执行完整 staging / target / DB 流程
+- [x] 第二次扫描回到 `already_normalized`，验证幂等
+- [x] 注入数据库失败，验证 source 恢复且 target 不存在
+- [x] 注入 DB 提交后清理失败，验证 Journal STOP 和后续恢复
+- [x] 验证重复 RJ 的数据库主记录不被覆盖
+- [x] 验收脚本只允许新目录或带专用 marker 的既有 sandbox，不删除普通现有目录
+- [x] 输出完整 JSON evidence
 
 ### 验收
 
 ```text
-第二次 dry-run 无新增动作
-数据库与目录一致
-失败项可恢复
+11/11 acceptance checks PASS
+第二次 dry-run 无新增整理动作
+数据库路径与最终目录一致
+DB 失败项自动回滚
+提交后清理失败可按 Journal 恢复
 正常主记录不受重复目录影响
 ```
+
+详细说明：`docs/TAKEOVER_T6_SANDBOX_ACCEPTANCE.md`。
+
+## TAKEOVER-T6B：Tools 与 backlog 安全收口
+
+### 状态
+
+```text
+PASS（2026-07-20，代码级）
+```
+
+### 已完成
+
+- [x] 队列清理改为只读预览；不删除 SQLite 行、不改写 `queue.json`
+- [x] 缓存清理只删除过期且未被活动/暂停/失败/恢复任务引用的记录
+- [x] 缓存 preview token 变化时 fail-closed
+- [x] VACUUM 使用独立连接并在任何活动/可恢复行存在时拒绝
+- [x] 系统诊断只读，不再为了权限测试创建输出目录
+- [x] 网络诊断不再把代理地址当作目标网页，结果回到 UI queue
+- [x] backlog 预览移除特定 RJ 硬编码并统计混合状态全部行
+- [x] backlog 执行要求运行时完全空闲，加锁后再次校验 preimage
+- [x] 默认 `continue` 保留断点；`.part` 存在时拒绝 `retry-from-zero`
+- [x] SQLite online backup、preimage、rollback SQL 和 post-verify 全部使用临时测试验证
+- [x] 两个旧 backlog 诊断脚本改为 `TemporaryDirectory + 临时 SQLite`
+
+详细说明：`docs/TOOLS_MAINTENANCE_SAFETY.md`。
 
 ## TAKEOVER-T7：真实小批量验收
 
@@ -342,8 +375,8 @@ external intake 通过后再按以下顺序推进：
 ## 当前下一项
 
 ```text
-TAKEOVER-T5B-01：Codex 运行 `run_windows_acceptance.ps1`，完成 138 项 portable gate
-TAKEOVER-T5B-02：对活跃 DB 创建在线快照并输出混合状态报告
-TAKEOVER-T5B-03：在独立 sandbox 下载一个公开小样本
-TAKEOVER-T5B-04：在独立 fake server sandbox 实际点击 Flet UI 并截图
+TAKEOVER-T8A：迁移模块相对路径校验、递归 `.part`、源删除确认和四表同步复核
+TAKEOVER-T8B：资源库 rebuild 快照写入与旧索引清理
+TAKEOVER-T5B（并行待 Codex）：Windows 在线快照、真实小样本和 Flet 视觉证据
+TAKEOVER-T7（暂停）：只有 100+ 混合任务清空并进入维护窗口后才执行真实 1~3 个作品整理
 ```
