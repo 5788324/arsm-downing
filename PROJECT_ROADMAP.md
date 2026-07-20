@@ -34,7 +34,7 @@ Python + Flet + SQLite + asyncio + LibraryVault
 6. 下载核心 416 / Range / `.part`、缓存恢复与隔离 UI smoke（代码级已完成）
 7. Windows 一键验收包与 LibraryView 代码级收口（已完成；Windows 证据待 Codex）
 8. T6 复制资源库沙盒执行与 Tools/backlog 安全收口（已完成）
-9. 迁移、数据库 Schema 与资源库扫描一致性（当前）
+9. 迁移安全已完成；数据库 Schema 与资源库扫描一致性（当前）
 10. Windows 维护窗口和 T7 小批量验收
 11. 通过稳定性验收后再评估播放器
 ```

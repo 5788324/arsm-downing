@@ -16,6 +16,8 @@ def test_tools_view_has_no_fake_or_direct_destructive_maintenance():
     assert "self.app_controller.db.conn.execute" not in source
     assert "_backlog_stats" not in source
     assert "预览队列清理" in source
+    assert "预览迁移计划" in source
+    assert "on_click=self.migrate_execute" not in source
 
 
 def test_network_diagnostic_does_not_get_proxy_url_as_destination():

@@ -65,8 +65,8 @@ class ToolsView(ft.Container):
 
             ft.Text("\u8fc1\u79fb", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
             ft.Row([
-                ft.ElevatedButton("\u8fc1\u79fb\u5df2\u5b8c\u6210\u4f5c\u54c1", icon=ft.Icons.DRIVE_FILE_MOVE, on_click=self.migrate_dry_run,
-                    tooltip="\u626b\u63cf completed/verified \u4f5c\u54c1\u5e76\u8fc1\u79fb\u5230 output_dir"),
+                ft.ElevatedButton("预览迁移计划", icon=ft.Icons.DRIVE_FILE_MOVE, on_click=self.migrate_dry_run,
+                    tooltip="后台扫描 completed/verified 作品；仅生成计划，不移动文件、不修改数据库"),
                 ft.ElevatedButton("\u9a8c\u8bc1\u8fc1\u79fb", icon=ft.Icons.VERIFIED_USER, on_click=self.verify_migrated),
             ], spacing=12, wrap=True),
             ft.Row([self.keep_source_checkbox, self.delete_source_checkbox], spacing=12, wrap=True),
@@ -159,10 +159,10 @@ class ToolsView(ft.Container):
         self.delete_source_checkbox.update()
 
     def current_migration_mode(self) -> str:
-        return "copy_keep_source" if self.keep_source_mode else "move"
+        return "copy_keep_source" if getattr(self, "keep_source_mode", True) else "move"
 
     def require_delete_source_confirm(self) -> bool:
-        if self.keep_source_mode:
+        if getattr(self, "keep_source_mode", True):
             self.delete_source_confirm_pending = False
             return False
         if not self.delete_source_confirm_pending:
@@ -394,57 +394,78 @@ class ToolsView(ft.Container):
         return roots
 
     def migrate_dry_run(self, e):
-        """RC8.4: Dry-run with fixed output_dir target + disk space check."""
+        """Build a migration plan off the Flet thread using a read-only DB."""
+        del e
+        from core.database import LibraryVault
         from core.migration import MigrationEngine
-        db = self.app_controller.db
-        engine = MigrationEngine(db)
 
         target_base = self.resolve_migration_target()
         if not target_base:
             return
-
-        self.log(f"> \u8fc1\u79fb\u5019\u9009 dry-run target={target_base}", "white")
+        self.log(f"> 迁移计划 dry-run target={target_base}", "white")
         self.log(
             f"  migration_mode={self.current_migration_mode()} "
-            f"source_will_be_preserved={'yes' if self.keep_source_mode else 'no'}",
+            f"source_will_be_preserved={'yes' if getattr(self, 'keep_source_mode', True) else 'no'}",
             ACCENT_PRIMARY,
         )
-        dry = engine.dry_run(str(target_base))
-        self.log(
-            f"  MIGRATION_DRY_RUN candidate_count={dry['candidate_count']} "
-            f"total_size={dry['total_size_mb']}MB",
-            ACCENT_PRIMARY,
-        )
-        self.log(
-            f"  skipped_already_on_target={dry['skipped_already_on_target']} "
-            f"skipped_target_exists={dry['skipped_target_exists']} "
-            f"skipped_pending={dry['skipped_pending']} "
-            f"skipped_part_file={dry['skipped_part_file']}",
-            "grey",
-        )
-        self.log_space_check(dry['space_check'])
 
-        if dry["candidate_count"] == 0:
-            self.log("  \u6ca1\u6709\u53ef\u8fc1\u79fb\u5019\u9009\u3002", WARNING)
-            return
+        def _work():
+            db_path = self._db_path()
+            if db_path.is_file():
+                with LibraryVault.open_read_only(db_path) as readonly_db:
+                    return MigrationEngine(readonly_db).dry_run(str(target_base))
+            # Compatibility path for isolated tests backed by an in-memory DB.
+            return MigrationEngine(self.app_controller.db).dry_run(str(target_base))
 
-        self.log("")
-        for item in dry["candidates"][:20]:
+        def _render(dry):
             self.log(
-                f"  {item['rj_id']} [{item['status']}] {item['size_mb']}MB",
-                "white",
+                f"  MIGRATION_DRY_RUN candidate_count={dry['candidate_count']} "
+                f"total_size={dry['total_size_mb']}MB",
+                ACCENT_PRIMARY,
             )
-            self.log(f"    source: {item['source']}", "grey")
-            self.log(f"    target: {item['target']}", ACCENT_PRIMARY)
-        if dry["candidate_count"] > 20:
-            self.log(f"  ... \u8fd8\u6709 {dry['candidate_count'] - 20} \u4e2a\u5019\u9009", "grey")
+            self.log(
+                f"  skipped_already_on_target={dry['skipped_already_on_target']} "
+                f"skipped_target_exists={dry['skipped_target_exists']} "
+                f"skipped_pending={dry['skipped_pending']} "
+                f"skipped_part_file={dry['skipped_part_file']} "
+                f"skipped_unsafe={dry.get('skipped_symlink_or_unreadable', 0)}",
+                "grey",
+            )
+            if dry.get("db_size_mismatch_count"):
+                self.log(
+                    f"  WARNING: {dry['db_size_mismatch_count']} 个作品的 DB size 与磁盘实测不一致；"
+                    "空间估算已使用磁盘实测值。",
+                    WARNING,
+                )
+            self.log_space_check(dry["space_check"])
+            if dry["candidate_count"] == 0:
+                self.log("  没有可迁移候选。", WARNING)
+                return
+            self.log("")
+            for item in dry["candidates"][:20]:
+                self.log(
+                    f"  {item['rj_id']} [{item['status']}] {item['size_mb']}MB "
+                    f"files={item.get('file_count', 0)}",
+                    "white",
+                )
+                self.log(f"    source: {item['source']}", "grey")
+                self.log(f"    target: {item['target']}", ACCENT_PRIMARY)
+                self.log(f"    plan: {item.get('manifest_token', '')[:16]}", "grey")
+            if dry["candidate_count"] > 20:
+                self.log(f"  ... 还有 {dry['candidate_count'] - 20} 个候选", "grey")
+            self.log("")
+            self.log(
+                f"> mode={self.current_migration_mode()} / source preserved="
+                f"{getattr(self, 'keep_source_mode', True)}",
+                ACCENT_PRIMARY,
+            )
+            self.log("  dry-run 不会修改 history.db 或文件。", WARNING)
 
-        self.log("")
-        self.log(
-            f"> mode={self.current_migration_mode()} / copy_keep_source mode source will be preserved={self.keep_source_mode}",
-            ACCENT_PRIMARY,
-        )
-        self.log("  \u63d0\u793a\uff1adry-run \u4e0d\u4f1a\u4fee\u6539 history.db \u6216\u6587\u4ef6\u3002", WARNING)
+        runner = getattr(self.app_controller, "run_blocking", None)
+        if callable(runner):
+            runner(_work, _render, action_label="迁移 dry-run")
+        else:
+            _render(_work())
 
     def migrate_execute(self, e, batch_limit: int):
         """RC8.4: Real migration using config.output_dir with keep-source default."""
@@ -461,6 +482,9 @@ class ToolsView(ft.Container):
 
         dry = engine.dry_run(str(target_base))
         self.log_space_check(dry['space_check'])
+        if not dry['space_check']['enough_space']:
+            self.log('  MIGRATION_REJECT reason=insufficient_space', WARNING)
+            return
         candidates = dry['candidates']
         orc = self.app_controller.orc
         active_or_queued = orc.queued_rj_ids | set(orc.active_tasks.keys())
@@ -470,6 +494,7 @@ class ToolsView(ft.Container):
             validation = engine.validate_migration_request(
                 item["rj_id"], item["source"], item["target"], str(target_base),
                 active_or_queued=active_or_queued,
+                expected_manifest_token=item.get('manifest_token', ''),
             )
             if not validation["success"]:
                 self.log(
@@ -487,13 +512,13 @@ class ToolsView(ft.Container):
 
         self.log(f"> \u6267\u884c\u8fc1\u79fb {len(batch)} \u4e2a\u4f5c\u54c1...", ACCENT_PRIMARY)
         self.log(
-            f"  mode={self.current_migration_mode()} copy_keep_source mode source will be preserved={'yes' if self.keep_source_mode else 'no'}",
+            f"  mode={self.current_migration_mode()} copy_keep_source mode source will be preserved={'yes' if getattr(self, 'keep_source_mode', True) else 'no'}",
             ACCENT_PRIMARY,
         )
         self.log("  \u6ce8\u610f\uff1a\u8fd9\u662f\u5b9e\u9645\u8fc1\u79fb\uff0c\u4f1a\u66f4\u65b0 history.db\u3002", WARNING)
 
         ok, fail = 0, 0
-        delete_source = not self.keep_source_mode
+        delete_source = not getattr(self, 'keep_source_mode', True)
         for item in batch:
             rj_id = item["rj_id"]
             self.log(f"  MIGRATION_START rj={rj_id}", "white")
@@ -501,6 +526,7 @@ class ToolsView(ft.Container):
                 rj_id, item["source"], item["target"],
                 delete_source=delete_source,
                 target_base=str(target_base), active_or_queued=active_or_queued,
+                expected_manifest_token=item.get('manifest_token', ''),
             )
             if res["success"]:
                 self.log(f"  MIGRATION_COPY_DONE rj={rj_id}", SUCCESS)
@@ -516,7 +542,9 @@ class ToolsView(ft.Container):
                 if res.get("error") in {
                     "active_or_queued", "pending_downloads", "source_missing",
                     "source_under_target_base", "target_not_under_target_base",
-                    "source_equals_target", "part_file_present", "target_exists_nonempty",
+                    "source_equals_target", "source_target_overlap", "part_file_present",
+                    "target_exists", "target_exists_nonempty", "unsafe_source_tree",
+                    "source_plan_changed",
                 }:
                     self.log(
                         f"  MIGRATION_REJECT rj={rj_id} reason={res['error']}",
@@ -532,57 +560,72 @@ class ToolsView(ft.Container):
         self.log(f"  \u8fc1\u79fb\u5b8c\u6210: {ok} \u4e2a\u6210\u529f, {fail} \u4e2a\u5931\u8d25", ACCENT_PRIMARY)
 
     def verify_migrated(self, e):
-        """RC8.4: Verify migrated works against output_dir and keep-source plan."""
+        """Verify migrated works in a worker thread using a read-only DB."""
+        del e
+        from core.database import LibraryVault
         from core.migration import MigrationEngine
 
-        db = self.app_controller.db
-        engine = MigrationEngine(db)
         target_base = self.resolve_migration_target()
         if not target_base:
             return
-
         source_roots = self.list_migration_source_roots(target_base)
-        self.log("> \u9a8c\u8bc1\u5df2\u8fc1\u79fb\u4f5c\u54c1...", "white")
-        rows = db.conn.execute(
-            "SELECT rj_id, local_path, status FROM works "
-            "WHERE status IN ('completed','verified') ORDER BY rj_id"
-        ).fetchall()
+        self.log("> 后台验证已迁移作品…", "white")
 
-        verified_rows = []
-        for row in rows:
-            local_path = row["local_path"] or ""
-            if local_path and str(local_path).lower().startswith(str(target_base).lower()):
-                verified_rows.append(row)
+        def _work():
+            db_path = self._db_path()
+            with LibraryVault.open_read_only(db_path) as readonly_db:
+                engine = MigrationEngine(readonly_db)
+                rows = readonly_db.conn.execute(
+                    "SELECT rj_id, local_path, status FROM works "
+                    "WHERE status IN ('completed','verified') ORDER BY rj_id"
+                ).fetchall()
+                selected = [
+                    dict(row)
+                    for row in rows
+                    if row["local_path"]
+                    and engine._is_same_or_under(row["local_path"], target_base)
+                ]
+                return [
+                    (row, engine.verify_migrated_work(
+                        row["rj_id"], str(target_base), source_roots=source_roots
+                    ))
+                    for row in selected[:20]
+                ], len(selected)
 
-        if not verified_rows:
-            self.log("  \u6ca1\u6709\u4f4d\u4e8e\u76ee\u6807\u76d8\u7684 completed/verified \u4f5c\u54c1\u3002", "grey")
-            return
+        def _render(payload):
+            results, total = payload
+            if not results:
+                self.log("  没有位于目标盘的 completed/verified 作品。", "grey")
+                return
+            ok = 0
+            issues = 0
+            for row, result in results:
+                if result["success"]:
+                    mode_note = "source_preserved" if result["source_preserved"] else "source_deleted"
+                    self.log(f"  OK {row['rj_id']} [{row['status']}] {mode_note}", SUCCESS)
+                    ok += 1
+                else:
+                    self.log(
+                        f"  ERR {row['rj_id']}: work_exists={result['work_exists']} "
+                        f"missing_downloads={len(result['missing_downloads'])} "
+                        f"source_ok={result['source_removed_or_empty']} "
+                        f"library_items_on_target={result.get('library_items_on_target')} "
+                        f"library_index_on_target={result['library_on_target']} "
+                        f"part_files={result['part_files_present']} "
+                        f"manifest_error={result.get('target_manifest_error', '')}",
+                        ERROR,
+                    )
+                    issues += 1
+            if total > len(results):
+                self.log(f"  仅显示前 {len(results)} / {total} 个作品。", WARNING)
+            self.log(f"  验证完成: {ok} 个通过, {issues} 个异常", ACCENT_PRIMARY)
 
-        ok, issues = 0, 0
-        for row in verified_rows[:20]:
-            result = engine.verify_migrated_work(
-                row["rj_id"], str(target_base), source_roots=source_roots)
-            if result["success"]:
-                mode_note = 'source_preserved' if result['source_preserved'] else 'source_deleted'
-                self.log(f"  OK {row['rj_id']} [{row['status']}] verified {mode_note}", SUCCESS)
-                ok += 1
-            else:
-                self.log(
-                    f"  ERR {row['rj_id']}: work_exists={result['work_exists']} "
-                    f"work_on_target={result['work_on_target']} "
-                    f"missing_downloads={len(result['missing_downloads'])} "
-                    f"downloads_not_on_target={len(result['downloads_not_on_target'])} "
-                    f"source_removed_or_empty={result['source_removed_or_empty']} "
-                    f"source_preserved={result['source_preserved']} "
-                    f"cleanup_plan_present={result['cleanup_plan_present']} "
-                    f"preserved_source_ok={result['preserved_source_ok']} "
-                    f"library_on_target={result['library_on_target']} "
-                    f"part_files_present={result['part_files_present']}",
-                    ERROR,
-                )
-                issues += 1
-
-        self.log(f"  \u9a8c\u8bc1\u5b8c\u6210: {ok} \u4e2a\u901a\u8fc7, {issues} \u4e2a\u5f02\u5e38", ACCENT_PRIMARY)
+        runner = getattr(self.app_controller, "run_blocking", None)
+        if callable(runner):
+            runner(_work, _render, action_label="验证迁移")
+        else:
+            # Legacy isolated tests normally do not call this path.
+            _render(_work())
 
     def diagnose_failed(self, e):
         """Diagnose failed downloads off the Flet thread using a read-only connection."""

@@ -632,7 +632,7 @@ class LibraryVault:
         return result_status
 
     def get_safe_migratable_works(self) -> list:
-        """Return works that are safe to move: completed/verified, no pending downloads, no .part files.
+        """Return completed/verified works with no active or resumable DB rows.
 
         Each item: {rj_id, title, local_path, status, size_bytes}
         """
@@ -645,7 +645,7 @@ class LibraryVault:
                    AND NOT EXISTS (
                      SELECT 1 FROM downloads d
                      WHERE d.rj_id = w.rj_id
-                     AND d.status IN ('queued','paused','downloading','failed')
+                     AND d.status IN ('queued','paused','downloading','failed','resuming')
                    )
                    ORDER BY w.rj_id"""
             ).fetchall()

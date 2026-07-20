@@ -77,7 +77,7 @@ main 仅接收审查通过的 PR
 
 ### 4.2 最近代码阶段
 
-`TAKEOVER-T0~T6` 已完成 external intake 安全收口、文件事务沙盒验收和便携测试门建设；`TAKEOVER-T5A/T5C` 已完成下载核心及资源库 UI 的代码级收口：
+`TAKEOVER-T0~T6` 已完成 external intake 安全收口、文件事务沙盒验收和便携测试门建设；`TAKEOVER-T5A/T5C` 已完成下载核心及资源库 UI 的代码级收口；`TAKEOVER-T8A` 已完成迁移模块重构：
 
 - 固定 `ExternalIntakePlan` schema v3、六类目录分类、manifest token 和完整逐文件映射
 - 扫描根目录、隔离目录改为配置项
@@ -108,6 +108,10 @@ main 仅接收审查通过的 PR
 - 新增 T6 复制资源库沙盒验收：正常改名、Title 层复核、重复 RJ、空目录、`.part`、DB 失败和提交后恢复均有真实目录证据
 - Tools 维护操作改为独立连接和后台执行：队列清理只读预览、缓存安全清理、活跃任务阻止 VACUUM
 - backlog 预览不再硬编码排除特定 RJ；执行要求运行时完全空闲，默认保留断点并生成 online backup/preimage/rollback SQL
+- 迁移候选使用磁盘 manifest 实测文件数/大小，不再信任可能过期的 `works.size_bytes`
+- 迁移递归拒绝 `.part` 和 symlink，按完整相对路径、逐文件大小和哈希验证 staging/target
+- 迁移通过统一事务同步四表；源删除失败会验证源完整性后回滚，部分删除固定 `stop_required`
+- Tools 迁移按钮改为后台只读计划，目标目录存在时不再删除；迁移沙盒验收 10/10 PASS
 
 真实资源库移动、隔离、元数据刷新和 UI/CLI 执行入口继续保持冻结。文件执行状态机已通过 Linux/tempfile 复制资源库验收，但尚未经过 Windows 文件锁、长路径、杀毒软件和真实资源库验收。
 
@@ -142,8 +146,8 @@ PRAGMA integrity_check = ok
 
 1. `PROJECT_ROADMAP.md` 仍包含历史阶段内容，当前执行以 `NEXT_TASK_ROADMAP.md` 为准。
 2. GitHub Actions 已在本地分支建立，但在最终推送前尚未由远端 Runner 验证 Python 3.10/Linux 与 Python 3.12/Windows。
-3. ToolsView 的缓存、VACUUM、队列预览、网络诊断和 backlog 已后台化/收紧；迁移和兼容资源库重建仍需继续审计。
-4. 下载、资源库和迁移仍有完整功能审计中记录的 P0/P1 问题。
+3. ToolsView 的缓存、VACUUM、队列预览、网络诊断、backlog 和迁移 dry-run/verify 已后台化；兼容资源库 rebuild 仍需继续审计。
+4. 迁移代码级风险已在 T8A 收口，但 Windows 文件锁、长路径和真实小批量证据仍未完成。
 
 ## 7. 当前禁止事项
 
@@ -181,13 +185,14 @@ TAKEOVER-T5C：已完成——资源库搜索、后台加载、异常分类和�
 TAKEOVER-T6：已完成——复制资源库执行、幂等、DB 失败回滚和提交后恢复
 TAKEOVER-T6B：已完成——Tools 维护操作和 backlog 安全收口
 TAKEOVER-T7：等待维护窗口——当前 100+ 混合任务存在，不执行真实小批量整理
+TAKEOVER-T8A：已完成——迁移 manifest、递归 part/symlink、四表同步、删除确认和沙盒验收
 ```
 
 ## 8.1 当前验证结果
 
 ```text
 隔离虚拟环境：Flet 0.27.6 legacy API import PASS
-python -m pytest：158/158 passed
+python -m pytest：174/174 passed
 全项目 compileall：PASS
 pip check：PASS
 活跃状态文件保护：发现 history.db 时 pytest 固定 exit 2
@@ -199,7 +204,7 @@ SQLite 在线备份：WAL 并发写入期间 snapshot integrity_check=ok
 过期 metadata cache 恢复与嵌套音轨 UI fallback：PASS
 真实 ASMR.one：当前容器 DNS 阻塞，待 Windows sandbox
 Flet 视觉点击：当前容器浏览器策略/libmpv 阻塞，待 Windows sandbox
-external intake 复制资源库验收：11/11 checks PASS；全部沙盒/事务测试包含在统一 pytest 门内
+external intake 复制资源库验收：11/11 checks PASS；迁移 T8A 沙盒验收：10/10 checks PASS
 GitHub Actions：Linux 3.10 + Windows 3.12 workflow 已生成，尚待最终推送后真实运行
 真实 history.db：未连接
 真实 E:\arsm：未读取或修改
@@ -222,5 +227,5 @@ DeepSeek/OpenCode：仅在明确分配时承担低风险、大批量实现，不
 ```text
 项目可继续维护，不需要推倒重写。
 下载器、SQLite 数据层和资源库 UI 已形成较完整基础。
-当前优先级不是播放器。T7 在 100+ 活跃/可恢复任务清空前保持冻结；开发继续处理迁移、资源库一致性和剩余 UI 稳定性，同时等待 Windows 隔离下载/UI 证据。
+当前优先级不是播放器。T8A 迁移代码级收口已完成；T7 在 100+ 活跃/可恢复任务清空前保持冻结。下一项处理资源库 rebuild 快照写入、旧索引清理和剩余 UI 稳定性，同时等待 Windows 隔离下载/UI 证据。
 ```

@@ -2629,3 +2629,52 @@ Windows 文件锁、长路径、杀毒软件和真实资源库仍未验收。
 T7 必须等待 100+ 混合任务清空并进入明确维护窗口。
 下一轮继续迁移模块和资源库 rebuild 一致性，不执行真实目录整理。
 ```
+
+
+## 2026-07-20 — TAKEOVER-T8A：迁移模块安全重构
+
+### 背景
+
+用户正式下载器仍有 100 多个 completed/failed/paused/queued/downloading 混合任务。本轮只使用临时目录和临时 SQLite，不连接正式 `history.db`，不读取或迁移正式 `E:\arsm`。
+
+### 完成
+
+1. 新增 `core/migration_manifest.py`，记录完整相对路径、逐文件大小、mtime 和完整/采样 SHA-256。
+2. 递归拒绝任意深度 `.part`、源根目录 symlink 和内部 symlink。
+3. 候选空间估算改用磁盘实测，保留 `db_size_bytes` 仅用于漂移告警。
+4. dry-run 生成 manifest token；执行时源目录变化固定返回 `source_plan_changed`。
+5. staging 和最终 target 均按相对路径、逐文件大小和哈希验证，不再只比较总数/总字节。
+6. 目标路径只要存在就拒绝，不删除空目录或用户标记文件。
+7. 数据库路径更新复用统一事务，同步 works/downloads/library_items/library_index。
+8. DB 失败删除未提交目标并保留源；源删除失败且源完整时反向恢复 DB 并删除目标。
+9. 源发生部分删除或 DB 提交后的后置步骤失败时固定 `stop_required`。
+10. cleanup plan 改为按 RJ 原子 upsert，保存 source/target manifest token。
+11. Tools 按钮改为“预览迁移计划”，dry-run 和 post-verify 使用后台线程及只读 SQLite。
+12. 新增 `scripts/migration_sandbox_acceptance.py` 和 `docs/TAKEOVER_T8A_MIGRATION_SAFETY.md`。
+
+### 自动验证
+
+```text
+python -m pytest：174/174 passed
+迁移沙盒 acceptance：10/10 checks PASS
+历史 migration 兼容脚本：PASS
+python compileall：PASS
+pip check：PASS
+```
+
+### 正式现场影响
+
+```text
+100+ 正式下载任务：未触碰
+正式 history.db/config.json/queue.json：未读取或修改
+正式 Downloads/E:\arsm：未读取、未扫描、未迁移、未删除
+真实迁移入口：无可见按钮，继续冻结
+```
+
+### 下一步
+
+```text
+TAKEOVER-T8B：资源库 rebuild 快照写入、旧索引清理、中断恢复和幂等验证。
+TAKEOVER-T5B：等待 Codex Windows 下载/UI 证据。
+TAKEOVER-T7：等待 100+ 混合任务清空后的维护窗口。
+```

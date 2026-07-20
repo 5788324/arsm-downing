@@ -375,8 +375,8 @@ external intake 通过后再按以下顺序推进：
 ## 当前下一项
 
 ```text
-TAKEOVER-T8A：迁移模块相对路径校验、递归 `.part`、源删除确认和四表同步复核
-TAKEOVER-T8B：资源库 rebuild 快照写入与旧索引清理
+TAKEOVER-T8A：已完成——磁盘 manifest、相对路径/哈希校验、递归 `.part`/symlink、源删除确认、四表同步和 10/10 沙盒验收
+TAKEOVER-T8B：当前下一项——资源库 rebuild 快照写入、旧索引清理和中断恢复
 TAKEOVER-T5B（并行待 Codex）：Windows 在线快照、真实小样本和 Flet 视觉证据
 TAKEOVER-T7（暂停）：只有 100+ 混合任务清空并进入维护窗口后才执行真实 1~3 个作品整理
 ```
