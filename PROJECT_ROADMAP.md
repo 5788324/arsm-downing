@@ -30,11 +30,12 @@ Python + Flet + SQLite + asyncio + LibraryVault
 2. external intake 固定计划模型与纯扫描收口（已完成）
 3. external intake LibraryVault 快照与路径事务（已完成）
 4. external intake 逐作品文件执行与恢复状态机（沙盒已完成）
-5. 统一测试、CI 与 Windows 沙盒验收（当前）
-6. 下载核心 416 / Range / `.part` / 取消恢复修复
-7. 数据库 Schema 与资源库一致性
-8. UI、迁移和 backlog 稳定性修复
-9. 通过稳定性验收后再评估播放器
+5. 统一测试、CI、活跃 DB 在线快照（已完成）
+6. Windows 只读快照与 UI 观察验收（当前）
+7. 下载核心 416 / Range / `.part` / 取消恢复修复
+8. 数据库 Schema 与资源库一致性
+9. UI、迁移和 backlog 稳定性修复
+10. 通过稳定性验收后再评估播放器
 ```
 
 ---

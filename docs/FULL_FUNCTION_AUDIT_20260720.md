@@ -1,6 +1,6 @@
 # arsm-downing 全功能代码审查
 
-> 修复状态：TAKEOVER-T0/T1/T2 已完成 external intake 硬冻结、固定计划模型、数据库只读快照、四表路径事务、preimage/postimage 和重复 RJ 主记录保护；文件执行仍冻结。其余下载、数据层、UI、迁移和工具问题继续按本文优先级推进。
+> 修复状态：TAKEOVER-T0~T4 已完成 external intake 硬冻结、计划模型、数据库/文件沙盒事务、统一 pytest 门、依赖兼容集和活跃 DB 在线快照；真实执行仍冻结。其余下载、数据层、UI、迁移和工具问题继续按本文优先级推进。
 
 > 日期：2026-07-20  
 > 审查基线：`chatgpt/takeover-20260718@7bacbf4`  
@@ -17,7 +17,7 @@
 - 下载断点续传存在错误完成判断风险；
 - 资源库验证可能把嵌套目录中的缺失音轨误判为已验证；
 - 新数据库缺少 `library_items` 建表闭环；
-- 测试数量很多，但没有统一、可移植、可信的 pytest/CI 门禁。
+- 历史测试数量很多且质量不一；现已建立 94 项可信 portable pytest 门，但 200 个旧脚本尚未全部迁移。
 
 ## P0：可能造成数据损坏、错误完成或不可恢复状态
 
@@ -170,9 +170,14 @@
 
 ### P2-04 依赖和测试门禁不足
 
-- requirements 未锁版本。
-- 没有统一 pytest 配置和 GitHub Actions。
-- 大量 `scripts/test_*.py` 是分散脚本，包含静态字符串检查与本机路径依赖，不能等同于完整回归测试。
+处理状态（2026-07-20）：
+
+- runtime/dev 核心依赖已精确锁定；Flet 保持当前 legacy API 兼容的 0.27.6；
+- 已建立 `pytest.ini`、94 项 portable tests、Linux/Windows GitHub Actions 定义；
+- 默认 gate 发现 live `history.db/config.json/queue.json` 时 fail-closed；
+- 已增加活跃 SQLite online backup、integrity_check、SHA-256 manifest 和混合状态报告；
+- 200 个 `scripts/test_*.py` 尚未全部迁移，仍不能把历史脚本数量等同于覆盖率；
+- GitHub Actions 尚待最终推送后由远端 Runner 真实验证。
 
 ## 功能域结论
 
@@ -192,7 +197,7 @@
 | Backlog | 审计意识较好；备份/回滚实现需修 |
 | 工具页 | 功能较多；同步阻塞、假清缓存、不可达 execute |
 | 音频标签 | MP3/FLAC 基础可用；格式/MIME 支持不完整 |
-| 测试/CI | 测试脚本数量多；尚未形成可信门禁 |
+| 测试/CI | 94 项 portable 门已建立；历史脚本迁移与远端 CI 首跑仍待完成 |
 
 ## 建议修复顺序
 
@@ -201,8 +206,8 @@
 3. `DATA-CORE`：补齐 schema、递归验证、迁移同步 `library_items`。
 4. `UI-SEMANTICS`：修复取消/强制/打开目录/重连/搜索/并发设置。
 5. `TOOLS-SAFETY`：工具页后台化、实现真实清缓存、重构 backlog。
-6. `TEST-GATE`：portable pytest + GitHub Actions，再做 Windows 小批量验收。
+6. `TEST-GATE`：portable pytest + GitHub Actions 已完成本地定义；下一步做 Windows 只读 snapshot/UI 观察验收。
 
 ## 审查边界
 
-本报告是代码级全功能审查。由于当前运行环境无法解析 `github.com`，尚未完成本地 clone、依赖安装、pytest 和 Flet GUI 实机运行。因此报告不能替代后续自动化测试与 Windows 实机验收；所有问题会在修复 PR 中逐项加入回归测试。
+本报告最初是代码级审查；后续已通过 Git Bundle 完成本地 clone、隔离依赖安装、94 项 pytest、Flet 模块导入和沙盒文件/数据库故障测试。仍缺 Windows 真实 GUI、文件锁、长路径、活跃任务现场观察和远端 GitHub Actions 首跑，因此不能替代实机验收。

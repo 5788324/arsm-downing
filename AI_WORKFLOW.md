@@ -27,7 +27,7 @@ DeepSeek/OpenCode：仅在 ChatGPT 明确分配时承担低风险批量工作
 
 - Windows 真实运行环境
 - Flet GUI 行为与显示
-- 用户真实 `E:\arsm` 和 `history.db` 的只读或小批量验收
+- 用户真实 `E:\arsm` 的只读观察，以及通过在线备份生成的 `history.db` 快照验收
 - 当前环境无法覆盖的网络、文件锁、路径和打包问题
 - 最终便携包/安装包验证
 
@@ -94,6 +94,8 @@ GitHub：正式仓库、Issue、PR、代码审查、CI、合并和版本历史
 dry-run 优先
 测试不使用真实 E:\arsm
 测试不连接真实 history.db
+活跃下载存在时，不升级生产依赖、不运行维护命令、不手工复制 DB/WAL/SHM
+真实状态核验只能使用在线只读 snapshot + manifest
 失败不得报告成功
 数据库与文件系统更新必须具有可核验恢复路径
 ```
@@ -120,11 +122,12 @@ dry-run 优先
 2. external intake 计划模型与纯扫描收口（已完成）
 3. external intake LibraryVault 快照与路径事务（已完成）
 4. external intake 逐作品文件执行与自动恢复（沙盒已完成）
-5. 统一测试、CI 和 Windows 沙盒验收（当前）
-6. 下载核心 416 / Range / .part / 取消恢复修复
-7. 数据库 Schema、缓存和资源库一致性
-8. UI 行为与线程安全
-9. 迁移和 backlog 安全闭环
-10. Codex Windows 小批量验收
-11. 最终合并、打包和交接
+5. 统一测试、CI、在线 DB snapshot（已完成）
+6. Windows 只读快照与 UI 观察验收（当前）
+7. 下载核心 416 / Range / .part / 取消恢复修复
+8. 数据库 Schema、缓存和资源库一致性
+9. UI 行为与线程安全
+10. 迁移和 backlog 安全闭环
+11. Codex Windows 小批量验收
+12. 最终合并、打包和交接
 ```

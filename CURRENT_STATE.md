@@ -63,7 +63,7 @@ P4 下载状态修复与 P5 资源库索引写入不得混在一次操作中
 - 当前接手基线：`1f33595`
 - 接手前没有开放的 Pull Request
 - 接手前没有 Issue 任务台账
-- 尚未建立标准 GitHub Actions CI
+- 已在接手分支建立 GitHub Actions portable test gate；尚未推送，因此远端 CI 尚未实际运行
 - 历史开发主要直接提交到 `main`
 
 接手后规则：
@@ -77,7 +77,7 @@ main 仅接收审查通过的 PR
 
 ### 4.2 最近代码阶段
 
-`TAKEOVER-T0/T1/T2/T3` 已完成 external intake 的冻结、只读计划、数据库服务和沙盒文件事务收口：
+`TAKEOVER-T0/T1/T2/T3/T4` 已完成 external intake 安全收口及便携测试门建设：
 
 - 固定 `ExternalIntakePlan` schema v3、六类目录分类、manifest token 和完整逐文件映射
 - 扫描根目录、隔离目录改为配置项
@@ -94,6 +94,10 @@ main 仅接收审查通过的 PR
 - staging 与目标按相对路径、数量、大小和关键哈希双重校验
 - Title 层文件映射与 downloads.local_path 使用同一映射更新
 - DB 失败自动恢复原源目录；进程提交前后中断可按 Journal 恢复
+- 新增统一 `python -m pytest` 测试门、Linux/Windows CI 定义和精确依赖兼容集
+- 默认测试在工作区发现 `history.db`、`config.json` 或 `queue.json` 时 fail-closed
+- 新增在线 SQLite 只读快照和 manifest 校验，可在下载器持续运行时生成一致性副本
+- 新增快照状态报告，统计 completed/failed/paused/queued/downloading 等混合任务
 
 真实资源库移动、隔离、元数据刷新和 UI/CLI 执行入口继续保持冻结。文件执行状态机已在 tempfile 沙盒中完成，但尚未经过 Windows 文件锁、真实路径和复制资源库验收。
 
@@ -112,7 +116,7 @@ non_verified = 0
 PRAGMA integrity_check = ok
 ```
 
-这些数值只代表 2026-06-28 的历史快照。接手后不得把它们当作 2026-07-18 的实时状态；需要 Codex 在用户 Windows 本机重新执行只读核验后才能更新。
+这些数值只代表 2026-06-28 的历史快照，不能代表当前状态。用户已确认当前仍有 100 多个任务处于 completed/failed/paused/queued/downloading 等混合状态。后续只通过 SQLite 在线备份生成的 manifest-verified 快照核验，不直接维护活跃数据库。
 
 ## 6. 当前已确认问题
 
@@ -127,7 +131,7 @@ PRAGMA integrity_check = ok
 ### P1 / 接手后尽快修
 
 1. `PROJECT_ROADMAP.md` 仍包含历史阶段内容，当前执行以 `NEXT_TASK_ROADMAP.md` 为准。
-2. 依赖未锁版本，尚未建立项目级统一 pytest 和 CI。
+2. GitHub Actions 已在本地分支建立，但在最终推送前尚未由远端 Runner 验证 Python 3.10/Linux 与 Python 3.12/Windows。
 3. ToolsView 包含较多同步文件/DB 操作，可能阻塞 Flet UI。
 4. 下载、资源库、迁移和 backlog 仍有完整功能审计中记录的 P0/P1 问题。
 
@@ -160,26 +164,24 @@ TAKEOVER-T0：已完成——事实校准、核心/CLI/UI 硬冻结
 TAKEOVER-T1：已完成——固定计划模型、路径配置、冲突分类、完整报告和后台 UI 扫描
 TAKEOVER-T2：已完成——LibraryVault 快照、四表路径事务、preimage/postimage 与重复 RJ 保护
 TAKEOVER-T3：已完成——逐文件映射、staging、双重校验、Journal、回滚与崩溃恢复
-TAKEOVER-T4：下一步——统一 pytest、依赖锁定和 CI
-TAKEOVER-T5：Windows 本机只读 dry-run 验收
+TAKEOVER-T4：已完成——统一 pytest、依赖锁定、CI 定义、在线 DB 快照与验收规范
+TAKEOVER-T5：下一步——Windows 本机只读快照、状态统计和 UI 观察验收
 TAKEOVER-T6：沙盒执行验收
 ```
 
 ## 8.1 当前验证结果
 
 ```text
-python -W error::ResourceWarning -m unittest discover -s tests -p "test_external_intake_*.py" -v
-结果：62/62 passed
-完整报告 60 actions 不截断：通过
-重复 RJ 全候选复核和主记录保护：通过
-四表路径事务与 preimage/postimage：通过
-沙盒 staging/Title 映射/关键哈希：通过
-DB 失败文件恢复与崩溃 Journal 恢复：通过
-批次失败立即停止：通过
-SQLite 注入失败全事务回滚：通过
-只读 CLI 数据库哈希不变：通过
-目标冲突与危险路径：通过
-配置保存/读取：通过
+隔离虚拟环境：Flet 0.27.6 legacy API import PASS
+python -m pytest：94/94 passed
+全项目 compileall：PASS
+pip check：PASS
+活跃状态文件保护：发现 history.db 时 pytest 固定 exit 2
+SQLite 在线备份：WAL 并发写入期间 snapshot integrity_check=ok
+快照 manifest：size + SHA-256 验证通过
+混合下载状态报告：completed/failed/paused/queued/downloading 统计通过
+external intake 62 项沙盒/事务测试：全部包含在统一 pytest 门内
+GitHub Actions：Linux 3.10 + Windows 3.12 workflow 已生成，尚待最终推送后真实运行
 真实 history.db：未连接
 真实 E:\arsm：未读取或修改
 真实文件移动/删除：无

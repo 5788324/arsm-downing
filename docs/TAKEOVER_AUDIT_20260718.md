@@ -25,7 +25,7 @@
 
 - 接手前无开放 PR，也无 Issue 台账。
 - 历史工作主要直接提交到 `main`。
-- 没有标准 GitHub Actions CI。
+- 接手时没有标准 GitHub Actions CI；现已在本地接手分支建立 portable workflow，待最终推送首跑。
 - 测试主要是 `scripts/test_*.py` 的脚本式回归。
 - README、路线图、AI 分工和最近代码状态存在明显漂移。
 
@@ -94,9 +94,8 @@ warning
 
 - ToolsView 在 UI 事件中同步执行扫描、文件移动和 DB 操作，可能冻结窗口。
 - 计划报告只保存前 50 个目录，不足以作为完整审计依据。
-- 依赖未锁版本。
-- 没有统一测试命令。
-- 没有 CI。
+- 接手时依赖未锁、无统一测试命令和 CI；现已建立精确兼容集、94 项 pytest 门和 Linux/Windows workflow。
+- 200 个历史脚本仍需逐步分类迁移，不能视为统一覆盖。
 
 ## 6. 测试审计
 
@@ -116,15 +115,15 @@ warning
 
 ## 7. 解除 STOP 的验收门槛
 
-- [ ] 业务 DB 写入全部收口到 LibraryVault/service
-- [ ] 重复 RJ 不影响正常主记录
-- [ ] 固定 plan schema
-- [ ] 完整目标冲突预检
-- [ ] 每个作品具备可验证自动恢复
-- [ ] 审计报告不截断
-- [ ] 默认单元测试不依赖 `E:\arsm`
-- [ ] 失败注入测试通过
-- [ ] 临时目录集成测试通过
+- [x] 业务 DB 写入全部收口到 LibraryVault/service
+- [x] 重复 RJ 不影响正常主记录
+- [x] 固定 plan schema
+- [x] 完整目标冲突预检
+- [x] 每个作品具备可验证自动恢复（tempfile sandbox）
+- [x] 审计报告不截断
+- [x] 默认单元测试不依赖 `E:\arsm`
+- [x] 失败注入测试通过
+- [x] 临时目录集成测试通过
 - [ ] Windows 本机只读 dry-run 通过
 - [ ] 真实资源库最多 1~3 个作品的小批量验收通过
 
@@ -134,5 +133,5 @@ warning
 下载器、资源库和 SQLite 基础：保留
 external intake 当前真实执行：STOP
 播放器开发：后移
-下一步：安全重构 + portable tests + 本机只读验收
+下一步：Windows 在线 snapshot + UI 只读观察验收；真实执行继续 STOP
 ```

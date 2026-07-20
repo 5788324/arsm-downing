@@ -2370,3 +2370,109 @@ needs_title_layer 仍需要可靠 metadata title；当前保持人工复核。
 ```text
 进入 TAKEOVER-T4：建立统一 pytest/CI 测试门、依赖锁定和 Windows 只读/沙盒验收说明。
 ```
+
+---
+
+## 29. 2026-07-20 ChatGPT 接手第五轮：统一测试门、CI 与活跃数据库只读快照
+
+### 用户现场条件
+
+```text
+正式下载器仍在运行
+任务数量：100+
+状态混合：completed / failed / paused / queued / downloading 等
+本轮不得停止、重试、删除或迁移这些任务
+```
+
+### 范围
+
+```text
+TAKEOVER-T4：pytest、依赖兼容集、GitHub Actions、在线 DB snapshot 和 Windows 只读验收规范
+```
+
+### 完成内容
+
+1. 新增 `pytest.ini`，默认只收集 `tests/`，严格区分 portable、manual、windows_integration 和 live_network。
+2. external intake 的 62 项 unittest 兼容测试已纳入统一 `python -m pytest`，不再依赖独立发现命令。
+3. 新增共享 pytest fixture，并在工作区存在 `history.db`、`config.json` 或 `queue.json` 时 fail-closed，避免在活跃程序目录运行测试。
+4. 新增 `requirements-dev.txt`；运行依赖全部精确锁定。
+5. Flet 固定为 `0.27.6`，因为当前 UI 使用 legacy `ft.icons` 和 `ft.colors`；隔离环境已验证所有 UI 模块可导入。
+6. 新增 `.github/workflows/ci.yml`，定义 Ubuntu/Python 3.10 与 Windows/Python 3.12 的 compile、UI import smoke 和 pytest gate。
+7. 新增 `core/database_snapshot.py` 与 `scripts/create_db_snapshot.py`，通过 SQLite online backup API 对活跃数据库创建一致性快照。
+8. 快照不手工复制或修改 WAL/SHM，输出前执行 `PRAGMA integrity_check`，并生成 size/SHA-256 manifest。
+9. 新增 `core/database_inspection.py` 与 `scripts/inspect_db_snapshot.py`，只接受 manifest-verified snapshot，统计 downloads/works 的全部状态。
+10. 并发 WAL 写入测试验证下载器持续写入时仍能获得完整快照。
+11. 新增 `docs/TESTING_AND_CI.md` 和 `docs/WINDOWS_READ_ONLY_ACCEPTANCE.md`，明确 100+ 活跃任务期间的禁止操作和 Codex 验收步骤。
+12. 历史 `scripts/test_*.py` 继续作为兼容/诊断脚本保留；live network 和实机测试不会混入默认 CI。
+
+### 修改文件
+
+```text
+.github/workflows/ci.yml
+pytest.ini
+requirements.txt
+requirements-dev.txt
+core/database_snapshot.py
+core/database_inspection.py
+scripts/create_db_snapshot.py
+scripts/inspect_db_snapshot.py
+tests/conftest.py
+tests/test_database_snapshot.py
+tests/test_database_inspection.py
+tests/test_import_smoke.py
+tests/test_test_gate.py
+tests/manual/README.md
+tests/windows_integration/README.md
+docs/TESTING_AND_CI.md
+docs/WINDOWS_READ_ONLY_ACCEPTANCE.md
+docs/FULL_FUNCTION_AUDIT_20260720.md
+docs/TAKEOVER_AUDIT_20260718.md
+README.md
+CURRENT_STATE.md
+NEXT_TASK_ROADMAP.md
+PROJECT_ROADMAP.md
+AI_WORKFLOW.md
+WORKLOG.md
+```
+
+### 测试
+
+```text
+隔离环境安装：flet==0.27.6 + pinned runtime + pytest==8.4.2
+pip check：PASS
+Flet legacy API / 全部 UI 模块 import：PASS
+python -m compileall -q core ui tools tests scripts main.py：PASS
+python -m pytest：94/94 passed
+live-state guard：临时 history.db 存在时固定 exit 2
+SQLite snapshot CLI：PASS
+manifest-verified inspection CLI：PASS
+WAL 并发写入 snapshot：PASS
+GitHub Actions YAML 结构解析：PASS
+git diff --check：PASS
+```
+
+### 数据和运行中任务影响
+
+```text
+正式下载任务：未暂停、未恢复、未重试、未删除、未排序
+正式依赖环境：未安装或升级任何包
+真实 history.db：未打开、未复制、未修改
+真实 history.db-wal / history.db-shm：未访问
+真实 E:\arsm：未读取、未扫描、未移动
+本轮数据库：仅 tempfile 模拟 WAL 数据库
+```
+
+### 已知限制
+
+```text
+GitHub Actions 文件已建立，但按“最终一次推送”规则尚未在远端 Runner 实际运行。
+当前 Flet 版本只是兼容锁定，不代表 UI 质量已验收。
+200 个历史 scripts/test_*.py 尚未全部迁移为 pytest；默认门当前聚焦 94 项可信 portable tests。
+Windows 文件锁、长路径、真实 UI 和当前 100+ 任务状态仍需 Codex 只读观察。
+```
+
+### 下一步
+
+```text
+进入 TAKEOVER-T5：在干净 Bundle 上运行 portable gate，对活跃 DB 创建在线 snapshot，输出混合下载状态报告，并只观察 Flet UI。
+```

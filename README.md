@@ -102,13 +102,14 @@ docs/TAKEOVER_AUDIT_20260718.md
 
 只读扫描、临时目录测试和普通下载/资源库代码审查不受影响。
 
-当前 external-intake 便携回归测试：
+当前统一便携测试门：
 
 ```bash
-python -m unittest discover -s tests -p "test_external_intake_*.py" -v
+python -m pip install -r requirements-dev.txt
+python -m pytest
 ```
 
-当前结果：`62/62 passed`。默认测试仅使用临时目录和临时 SQLite；其中包含真实的临时文件复制、原子改名、数据库更新和自动恢复。
+当前结果：`94/94 passed`。其中包括 62 项 external-intake 沙盒/事务测试、SQLite 在线快照、混合下载状态报告和 UI 模块导入 smoke test。默认测试只使用临时目录和临时 SQLite，并在工作区出现 `history.db`、`config.json` 或 `queue.json` 时直接拒绝运行。
 
 ## 安装
 
@@ -177,6 +178,8 @@ main.py                     Flet 应用入口
 core/
   config.py                 配置
   database.py               LibraryVault / SQLite 数据层
+  database_snapshot.py      活跃 SQLite 在线只读快照
+  database_inspection.py    快照完整性与任务状态报告
   intake_db.py               External intake 快照、路径事务与重复 RJ 保护
   network.py                网络与代理
   orchestrator.py           下载调度与状态流
@@ -186,7 +189,7 @@ ui/
   app.py                    应用控制器与导航
   views/                    Dashboard、下载、资源库、工具、设置
 tools/                      backlog、批量核验、external intake 等工具
-scripts/                    回归测试与诊断脚本
+scripts/                    手动诊断、快照工具与兼容脚本
 docs/                       规范、功能审查与接手审计
 CURRENT_STATE.md             当前事实基线
 NEXT_TASK_ROADMAP.md         当前详细执行路线图
@@ -195,19 +198,29 @@ WORKLOG.md                   历史工作日志
 AI_WORKFLOW.md               AI 协作与 Git 工作流规范
 ```
 
-## 测试现状
+## 测试与活跃下载保护
 
-仓库已有大量 `scripts/test_*.py` 回归脚本，但尚未完成统一 pytest 入口与 GitHub Actions CI。
+项目已建立统一测试门：
 
-部分脚本依赖用户 Windows 本机路径或真实数据库，不应在未知环境中盲目全量运行。接手阶段将先把默认测试改造成：
-
-```text
-临时目录
-临时 SQLite
-无真实 E:\arsm 访问
-无真实 history.db 写入
-可在 CI 重复执行
+```powershell
+python -m pip install -r requirements-dev.txt
+python -m pytest
 ```
+
+默认测试只收集 `tests/`，排除 `manual`、`windows_integration` 和 `live_network`。大量历史 `scripts/test_*.py` 暂时作为兼容/诊断脚本保留，不会被误当成默认自动测试。
+
+如果当前程序仍在下载，不要升级其环境，也不要在生产工作目录运行测试。对活跃数据库使用在线只读快照：
+
+```powershell
+python scripts/create_db_snapshot.py `
+  --source "<ACTIVE_APP_DIR>\history.db" `
+  --output "<TEST_DIR>\history.snapshot.db"
+
+python scripts/inspect_db_snapshot.py `
+  --snapshot "<TEST_DIR>\history.snapshot.db"
+```
+
+该流程不手工复制 WAL/SHM，不暂停或修改队列，并通过 manifest SHA-256 验证快照。详细规则见 [`docs/TESTING_AND_CI.md`](docs/TESTING_AND_CI.md) 和 [`docs/WINDOWS_READ_ONLY_ACCEPTANCE.md`](docs/WINDOWS_READ_ONLY_ACCEPTANCE.md)。
 
 ## 开发与协作
 
@@ -230,6 +243,8 @@ chatgpt/* 分支
 - [`docs/TAKEOVER_AUDIT_20260718.md`](docs/TAKEOVER_AUDIT_20260718.md)：代码与流程风险审计
 - [`docs/ARSM_LIBRARY_SPEC.md`](docs/ARSM_LIBRARY_SPEC.md)：资源库目录规范
 - [`docs/EXTERNAL_INTAKE_DB_TRANSACTION_SPEC.md`](docs/EXTERNAL_INTAKE_DB_TRANSACTION_SPEC.md)：外部接入数据库事务与恢复数据模型
+- [`docs/TESTING_AND_CI.md`](docs/TESTING_AND_CI.md)：便携测试门、依赖和活跃数据保护
+- [`docs/WINDOWS_READ_ONLY_ACCEPTANCE.md`](docs/WINDOWS_READ_ONLY_ACCEPTANCE.md)：运行中下载器的只读验收步骤
 - [`docs/CURRENT_FUNCTIONS_REVIEW_20260628.md`](docs/CURRENT_FUNCTIONS_REVIEW_20260628.md)：2026-06-28 功能与本机历史快照
 - [`WORKLOG.md`](WORKLOG.md)：历史开发记录
 

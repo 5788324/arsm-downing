@@ -4,7 +4,7 @@
 
 > 起点：2026-07-18  
 > 基线：`main@1f33595`  
-> 当前阶段：`TAKEOVER-T4`（`TAKEOVER-T0/T1/T2/T3` 已于 2026-07-20 完成）
+> 当前阶段：`TAKEOVER-T5`（`TAKEOVER-T0/T1/T2/T3/T4` 已于 2026-07-20 完成）
 
 ## 总原则
 
@@ -160,27 +160,37 @@ Tools/CLI 真实执行、quarantine 移动、needs_title_layer 自动命名和�
 
 ## TAKEOVER-T4：测试体系与 CI
 
-### 目标
+### 状态
 
-建立一个明确、可重复、默认不接触用户数据的测试入口。
+```text
+PASS（2026-07-20）
+```
 
-### 任务
+### 已完成
 
-- [ ] 增加 `pytest.ini`
-- [ ] 新建 `tests/`
-- [ ] 把 external intake 测试迁移为 pytest fixture
-- [ ] 增加临时 SQLite fixture
-- [ ] 增加统一 `python -m pytest` 命令
-- [ ] 将真实 Windows 测试标记为 manual/integration
-- [ ] 增加 GitHub Actions：syntax + focused unit tests
-- [ ] 固定核心依赖版本或增加约束文件
+- [x] 增加 `pytest.ini` 和严格 marker
+- [x] 将 external intake 62 项测试纳入统一 pytest collection
+- [x] 增加共享临时 SQLite / sandbox fixture
+- [x] 建立统一 `python -m pytest` 命令
+- [x] 区分 portable、manual、windows_integration、live_network
+- [x] 增加 GitHub Actions：Linux Python 3.10 + Windows Python 3.12
+- [x] 精确锁定当前兼容依赖；Flet 保持 legacy API 可用的 0.27.6
+- [x] 增加 UI/core import smoke tests
+- [x] 工作区出现 live `history.db/config.json/queue.json` 时测试 fail-closed
+- [x] 增加活跃 SQLite 在线只读快照、integrity_check 和 SHA-256 manifest
+- [x] 增加 verified snapshot 混合任务状态统计
+- [x] 完成 Windows 只读验收规范
 
 ### 验收
 
 ```text
-Linux/通用环境：纯单元测试通过
-Windows：纯单元测试通过
-默认测试不读取 E:\arsm 和真实 history.db
+隔离 Python 3.13 环境：94/94 passed
+Flet 0.27.6 ft.icons/ft.colors 与全部 UI 模块 import：PASS
+pip check：PASS
+WAL 并发写入 snapshot：PASS
+live-state pytest guard：PASS
+GitHub Actions workflow：本地语法/结构检查通过，待最终推送后真实运行
+默认测试未读取 E:\arsm 或真实 history.db
 ```
 
 ## TAKEOVER-T5：Windows 本机只读验收
@@ -193,20 +203,23 @@ Codex，仅执行必须依赖用户 Windows 本机的部分。
 
 1. 确认 git 分支和工作区干净。
 2. 运行语法检查与 portable tests。
-3. 对真实 `E:\arsm` 运行只读扫描。
-4. 对真实 `history.db` 运行只读完整性检查。
-5. 输出完整 plan，不执行。
-6. 对比 2026-06-28 历史快照，说明变化。
-7. 截图核验 UI 扫描、报告和 STOP 提示。
+3. 保持当前 100+ 混合状态下载任务不变，不点击暂停/重试/删除。
+4. 使用 `create_db_snapshot.py` 对活跃 `history.db` 创建在线只读快照。
+5. 使用 `inspect_db_snapshot.py` 统计 completed/failed/paused/queued/downloading 等状态。
+6. 在复制目录或只读条件下生成 external intake plan，不执行。
+7. 对比 2026-06-28 历史快照时明确说明当前下载仍在变化。
+8. 截图核验 UI 状态显示、响应性、报告和 STOP 提示。
 
 ### 验收
 
 ```text
-不改 DB
-不移动文件
-不隔离文件
-报告完整
-UI 不冻结或可接受
+不改 DB、不改变下载队列
+不升级活跃程序依赖
+不手工复制 WAL/SHM
+不移动或隔离文件
+snapshot manifest 和 integrity_check 通过
+混合状态统计完整
+UI 观察不触发控制操作
 ```
 
 ## TAKEOVER-T6：沙盒执行验收
@@ -236,7 +249,7 @@ UI 不冻结或可接受
 
 ### 前置条件
 
-T1~T6 全部通过。
+T1~T6 全部通过，并且目标 RJ 不存在 queued/downloading/resuming/paused/failed 下载行。活跃下载器未退出时不得进行真实小批量执行。
 
 ### 范围
 
@@ -265,7 +278,7 @@ external intake 通过后再按以下顺序推进：
 ## 当前下一项
 
 ```text
-TAKEOVER-T4-01：建立 pytest/CI 单一测试门
-TAKEOVER-T4-02：锁定依赖并标记 manual/integration tests
-TAKEOVER-T4-03：准备 Windows 只读验收说明
+TAKEOVER-T5-01：Codex 在干净 Bundle/checkout 运行 94 项 portable gate
+TAKEOVER-T5-02：对活跃 history.db 创建在线快照并输出混合状态报告
+TAKEOVER-T5-03：仅观察当前 Flet UI，不操作 100+ 正在运行的任务
 ```
