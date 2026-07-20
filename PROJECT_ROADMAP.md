@@ -2,6 +2,8 @@
 
 # arsm-downing / arsm-suite 下一阶段执行路线图
 
+> **状态说明（2026-07-20）**：本文件保留中长期产品路线和历史阶段。当前开发事实、优先级和可执行任务以 `CURRENT_STATE.md` 与 `NEXT_TASK_ROADMAP.md` 为准。播放器暂不进入当前稳定性修复范围。
+
 ## 0. 当前方向
 
 本项目继续作为一个单一 Flet 个人应用推进，不拆成多个独立项目。
@@ -24,12 +26,12 @@ Python + Flet + SQLite + asyncio + LibraryVault
 长期目标可以是一个本地个人媒体库，但当前阶段不跳到完整媒体库开发。当前优先顺序是：
 
 ```text
-1. RC8.7 收官已完成
-2. P1：UI 侧 LibraryVault 单例确认
-3. P2：RC9 下载状态只读诊断
-4. P3：资源库只读扫描 MVP
-5. P4.5：library_items schema 决策
-6. 后续再做 P4 / P5 / P6 / P7
+1. external intake 真实执行硬冻结（已完成）
+2. external intake 固定计划模型与纯扫描收口
+3. 下载核心 416 / Range / `.part` / 取消恢复修复
+4. 数据库 Schema 与资源库一致性
+5. UI、迁移和 backlog 稳定性修复
+6. 统一测试、CI、Windows 验收后再评估播放器
 ```
 
 ---

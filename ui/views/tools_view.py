@@ -68,8 +68,12 @@ class ToolsView(ft.Container):
                     tooltip="扫描 E:\\arsm 顶层，检测文件树规范化需求"),
                 ft.ElevatedButton("整理 dry-run", icon=ft.icons.PREVIEW, on_click=self.external_dry_run,
                     tooltip="预览规范化操作，不实际修改"),
-                ft.ElevatedButton("执行整理", icon=ft.icons.PLAY_ARROW, on_click=self.external_execute,
-                    tooltip="执行文件树规范化 + 更新 DB", bgcolor=WARNING),
+                ft.ElevatedButton(
+                    "执行整理（安全重构中）",
+                    icon=ft.icons.BLOCK,
+                    disabled=True,
+                    tooltip="真实文件移动和数据库写入已冻结；当前仅允许扫描和 DRY-RUN",
+                ),
             ], spacing=12, wrap=True),
 
             ft.Text("\u961f\u5217\u6e05\u7406", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
@@ -725,35 +729,10 @@ class ToolsView(ft.Container):
             self.log(f"  [{a['action']}] {a.get('name', a.get('dir',''))[:60]}", "white")
 
     def external_execute(self, e):
-        import sys; from pathlib import Path as P
-        sys.path.insert(0, str(P(__file__).parent.parent.parent))
-        from tools.external_intake import scan_top_dirs, execute_normalize
-        dirs_info, plan = scan_top_dirs()
+        """Defensive STOP for stale callbacks or programmatic invocation."""
+        from tools.external_intake import EXECUTION_STOP_MESSAGE
 
-        if plan.get("blockers", 0) > 0 or not plan.get("can_execute", False):
-            bl = plan.get("blocker_list", [])
-            self.log(f"STOP: {plan.get('blockers', len(bl))} blockers exist", ERROR)
-            for b in bl[:3]: self.log(f"  {b}", WARNING)
-            self.app_controller.show_snack("\u5b58\u5728\u963b\u585e\u9879，\u65e0\u6cd5\u6267\u884c")
-            return
-
-        n_move = plan.get("needs_rename_top_level", 0) + plan.get("needs_title_layer", 0)
-        n_q = plan.get("quarantine_required", 0)
-
-        def _do():
-            d2, p2 = scan_top_dirs()
-            stats, bkp = execute_normalize(d2)
-            self.log(f"移动 {stats['moved']} | 隔离 {stats['quarantined']} | DB {stats['db_updated']}", SUCCESS)
-            self.log(f"备份: {bkp}")
-
-        self.app_controller.page.dialog = ft.AlertDialog(
-            title=ft.Text(f"整理 {n_move} 目录?"),
-            content=ft.Text(f"移动: {n_move} | 隔离: {n_q} | DB备份 | 可回滚"),
-            actions=[ft.TextButton("Cancel", on_click=lambda e: self._close_dialog()),
-                     ft.TextButton("Execute", on_click=lambda e: [self._close_dialog(), _do()])],
-            actions_alignment=ft.MainAxisAlignment.END,
-        )
-        self.app_controller.page.dialog.open = True
-        self.app_controller.page.update()
+        self.log(EXECUTION_STOP_MESSAGE, ERROR)
+        self.app_controller.show_snack("外部资源真实整理已冻结，仅允许扫描和 DRY-RUN")
 
     # end backlog

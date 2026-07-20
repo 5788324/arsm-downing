@@ -1,74 +1,217 @@
-# EchoVault Premium (ASMR.one 专版下载器)
+# arsm-downing / arsm-suite
 
-![EchoVault Premium UI](https://github.com/user-attachments/assets/placeholder) <!-- 可以后续自己截图替换 -->
+面向个人本地使用的 Windows ASMR/RJ 媒体库桌面工具。
 
-基于 Python 和 Flet 构建的一款现代化、高性能、高颜值的 ASMR.one 专用下载工具。
-彻底抛弃了简陋的命令行与脆弱的历史记录系统，采用全新重构的底层网络架构，专为需要批量下载、管理巨量音声资源的用户打造。
+项目继续保持为一个单体 Flet 应用，在同一程序内整合：
 
-## ✨ 核心特性 / Features
+- ASMR.one 下载器
+- 下载队列与断点续传
+- SQLite 状态与资源库数据层
+- 本地资源库管理
+- 目录迁移与外部资源接入工具
+- 后续本地音频播放器
 
-### 🎨 极致的现代化 UI
-- 基于 **Flet (Flutter for Python)** 构建，丝滑的 60fps 动画交互。
-- 精心调教的暗色系 **毛玻璃拟物风 (Glassmorphism)**，充满未来感与高级感。
-- 任务卡片实时展示详细进度条、下载网速、单轨进度弹窗。
+> 当前接手状态与风险说明请先阅读 [`CURRENT_STATE.md`](CURRENT_STATE.md)。  
+> 当前详细任务路线图见 [`NEXT_TASK_ROADMAP.md`](NEXT_TASK_ROADMAP.md)。
 
-### 🚀 智能网络分流 (极其省流量！)
-- **解决痛点**：由于 ASMR.one 官网被墙，获取元数据必须挂梯子；但其底层的语音存储服务器其实可以在国内直连且速度极快。
-- **独家机制**：本程序内置**智能路由分离**，获取封面、简介、目录时**自动走您的代理（梯子）**，而在真正开始下载动辄几十 GB 的音频正片时，**自动切换为直连高速 CDN**！
-- 彻底帮您省下宝贵的梯子流量！当然，您也可以在设置中开启“下载时也使用代理”。
+## 当前技术栈
 
-### ⚡ 完美的断点续传与队列管理
-- **任务防丢**：无论塞进去几百个 RJ 号，全量记录在 `queue.json` 中，哪怕中途断电关机，下次打开自动复原队列。
-- **断点续传**：底层采用 HTTP `Range` 分块读取技术，精确到字节级别的续传，再也不怕网络抖动导致大文件从头重下。
-- **暂停 / 取消**：随时随地一键暂停/恢复任务，一键清理历史记录。完成的任务会在下次重启时自动清理出队列，保持界面清爽。
+```text
+Python 3.10+
+Flet
+SQLite
+asyncio
+aiohttp / aiofiles
+mutagen
+```
 
-### 🎵 全自动音频打标 (Auto Tagging)
-- 下载完成后，系统会自动利用拉取的元数据（封面、标题、声优 CV、社团等），为您的 `.mp3`, `.flac`, `.ogg` 文件**自动写入音频标签（ID3 Tags）**。
-- 导入任何手机或播放器，都会直接显示精美的专辑封面和作者信息！
+主入口：
 
-### 📦 批量导入与自动防重
-- 支持一键导入充满 RJ 号的 `.txt` 文本，正则引擎会自动精准提取里面所有的 RJ 码。
-- 智能识别资源库中已存在的文件，遇到已经存在的音轨瞬间秒过，不浪费一丝网络和磁盘寿命。
+```bash
+python main.py
+```
 
-## 🛠️ 安装与运行
+## 核心架构约束
 
-### 1. 环境依赖
-请确保您的电脑上已安装 **Python 3.10** 或更高版本。
+```text
+history.db / SQLite = 业务唯一真源
+LibraryVault = 正式数据库访问入口
+queue.json 不作为历史下载进度真源
+资源库 UI 通过 LibraryVault / SQLite 获取数据
+扫描 JSON 和 manifest 只作为报告或缓存，不作为 UI 主数据源
+```
 
-### 2. 获取代码
+## 当前功能
+
+### 下载器
+
+- 单个 RJ 添加
+- 文本批量导入 RJ
+- 元数据缓存
+- 下载队列
+- 暂停、恢复、失败重试
+- HTTP Range 断点续传
+- 下载速度统计
+- metadata / cover / download 三通道代理
+- 音频标签写入
+
+### 资源库
+
+- SQLite `works` / `library_items` / `library_index` 数据模型
+- 作品卡片与封面
+- RJ/标题搜索
+- 条件过滤与分页
+- 资源异常视图
+- 打开本地目录
+- Dashboard 数据统计
+
+### 工具
+
+- 下载状态诊断
+- 资源库扫描与索引重建
+- 迁移 dry-run / execute / verify
+- backlog 预览与重新启用
+- 数据库完整性检查与维护
+- 外部资源接入扫描与计划生成
+
+## 当前重要状态
+
+仓库最新阶段正在收口外部资源接入功能。该功能涉及批量目录整理、隔离和数据库路径更新，目前真实执行入口已进入 **代码级硬冻结**：
+
+- `execute_normalize()` 在任何目录、备份或 SQLite 副作用之前直接拒绝执行。
+- CLI 的 `--execute` 固定返回退出码 `2`。
+- Tools 页“执行整理”按钮已禁用，旧回调也只显示 STOP。
+- 扫描、dry-run 和只读文件列表核验仍可使用；元数据刷新因会写入应用状态，也暂时冻结。
+
+旧命令现在只会得到明确 STOP，不会移动文件或修改数据库：
+
+```bash
+python tools/external_intake.py --execute --confirm-bulk
+```
+
+详细原因见：
+
+```text
+docs/TAKEOVER_AUDIT_20260718.md
+```
+
+只读扫描、临时目录测试和普通下载/资源库代码审查不受影响。
+
+第一轮便携回归测试：
+
+```bash
+python -m unittest discover -s tests -p "test_external_intake_*.py" -v
+```
+
+## 安装
+
+### 1. 获取代码
+
 ```bash
 git clone https://github.com/5788324/arsm-downing.git
 cd arsm-downing
 ```
 
-### 3. 安装所需库
-项目根目录下运行：
+### 2. 创建虚拟环境（推荐）
+
+Windows PowerShell：
+
+```powershell
+py -3.10 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+### 3. 安装依赖
+
 ```bash
 pip install -r requirements.txt
 ```
-*(如果缺失 `requirements.txt`，请确保安装以下核心库: `flet`, `aiohttp`, `aiofiles`, `mutagen`, `colorama`)*
 
-### 4. 启动程序
+### 4. 创建本地配置
+
+复制示例配置：
+
+```powershell
+Copy-Item config.example.json config.json
+```
+
+然后按本机情况配置：
+
+- `output_dir`：主下载/资源库目录
+- `library_paths`：额外只读扫描根目录
+- `metadata_proxy`：元数据请求代理
+- `cover_proxy`：封面请求代理
+- `download_proxy`：音频下载代理，留空时通常直连
+
+`config.json` 属于本机配置，不应提交到 Git。
+
+### 5. 启动
+
 ```bash
 python main.py
 ```
 
-## ⚙️ 设置与使用指南
+## 项目结构
 
-1. **配置代理**：第一次打开后，请前往【设置】页面，填入代理地址。
-   - `metadata_proxy`：获取作品元数据用的代理（如 `http://127.0.0.1:7890`）
-   - `cover_proxy`：下载封面图用的代理
-   - `download_proxy`：下载音频文件用的代理（默认留空=直连）
-   - 也可直接编辑 `config.json`（本地配置，**不提交到 Git**）
-2. **下载路径**：在设置中选择或编辑 `config.json` 的 `output_dir`。
+```text
+main.py                     Flet 应用入口
+core/
+  config.py                 配置
+  database.py               LibraryVault / SQLite 数据层
+  network.py                网络与代理
+  orchestrator.py           下载调度与状态流
+  migration.py              资源迁移
+  status.py                 状态归一化
+ui/
+  app.py                    应用控制器与导航
+  views/                    Dashboard、下载、资源库、工具、设置
+tools/                      backlog、批量核验、external intake 等工具
+scripts/                    回归测试与诊断脚本
+docs/                       规范、功能审查与接手审计
+CURRENT_STATE.md             当前事实基线
+NEXT_TASK_ROADMAP.md         当前详细执行路线图
+PROJECT_ROADMAP.md           历史/总体路线图
+WORKLOG.md                   历史工作日志
+AI_WORKFLOW.md               AI 协作规范（待按当前分工更新）
+```
 
-## 📄 免责声明
-本程序仅作为学习 Python 异步编程及 Flet UI 框架的技术交流产物。请尊重原作者版权，请勿用于任何商业或非法传播用途。
+## 测试现状
 
-## 📝 License
+仓库已有大量 `scripts/test_*.py` 回归脚本，但尚未完成统一 pytest 入口与 GitHub Actions CI。
 
-Based on [takoyune/asmr.one-downloader](https://github.com/takoyune/asmr.one-downloader), MIT License.
+部分脚本依赖用户 Windows 本机路径或真实数据库，不应在未知环境中盲目全量运行。接手阶段将先把默认测试改造成：
 
-Original author: Takoyune. Modified by: 5788324.
+```text
+临时目录
+临时 SQLite
+无真实 E:\arsm 访问
+无真实 history.db 写入
+可在 CI 重复执行
+```
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+## 开发与协作
+
+接手后默认流程：
+
+```text
+chatgpt/* 分支
+-> Draft Pull Request
+-> 代码审查与可执行测试
+-> Windows/Codex 实机验收（仅必要部分）
+-> 合并 main
+```
+
+项目仅供个人使用，不以商业化、公开分发或企业级流程为目标；但涉及真实文件移动、数据库更新和批量删除/隔离的功能，必须保留 dry-run、审计记录和可恢复能力。
+
+## 文档入口
+
+- [`CURRENT_STATE.md`](CURRENT_STATE.md)：当前项目事实、禁止事项与阶段
+- [`NEXT_TASK_ROADMAP.md`](NEXT_TASK_ROADMAP.md)：接手后的详细执行任务
+- [`docs/TAKEOVER_AUDIT_20260718.md`](docs/TAKEOVER_AUDIT_20260718.md)：代码与流程风险审计
+- [`docs/ARSM_LIBRARY_SPEC.md`](docs/ARSM_LIBRARY_SPEC.md)：资源库目录规范
+- [`docs/CURRENT_FUNCTIONS_REVIEW_20260628.md`](docs/CURRENT_FUNCTIONS_REVIEW_20260628.md)：2026-06-28 功能与本机历史快照
+- [`WORKLOG.md`](WORKLOG.md)：历史开发记录
+
+## License
+
+Based on `takoyune/asmr.one-downloader` and licensed under the MIT License. See [`LICENSE`](LICENSE).

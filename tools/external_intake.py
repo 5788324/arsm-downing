@@ -1,7 +1,11 @@
-"""External intake — complete metadata refresh + filelist verify + tree normalize + quarantine.
+"""External intake read-only scanner and verifier.
+
+Real file/database execution is intentionally frozen until the safety refactor is
+complete. The ``--execute`` flag remains parseable only so old commands fail
+closed with a clear non-zero exit code.
+
 Usage:
   python tools/external_intake.py --dry-run [--refresh-metadata] [--verify-filelist]
-  python tools/external_intake.py --execute --confirm-bulk
 """
 import sqlite3, json, os, sys, re, shutil, asyncio, hashlib, argparse
 from pathlib import Path
@@ -14,6 +18,21 @@ except: pass
 E_ROOT = Path(r"E:\arsm")
 QUARANTINE_BASE = Path(r"E:\arsm_quarantine_external")
 RJ_RE = re.compile(r'(?:RJ)?(\d{6,8})', re.IGNORECASE)
+
+EXTERNAL_INTAKE_EXECUTION_ENABLED = False
+EXECUTION_STOP_MESSAGE = (
+    "STOP: external intake mutations are frozen. "
+    "Only scan, dry-run, and read-only file-list verification are allowed."
+)
+
+
+class ExternalIntakeExecutionDisabled(RuntimeError):
+    """Raised before any file or database side effect can occur."""
+
+
+def _require_execution_enabled() -> None:
+    if not EXTERNAL_INTAKE_EXECUTION_ENABLED:
+        raise ExternalIntakeExecutionDisabled(EXECUTION_STOP_MESSAGE)
 
 def norm_rj(name: str) -> str:
     m = RJ_RE.search(name)
@@ -31,9 +50,26 @@ def scan_top_dirs():
     dirs_info = []
     rj_seen = {}
     plan = defaultdict(int)
-    plan["blockers"] = []
+    for key in (
+        "scanned_top_dirs",
+        "unique_rj",
+        "already_normalized",
+        "needs_rename_top_level",
+        "needs_title_layer",
+        "quarantine_required",
+        "duplicate_rj",
+        "no_rj_match",
+    ):
+        plan[key] = 0
+    plan["root"] = str(E_ROOT)
+    plan["root_exists"] = E_ROOT.exists()
 
     if not E_ROOT.exists():
+        plan["blockers"] = 0
+        plan["blocker_list"] = []
+        plan["would_be_executable_without_freeze"] = False
+        plan["execution_frozen"] = not EXTERNAL_INTAKE_EXECUTION_ENABLED
+        plan["can_execute"] = False
         return dirs_info, dict(plan)
 
     for d in sorted(E_ROOT.iterdir()):
@@ -62,7 +98,11 @@ def scan_top_dirs():
     blockers = compute_blockers(dirs_info)
     plan["blockers"] = len(blockers)
     plan["blocker_list"] = blockers[:20]
-    plan["can_execute"] = len(blockers) == 0
+    plan["would_be_executable_without_freeze"] = len(blockers) == 0
+    plan["execution_frozen"] = not EXTERNAL_INTAKE_EXECUTION_ENABLED
+    plan["can_execute"] = (
+        EXTERNAL_INTAKE_EXECUTION_ENABLED and len(blockers) == 0
+    )
     return dirs_info, dict(plan)
 
 
@@ -124,7 +164,9 @@ def _classify_dir(d: Path, rj_id: str) -> dict:
 # METADATA REFRESH
 # ══════════════════════════════════════════════
 async def refresh_metadata(rj_ids: list, config) -> dict:
-    """Refresh metadata_cache for given RJs. Returns report."""
+    """Legacy metadata refresh, frozen because it writes application state."""
+    _require_execution_enabled()
+
     report = {"refreshed": 0, "failed": 0, "failed_rjs": [], "total": len(rj_ids)}
     from core.database import LibraryVault
     from core.network import NetworkKernel
@@ -234,6 +276,14 @@ def _extract_track_names(tracks) -> list:
 # EXECUTE
 # ══════════════════════════════════════════════
 def execute_normalize(dirs_info: list, db_path="history.db"):
+    """Legacy mutating implementation, fail-closed until the refactor lands.
+
+    The guard must remain the first executable statement. It deliberately runs
+    before backup directory creation, quarantine directory creation, SQLite
+    connection, or any filesystem mutation.
+    """
+    _require_execution_enabled()
+
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_dir = Path(".local_backups") / f"external_intake_{ts}"
     os.makedirs(backup_dir, exist_ok=True)
@@ -329,7 +379,9 @@ def main():
     p.add_argument("--refresh-metadata", action="store_true")
     p.add_argument("--verify-filelist", action="store_true")
     args = p.parse_args()
-    if args.execute: args.dry_run = False
+    if args.execute or args.refresh_metadata:
+        print(EXECUTION_STOP_MESSAGE, file=sys.stderr)
+        return 2
 
     dirs_info, plan = scan_top_dirs()
     print(f"Scanned: {plan['scanned_top_dirs']} dirs, {plan['unique_rj']} unique RJ")
@@ -343,16 +395,13 @@ def main():
     if blockers:
         for b in blockers[:5]: print(f"    - {b}")
 
-    if args.refresh_metadata:
-        rj_ids = [info["rj_id"] for info in dirs_info if info["rj_id"] and info["action"] != "quarantine"]
-        print(f"\nRefreshing metadata for {len(rj_ids)} RJs...")
-        from core.config import ConfigManager
-        cfg = ConfigManager.load()
-        report = asyncio.run(refresh_metadata(rj_ids, cfg))
-        print(f"  refreshed: {report['refreshed']}, failed: {report['failed']}")
-
     if args.verify_filelist:
-        conn = sqlite3.connect("history.db"); conn.row_factory = sqlite3.Row
+        db_path = Path("history.db")
+        if not db_path.exists():
+            print("\nBLOCKED: history.db does not exist; read-only verification cannot run.", file=sys.stderr)
+            return 2
+        conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
         mismatch = []
         for info in dirs_info:
             if info["action"] in ("quarantine",) or not info["rj_id"]: continue
@@ -366,21 +415,6 @@ def main():
         for m in mismatch[:10]:
             print(f"  {m['rj_id']}: {m['verdict']} (missing_audio={len(m['missing_audio'])})")
 
-    if args.execute and args.confirm_bulk and plan.get("can_execute"):
-        print("\nEXECUTING...")
-        stats, bkp = execute_normalize(dirs_info)
-        for k, v in stats.items(): print(f"  {k}: {v}")
-        print(f"  backup: {bkp}")
-        # Verify integrity
-        conn = sqlite3.connect("history.db")
-        print(f"  integrity: {conn.execute('PRAGMA integrity_check').fetchone()[0]}")
-        conn.close()
-    elif args.execute:
-        if not args.confirm_bulk:
-            print("\nBLOCKED: --confirm-bulk is required for actual organize.")
-        else:
-            print(f"\nBLOCKED: {plan.get('blockers', 0)} blockers exist. Resolve blockers before execute.")
-
     # Report
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     rpt = Path(".local_backups") / f"external_intake_{ts}"
@@ -393,4 +427,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

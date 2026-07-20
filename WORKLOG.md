@@ -2015,13 +2015,67 @@ test_bulk_guardrails.py:  16/18 passed (2 failures: active downloads present aft
 ```text
 Codex re-review UI fixes. If passed, enter P7 media player MVP.
 ```
+
+---
+
+## 25. 2026-07-20 ChatGPT 接手第一轮：external intake 硬冻结
+
+### 范围
+
+```text
+TAKEOVER-T0：事实校准、高风险入口冻结、便携测试基线和协作文档同步
 ```
+
+### 完成内容
+
+1. `execute_normalize()` 在任何备份目录、隔离目录、SQLite 连接或文件移动之前直接抛出 `ExternalIntakeExecutionDisabled`。
+2. CLI `--execute` 与会写入状态的 `--refresh-metadata` 均固定输出 STOP 并以退出码 2 结束。
+3. Tools 页“执行整理”按钮改为禁用状态；防御性旧回调不再导入或调用执行函数。
+4. 扫描计划增加固定零值、`root_exists`、`execution_frozen` 和 `would_be_executable_without_freeze`，缺少 `E:\arsm` 时 dry-run 不再崩溃。
+5. 原 `scripts/test_external_intake.py` 改为便携测试入口，不再扫描真实 `E:\arsm`。
+6. 新增临时目录、临时 SQLite、CLI、只读数据库和 UI 源码守卫测试。
+7. 更新 README、CURRENT_STATE、NEXT_TASK_ROADMAP、PROJECT_ROADMAP、AI_WORKFLOW 和审计状态。
+
+### 修改文件
+
+```text
+tools/external_intake.py
+ui/views/tools_view.py
+scripts/test_external_intake.py
+tests/__init__.py
+tests/test_external_intake_freeze.py
+tests/test_external_intake_scan.py
+README.md
+CURRENT_STATE.md
+NEXT_TASK_ROADMAP.md
+PROJECT_ROADMAP.md
+AI_WORKFLOW.md
+docs/TAKEOVER_AUDIT_20260718.md
+docs/FULL_FUNCTION_AUDIT_20260720.md
+WORKLOG.md
 ```
+
+### 数据和文件影响
+
+```text
+真实 history.db：未连接、未修改
+真实 E:\arsm：未读取、未移动、未隔离、未删除
+下载核心：未修改
+现有业务数据：无变化
 ```
+
+### 测试
+
+```text
+python -m py_compile tools/external_intake.py ui/views/tools_view.py tests/test_external_intake_freeze.py tests/test_external_intake_scan.py scripts/test_external_intake.py
+python -m unittest discover -s tests -p "test_external_intake_*.py" -v
+python scripts/test_external_intake.py
+
+结果：12/12 passed（unittest discovery 与兼容脚本入口均通过）
 ```
-```
-```
-```
-```
-```
+
+### 下一步
+
+```text
+进入 TAKEOVER-T1：定义固定 ExternalIntakePlan、消除硬编码路径、完善目标冲突和完整报告；继续保持所有真实执行入口冻结。
 ```
