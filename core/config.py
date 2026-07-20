@@ -20,6 +20,8 @@ class ConfigManager:
         # ── Paths ──
         self.output_dir = Path("Downloads")
         self.library_paths: list = []  # P3.3: extra library scan paths
+        self.external_intake_root: Optional[str] = None
+        self.external_quarantine_root: Optional[str] = None
         self.max_concurrent = 3   # legacy, maps to file_concurrency
 
         # ── Download concurrency (P2) ──
@@ -88,6 +90,8 @@ class ConfigManager:
                 config.output_dir = Path(
                     data.get('output_dir', 'Downloads'))
                 config.library_paths = data.get('library_paths', [])
+                config.external_intake_root = data.get('external_intake_root')
+                config.external_quarantine_root = data.get('external_quarantine_root')
                 config.max_concurrent = int(
                     data.get('max_concurrent', 3))
                 config.work_concurrency = int(
@@ -140,6 +144,8 @@ class ConfigManager:
         data = {
             "output_dir": str(self.output_dir),
             "library_paths": self.library_paths,
+            "external_intake_root": self.external_intake_root,
+            "external_quarantine_root": self.external_quarantine_root,
             "max_concurrent": self.max_concurrent,
             "work_concurrency": self.work_concurrency,
             "file_concurrency": self.file_concurrency,

@@ -77,17 +77,18 @@ main 仅接收审查通过的 PR
 
 ### 4.2 最近代码阶段
 
-最新代码集中在 `tools/external_intake.py` 与 ToolsView 的外部资源接入功能，包括：
+`TAKEOVER-T1` 已完成 external intake 的只读计划收口：
 
-- 扫描 `E:\arsm` 顶层目录
-- RJ 编号归一化
-- Title 层整理
-- 非法/重复/空目录隔离计划
-- 元数据刷新
-- 文件列表核验
-- 批量执行阻塞条件
+- 固定 `ExternalIntakePlan` schema 与六类目录分类
+- 扫描根目录、隔离目录改为配置项
+- 重复 RJ 全部标记 `duplicate_review`
+- 目标路径冲突、危险根目录、符号链接升级为 fatal
+- 完整 JSON/文本报告保存全部 actions
+- Tools 页改为 READ-ONLY 卡片，并通过 `asyncio.to_thread` 后台扫描
+- 设置页可配置两个外部接入路径
+- 旧文件移动和业务数据库写入实现已从模块删除
 
-该功能目前进入 **代码级硬冻结 / 禁止真实执行** 状态：核心函数、元数据刷新、CLI 和 UI 均已 fail-closed。旧的可变更实现仍保留在函数守卫之后，等待下一阶段安全重构；当前无法从正常入口触发。详细原因见 `docs/TAKEOVER_AUDIT_20260718.md`。
+真实执行、元数据刷新和业务数据库写入继续保持冻结。当前模块只允许扫描、计划、报告和只读文件列表核验。
 
 ## 5. 最近一次已记录的本机状态
 
@@ -110,13 +111,12 @@ PRAGMA integrity_check = ok
 
 ### P0 / 必须先修
 
-1. 外部接入工具直接使用 `sqlite3.connect()` 写业务表，绕过 `LibraryVault`。
-2. 文件移动与数据库更新不是原子操作，失败后可能形成文件与 DB 不一致。
-3. 重复 RJ 目录若进入隔离执行路径，会按 RJ 号删除正常主记录的数据库行。
-4. 当前阻塞模型把所有需要隔离的目录都定义成全局 blocker，导致受保护入口无法实际执行隔离功能。
-5. 目标目录冲突、空标题净化、同名文件覆盖等情况缺少完整预检。
-6. 外部接入旧测试曾依赖真实 `E:\arsm`；第一轮已替换为临时目录便携测试，但完整执行/回滚测试仍待安全重构后补齐。
-7. 旧的执行实现尚未完成数据库失败、文件移动失败和回滚闭环，因此继续保持硬冻结。
+1. external intake 尚无通过 `LibraryVault` 的事务化执行服务；真实执行继续冻结。
+2. 文件移动、数据库更新、失败恢复和逐作品状态记录尚未实现新的闭环。
+3. 计划阶段尚未从数据库只读获取可靠 metadata title，纯 RJ 根目录的 Title 目标仍可能需要人工复核。
+4. 下载核心仍存在 HTTP 416、`.part` 进度、取消/恢复和响应清理问题。
+5. 数据库全新 Schema、递归验证、迁移同步和旧索引清理仍未完成。
+6. Windows/Flet/真实目录只读验收尚未执行。
 
 ### P1 / 接手后尽快修
 
@@ -150,19 +150,23 @@ Tools -> External Intake -> Execute
 ## 8. 当前阶段
 
 ```text
-TAKEOVER-T0：已完成——事实校准、核心/元数据刷新/CLI/UI 硬冻结、12 项便携回归测试
-TAKEOVER-T1：下一步——external intake 固定计划模型与纯扫描收口
-TAKEOVER-T2：数据库服务与可恢复执行重构
+TAKEOVER-T0：已完成——事实校准、核心/CLI/UI 硬冻结
+TAKEOVER-T1：已完成——固定计划模型、路径配置、冲突分类、完整报告和后台 UI 扫描
+TAKEOVER-T2：下一步——数据库只读/写入服务与可恢复执行重构
 TAKEOVER-T3：统一测试入口与 CI
 TAKEOVER-T4：Windows 本机只读 dry-run 验收
 TAKEOVER-T5：小批量执行与回滚验收
 ```
 
-## 8.1 第一轮验证结果
+## 8.1 当前验证结果
 
 ```text
-python -m unittest discover -s tests -p "test_external_intake_*.py" -v
-结果：12/12 passed
+python -W error::ResourceWarning -m unittest discover -s tests -p "test_external_intake_*.py" -v
+结果：20/20 passed
+完整报告 60 actions 不截断：通过
+重复 RJ 全候选复核：通过
+目标冲突与危险路径：通过
+配置保存/读取：通过
 真实 history.db：未连接
 真实 E:\arsm：未读取或修改
 真实文件移动/删除：无

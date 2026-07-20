@@ -76,12 +76,14 @@ queue.json 不作为历史下载进度真源
 
 ## 当前重要状态
 
-仓库最新阶段正在收口外部资源接入功能。该功能涉及批量目录整理、隔离和数据库路径更新，目前真实执行入口已进入 **代码级硬冻结**：
+仓库最新阶段正在收口外部资源接入功能。该功能涉及批量目录整理、隔离和数据库路径更新，目前真实执行入口保持 **代码级硬冻结**：
 
-- `execute_normalize()` 在任何目录、备份或 SQLite 副作用之前直接拒绝执行。
-- CLI 的 `--execute` 固定返回退出码 `2`。
-- Tools 页“执行整理”按钮已禁用，旧回调也只显示 STOP。
-- 扫描、dry-run 和只读文件列表核验仍可使用；元数据刷新因会写入应用状态，也暂时冻结。
+- 旧的文件移动、隔离和业务 SQLite 写入实现已从 `tools/external_intake.py` 删除。
+- `execute_normalize()`、元数据刷新和 CLI `--execute` 均在副作用前固定 STOP。
+- Tools 页以明确的 `READ-ONLY` 卡片展示，扫描在后台线程执行，真实执行按钮禁用。
+- 只读计划使用固定 `ExternalIntakePlan` schema，完整报告不会截断 actions。
+- 重复 RJ 的全部候选进入人工复核；不再自动选择主目录或删除主记录。
+- 扫描根目录、隔离目录由配置提供，不再硬编码 `E:\arsm`。
 
 旧命令现在只会得到明确 STOP，不会移动文件或修改数据库：
 
@@ -97,11 +99,13 @@ docs/TAKEOVER_AUDIT_20260718.md
 
 只读扫描、临时目录测试和普通下载/资源库代码审查不受影响。
 
-第一轮便携回归测试：
+当前 external-intake 便携回归测试：
 
 ```bash
 python -m unittest discover -s tests -p "test_external_intake_*.py" -v
 ```
+
+当前结果：`20/20 passed`。默认测试仅使用临时目录和临时 SQLite。
 
 ## 安装
 
@@ -139,11 +143,23 @@ Copy-Item config.example.json config.json
 
 - `output_dir`：主下载/资源库目录
 - `library_paths`：额外只读扫描根目录
+- `external_intake_root`：外部资源只读计划的扫描目录
+- `external_quarantine_root`：未来隔离目标目录，必须位于扫描目录之外
 - `metadata_proxy`：元数据请求代理
 - `cover_proxy`：封面请求代理
 - `download_proxy`：音频下载代理，留空时通常直连
 
 `config.json` 属于本机配置，不应提交到 Git。
+
+只读计划也可以从命令行生成：
+
+```powershell
+python tools/external_intake.py `
+  --root "E:\arsm" `
+  --quarantine-root "E:\arsm_quarantine_external"
+```
+
+该命令只扫描并生成 `.local_backups/external_intake_*` 报告；不会移动文件或修改数据库。
 
 ### 5. 启动
 

@@ -2,14 +2,12 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import os
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 from tools import external_intake as ext
 
@@ -27,42 +25,27 @@ class ExternalIntakeFreezeTests(unittest.TestCase):
             marker.write_bytes(b"audio")
 
             db_path = root / "history.db"
-            conn = sqlite3.connect(db_path)
+            connection = sqlite3.connect(db_path)
             try:
-                conn.execute("CREATE TABLE sentinel (value TEXT NOT NULL)")
-                conn.execute("INSERT INTO sentinel VALUES ('unchanged')")
-                conn.commit()
+                connection.execute("CREATE TABLE sentinel (value TEXT NOT NULL)")
+                connection.execute("INSERT INTO sentinel VALUES ('unchanged')")
+                connection.commit()
             finally:
-                conn.close()
+                connection.close()
 
-            quarantine = root / "quarantine"
-            backup_parent = root / ".local_backups"
-            action = {
-                "dir": str(source),
-                "rj_id": "RJ01000001",
-                "action": "quarantine",
-            }
+            with self.assertRaises(ext.ExternalIntakeExecutionDisabled):
+                ext.execute_normalize(
+                    [{"source": str(source), "rj_id": "RJ01000001"}], db_path
+                )
 
-            with mock.patch.object(ext, "E_ROOT", root / "library"), mock.patch.object(
-                ext, "QUARANTINE_BASE", quarantine
-            ), mock.patch.object(ext.Path, "cwd", return_value=root):
-                old_cwd = Path.cwd()
-                os.chdir(root)
-                try:
-                    with self.assertRaises(ext.ExternalIntakeExecutionDisabled):
-                        ext.execute_normalize([action], str(db_path))
-                finally:
-                    os.chdir(old_cwd)
-
-            self.assertTrue(marker.exists(), "source content must remain untouched")
-            self.assertFalse(quarantine.exists(), "quarantine directory must not be created")
-            self.assertFalse(backup_parent.exists(), "backup directory must not be created")
-            conn = sqlite3.connect(db_path)
+            self.assertTrue(marker.exists())
+            connection = sqlite3.connect(db_path)
             try:
-                value = conn.execute("SELECT value FROM sentinel").fetchone()[0]
+                value = connection.execute("SELECT value FROM sentinel").fetchone()[0]
             finally:
-                conn.close()
+                connection.close()
             self.assertEqual(value, "unchanged")
+            self.assertFalse((root / ".local_backups").exists())
 
     def test_execute_cli_fails_closed_with_nonzero_exit(self) -> None:
         script = REPO_ROOT / "tools" / "external_intake.py"
@@ -78,7 +61,6 @@ class ExternalIntakeFreezeTests(unittest.TestCase):
             self.assertIn("STOP: external intake mutations are frozen", result.stderr)
             self.assertFalse((Path(tmp) / ".local_backups").exists())
             self.assertFalse((Path(tmp) / "history.db").exists())
-
 
     def test_metadata_refresh_is_frozen_before_service_construction(self) -> None:
         with self.assertRaises(ext.ExternalIntakeExecutionDisabled):
@@ -101,47 +83,61 @@ class ExternalIntakeFreezeTests(unittest.TestCase):
     def test_verify_cli_does_not_create_missing_database(self) -> None:
         script = REPO_ROOT / "tools" / "external_intake.py"
         with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "intake"
+            root.mkdir()
             result = subprocess.run(
-                [sys.executable, str(script), "--verify-filelist"],
+                [
+                    sys.executable,
+                    str(script),
+                    "--root",
+                    str(root),
+                    "--verify-filelist",
+                    "--db-path",
+                    str(Path(tmp) / "history.db"),
+                ],
                 cwd=tmp,
                 text=True,
                 capture_output=True,
                 check=False,
             )
             self.assertEqual(result.returncode, 2)
-            self.assertIn("history.db does not exist", result.stderr)
+            self.assertIn("does not exist", result.stderr)
+            self.assertIn("Report:", result.stdout)
+            self.assertTrue((Path(tmp) / ".local_backups").exists())
             self.assertFalse((Path(tmp) / "history.db").exists())
 
-    def test_dry_run_cli_is_portable_when_library_root_is_missing(self) -> None:
+    def test_missing_library_root_returns_stable_nonzero_plan(self) -> None:
         script = REPO_ROOT / "tools" / "external_intake.py"
         with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "not-created"
             result = subprocess.run(
-                [sys.executable, str(script), "--dry-run"],
+                [sys.executable, str(script), "--root", str(missing)],
                 cwd=tmp,
                 text=True,
                 capture_output=True,
                 check=False,
             )
-            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.returncode, 2)
             self.assertIn("Scanned: 0 dirs, 0 unique RJ", result.stdout)
+            self.assertIn("fatal_blockers: 1", result.stdout)
             self.assertIn("Report:", result.stdout)
 
     def test_scan_is_portable_and_reports_execution_frozen(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            root = Path(tmp) / "intake"
+            quarantine = Path(tmp) / "quarantine"
             normalized = root / "RJ01000002"
             (normalized / "Title").mkdir(parents=True)
 
-            with mock.patch.object(ext, "E_ROOT", root):
-                dirs_info, plan = ext.scan_top_dirs()
+            plan = ext.build_external_intake_plan(root, quarantine).to_dict()
 
-            self.assertEqual(len(dirs_info), 1)
-            self.assertEqual(plan["already_normalized"], 1)
-            self.assertTrue(plan["would_be_executable_without_freeze"])
+            self.assertEqual(len(plan["actions"]), 1)
+            self.assertEqual(plan["counts"]["already_normalized"], 1)
+            self.assertTrue(plan["ready_without_freeze"])
             self.assertTrue(plan["execution_frozen"])
             self.assertFalse(plan["can_execute"])
 
-    def test_ui_has_no_live_execute_callback(self) -> None:
+    def test_ui_has_no_live_execute_callback_or_hardcoded_e_drive(self) -> None:
         source_path = REPO_ROOT / "ui" / "views" / "tools_view.py"
         source = source_path.read_text(encoding="utf-8")
         tree = ast.parse(source)
@@ -155,10 +151,25 @@ class ExternalIntakeFreezeTests(unittest.TestCase):
         method_source = ast.get_source_segment(source, method) or ""
 
         self.assertIn("disabled=True", source)
-        self.assertIn("执行整理（安全重构中）", source)
+        self.assertIn("真实执行已冻结", source)
+        self.assertIn("asyncio.to_thread", source)
+        self.assertNotIn(r"E:\\arsm", source)
         self.assertNotIn("execute_normalize", method_source)
         self.assertNotIn("shutil", method_source)
         self.assertNotIn("sqlite3", method_source)
+
+    def test_legacy_mutating_body_was_removed(self) -> None:
+        source = (REPO_ROOT / "tools" / "external_intake.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        method = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "execute_normalize"
+        )
+        method_source = ast.get_source_segment(source, method) or ""
+        self.assertNotIn("shutil.move", method_source)
+        self.assertNotIn("UPDATE works", method_source)
+        self.assertNotIn("DELETE FROM", method_source)
 
 
 if __name__ == "__main__":

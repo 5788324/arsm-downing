@@ -20,6 +20,17 @@ class ToolsView(ft.Container):
         self._backlog_source_val = "ignored"
         self._backlog_batch_val = "30"
         self.backlog_preview_text = ft.Text("", size=12, font_family="Consolas")
+
+        # External intake is intentionally read-only until the transactional
+        # execution service is implemented and accepted.
+        self.external_status = ft.Text(
+            "只读计划模式：请先在 config.json 设置 external_intake_root",
+            size=12,
+            color=WARNING,
+        )
+        self.external_report_text = ft.Text("", size=11, color="grey")
+        self.external_scan_running = False
+
         self.backlog_source = ft.Dropdown(
             width=120, value="ignored",
             options=[ft.dropdown.Option("ignored"), ft.dropdown.Option("stale"), ft.dropdown.Option("all")])
@@ -61,20 +72,42 @@ class ToolsView(ft.Container):
             ], spacing=12, wrap=True),
             ft.Row([self.keep_source_checkbox, self.delete_source_checkbox], spacing=12, wrap=True),
 
-            # ── 外部资源导入 ──
-            ft.Text("外部资源整理", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
-            ft.Row([
-                ft.ElevatedButton("扫描外部资源", icon=ft.icons.FOLDER_SPECIAL, on_click=self.external_scan,
-                    tooltip="扫描 E:\\arsm 顶层，检测文件树规范化需求"),
-                ft.ElevatedButton("整理 dry-run", icon=ft.icons.PREVIEW, on_click=self.external_dry_run,
-                    tooltip="预览规范化操作，不实际修改"),
-                ft.ElevatedButton(
-                    "执行整理（安全重构中）",
-                    icon=ft.icons.BLOCK,
-                    disabled=True,
-                    tooltip="真实文件移动和数据库写入已冻结；当前仅允许扫描和 DRY-RUN",
-                ),
-            ], spacing=12, wrap=True),
+            # ── 外部资源导入（只读计划） ──
+            ft.Container(
+                content=ft.Column([
+                    ft.Row([
+                        ft.Icon(ft.icons.SECURITY, color=WARNING),
+                        ft.Text("外部资源整理", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
+                        ft.Container(expand=True),
+                        ft.Text("READ-ONLY", size=11, color=WARNING, weight=ft.FontWeight.BOLD),
+                    ]),
+                    self.external_status,
+                    ft.Row([
+                        ft.ElevatedButton(
+                            "扫描计划",
+                            icon=ft.icons.FOLDER_SPECIAL,
+                            on_click=self.external_scan,
+                            tooltip="读取配置路径并分类，不移动文件、不修改数据库",
+                        ),
+                        ft.ElevatedButton(
+                            "生成完整 DRY-RUN 报告",
+                            icon=ft.icons.DESCRIPTION,
+                            on_click=self.external_dry_run,
+                            tooltip="后台扫描并保存完整 JSON/文本报告，actions 不截断",
+                        ),
+                        ft.ElevatedButton(
+                            "真实执行已冻结",
+                            icon=ft.icons.BLOCK,
+                            disabled=True,
+                            tooltip="等待事务、回滚和沙盒验收完成后才会重新开放",
+                        ),
+                    ], spacing=12, wrap=True),
+                    self.external_report_text,
+                ], spacing=8),
+                padding=12,
+                border=ft.border.all(1, "#3b3b4f"),
+                border_radius=10,
+            ),
 
             ft.Text("\u961f\u5217\u6e05\u7406", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
             ft.Row([
@@ -706,30 +739,122 @@ class ToolsView(ft.Container):
         self.app_controller.page.dialog.open = False
         self.app_controller.page.update()
 
-    # ── External intake ──
+    # ── External intake (read-only planner) ──
+    def _external_paths(self):
+        config = self.app_controller.config
+        return (
+            getattr(config, "external_intake_root", None),
+            getattr(config, "external_quarantine_root", None),
+        )
+
+    def _set_external_busy(self, message: str) -> None:
+        self.external_status.value = message
+        self.external_status.color = ACCENT_PRIMARY
+        self.external_status.update()
+
+    def _render_external_plan(self, plan: dict, report_dir=None) -> None:
+        counts = plan["counts"]
+        fatal_count = len(plan["fatal_blockers"])
+        review_count = len(plan["review_required"])
+        quarantine_count = len(plan["quarantine_actions"])
+
+        if fatal_count:
+            status = f"不可执行：{fatal_count} 个致命问题"
+            status_color = ERROR
+        elif review_count:
+            status = f"需要人工复核：{review_count} 项"
+            status_color = WARNING
+        else:
+            status = "只读计划完成；真实执行仍保持冻结"
+            status_color = SUCCESS
+
+        self.external_status.value = status
+        self.external_status.color = status_color
+        self.external_status.update()
+
+        root_label = plan["root"] or "未配置"
+        self.log(f"> 外部资源只读扫描: {root_label}", ACCENT_PRIMARY)
+        self.log(
+            f"  目录={plan['scanned_top_dirs']} | RJ={plan['unique_rj']} | "
+            f"fatal={fatal_count} | 复核={review_count} | 隔离候选={quarantine_count}",
+            ERROR if fatal_count else WARNING if review_count else SUCCESS,
+        )
+        self.log(
+            "  已规范={already} | 需加Title层={layer} | 需改顶层名={rename} | 重复RJ={duplicate}".format(
+                already=counts["already_normalized"],
+                layer=counts["needs_title_layer"],
+                rename=counts["needs_rename_top_level"],
+                duplicate=counts["duplicate_review"],
+            ),
+            "white",
+        )
+
+        for notice in plan["fatal_blockers"][:5]:
+            self.log(f"  [FATAL] {notice['message']}", ERROR)
+        for notice in plan["review_required"][:5]:
+            self.log(f"  [REVIEW] {notice['message']}", WARNING)
+        for warning in plan["warnings"][:3]:
+            self.log(f"  [WARN] {warning['message']}", WARNING)
+
+        for action in plan["actions"][:15]:
+            source_name = action["source_name"] or action["source"]
+            self.log(
+                f"  [{action['classification']}] {source_name[:72]} — {action['reason']}",
+                "white",
+            )
+        if len(plan["actions"]) > 15:
+            self.log(f"  …另有 {len(plan['actions']) - 15} 项，完整内容见报告", "grey")
+
+        if report_dir is not None:
+            self.external_report_text.value = f"完整报告：{report_dir}"
+            self.external_report_text.update()
+            self.log(f"  完整报告: {report_dir}", SUCCESS)
+        else:
+            self.external_report_text.value = "扫描预览只显示前 15 项；使用“生成完整 DRY-RUN 报告”保存全部 actions。"
+            self.external_report_text.update()
+
+    async def _run_external_plan(self, write_report: bool) -> None:
+        from tools.external_intake import scan_structure, write_plan_report
+
+        if self.external_scan_running:
+            self.app_controller.show_snack("外部资源扫描正在进行，请勿重复启动")
+            return
+
+        self.external_scan_running = True
+        root, quarantine_root = self._external_paths()
+        self._set_external_busy("正在后台扫描，只读操作不会修改文件或数据库…")
+        try:
+            plan = await asyncio.to_thread(scan_structure, root, quarantine_root)
+            report_dir = None
+            if write_report:
+                report_dir = await asyncio.to_thread(write_plan_report, plan)
+            self._render_external_plan(plan, report_dir)
+        except Exception as exc:
+            self.external_status.value = "扫描失败；未执行任何文件或数据库修改"
+            self.external_status.color = ERROR
+            self.external_status.update()
+            self.log(f"  [ERROR] 外部资源扫描失败: {exc}", ERROR)
+            self.app_controller.show_snack("外部资源扫描失败，详情见操作日志")
+        finally:
+            self.external_scan_running = False
+
+    async def _external_scan_async(self) -> None:
+        await self._run_external_plan(write_report=False)
+
+    async def _external_dry_run_async(self) -> None:
+        await self._run_external_plan(write_report=True)
+
     def external_scan(self, e):
-        import sys
-        from pathlib import Path as P
-        sys.path.insert(0, str(P(__file__).parent.parent.parent))
-        from tools.external_intake import scan_structure
-        plan = scan_structure()
-        self.log(f"扫描 {plan['scanned_top_dirs']} 目录, {plan['unique_rj']} 唯一RJ", ACCENT_PRIMARY)
-        self.log(f"  已规范: {plan['already_normalized']} | 需改名: {plan['needs_rename_top_level']} | 需加Title层: {plan['needs_title_layer']}", SUCCESS)
-        if plan['duplicate_rj']: self.log(f"  重复: {plan['duplicate_rj']}", WARNING)
-        if plan['quarantine_required']: self.log(f"  需隔离: {plan['quarantine_required']}", ERROR)
+        del e
+        self.app_controller.page.run_task(self._external_scan_async)
 
     def external_dry_run(self, e):
-        import sys
-        from pathlib import Path as P
-        sys.path.insert(0, str(P(__file__).parent.parent.parent))
-        from tools.external_intake import scan_structure
-        plan = scan_structure()
-        self.log(f"DRY-RUN: 将规范 {plan['needs_rename_top_level']} 个目录 + {plan['needs_title_layer']} 个加层 + {plan['quarantine_required']} 个隔离", ACCENT_PRIMARY)
-        for a in plan["actions"][:15]:
-            self.log(f"  [{a['action']}] {a.get('name', a.get('dir',''))[:60]}", "white")
+        del e
+        self.app_controller.page.run_task(self._external_dry_run_async)
 
     def external_execute(self, e):
         """Defensive STOP for stale callbacks or programmatic invocation."""
+        del e
         from tools.external_intake import EXECUTION_STOP_MESSAGE
 
         self.log(EXECUTION_STOP_MESSAGE, ERROR)

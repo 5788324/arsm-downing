@@ -1,5 +1,8 @@
 {
     "output_dir": "Downloads",
+    "library_paths": [],
+    "external_intake_root": null,
+    "external_quarantine_root": null,
     "max_concurrent": 3,
     "metadata_proxy": null,
     "download_proxy": null,

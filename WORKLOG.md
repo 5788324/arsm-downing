@@ -2071,11 +2071,95 @@ python -m py_compile tools/external_intake.py ui/views/tools_view.py tests/test_
 python -m unittest discover -s tests -p "test_external_intake_*.py" -v
 python scripts/test_external_intake.py
 
-结果：12/12 passed（unittest discovery 与兼容脚本入口均通过）
+结果：12/12 passed（两个入口均通过）
 ```
 
 ### 下一步
 
 ```text
 进入 TAKEOVER-T1：定义固定 ExternalIntakePlan、消除硬编码路径、完善目标冲突和完整报告；继续保持所有真实执行入口冻结。
+```
+
+---
+
+## 26. 2026-07-20 ChatGPT 接手第二轮：ExternalIntakePlan 与只读 UI 收口
+
+### 范围
+
+```text
+TAKEOVER-T1：固定计划模型、路径安全、目标冲突、完整报告、配置与只读 UI
+```
+
+### 完成内容
+
+1. 使用 dataclass 定义固定 `ExternalIntakePlan`、`ExternalIntakeAction` 和结构化 notice。
+2. 建立六类目录分类：已规范、需 Title 层、需改顶层名、隔离候选、重复复核、fatal。
+3. 重复 RJ 的全部目录均进入复核，不再按排序擅自选择主记录。
+4. 增加绝对路径、文件系统根目录、扫描/隔离目录包含关系、符号链接、目标逃逸和已存在目标冲突检查。
+5. 删除 external intake 中旧的 `shutil.move`、业务表 UPDATE/DELETE 和备份/隔离执行体；兼容入口继续硬 STOP。
+6. CLI/Tools/Settings 不再硬编码 `E:\arsm`；新增 `external_intake_root` 与 `external_quarantine_root` 配置。
+7. Tools 页改为 READ-ONLY 卡片，扫描通过 `asyncio.to_thread` 运行，主 UI 只渲染结果。
+8. JSON 报告保存全部 actions；UI 仅显示摘要和前 15 项。
+9. 只读 SQLite 核验使用 `mode=ro` 并显式关闭连接。
+10. 修正 Windows 保留文件名、尾随点/空格和 metadata track 递归提取。
+11. 顶层或嵌套符号链接直接判为 fatal，避免扫描和未来执行越出配置根目录。
+12. UI 增加重复扫描防抖；设置页拒绝相对路径和位于扫描目录内部的隔离路径。
+
+### 修改文件
+
+```text
+tools/external_intake.py
+core/config.py
+config.example.json
+ui/views/tools_view.py
+ui/views/settings_view.py
+tests/test_external_intake_freeze.py
+tests/test_external_intake_scan.py
+tests/test_external_intake_config.py
+README.md
+CURRENT_STATE.md
+NEXT_TASK_ROADMAP.md
+PROJECT_ROADMAP.md
+AI_WORKFLOW.md
+docs/FULL_FUNCTION_AUDIT_20260720.md
+WORKLOG.md
+```
+
+### 数据和文件影响
+
+```text
+真实 history.db：未连接、未修改
+真实 E:\arsm：未读取、未移动、未隔离、未删除
+报告写入：仅测试临时目录
+下载核心：未修改
+```
+
+### 测试
+
+```text
+python -W error::ResourceWarning -m unittest discover -s tests -p "test_external_intake_*.py" -v
+结果：20/20 passed
+
+python scripts/test_external_intake.py
+结果：20/20 passed
+
+python scripts/test_tools_view_handlers_exist.py
+结果：PASS（13 handlers）
+
+python scripts/test_tools_clean_invalid_button.py
+结果：PASS
+```
+
+### 已知限制
+
+```text
+当前环境未安装 Flet，无法运行真实窗口；本轮仅完成 Python 语法、AST/UI 结构和业务行为测试。
+External intake 真实执行仍冻结。
+其他 ToolsView、下载、资源库和迁移问题仍按完整审计处理。
+```
+
+### 下一步
+
+```text
+进入 TAKEOVER-T2：LibraryVault 查询/写入服务、preimage/postimage、重复 RJ 主记录保护和可恢复执行设计。
 ```

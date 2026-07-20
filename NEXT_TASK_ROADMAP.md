@@ -4,7 +4,7 @@
 
 > 起点：2026-07-18  
 > 基线：`main@1f33595`  
-> 当前阶段：`TAKEOVER-T1`（`TAKEOVER-T0` 已于 2026-07-20 完成）
+> 当前阶段：`TAKEOVER-T2`（`TAKEOVER-T0/T1` 已于 2026-07-20 完成）
 
 ## 总原则
 
@@ -49,52 +49,37 @@ PASS（2026-07-20）
 
 ## TAKEOVER-T1：计划模型与纯扫描收口
 
-### 目标
-
-先重写只读扫描与执行计划，不做真实移动和 DB 写入。
-
-### 任务
-
-1. 定义固定 `ExternalIntakePlan` schema：
-   - root
-   - root_exists
-   - scanned_top_dirs
-   - unique_rj
-   - actions
-   - fatal_blockers
-   - review_required
-   - quarantine_actions
-   - warnings
-   - can_execute
-2. 所有返回路径都使用固定 schema。
-3. 明确目录分类：
-   - already_normalized
-   - needs_title_layer
-   - needs_rename_top_level
-   - quarantine_candidate
-   - duplicate_review
-   - fatal
-4. 增加 Windows 路径安全检查。
-5. 增加目标冲突检查。
-6. 报告保存全部 actions，不截断。
-7. UI 只展示摘要与前若干项，完整报告写文件。
-
-### 禁止
+### 状态
 
 ```text
-不移动文件
-不修改 history.db
-不启动下载 worker
-不刷新真实 metadata
+PASS（2026-07-20）
 ```
+
+### 已完成
+
+- [x] 固定 `ExternalIntakePlan` schema：root、root_exists、scanned_top_dirs、unique_rj、actions、fatal_blockers、review_required、quarantine_actions、warnings、can_execute
+- [x] 所有失败和空结果路径保持同一 schema
+- [x] 六类目录分类：already_normalized、needs_title_layer、needs_rename_top_level、quarantine_candidate、duplicate_review、fatal
+- [x] 扫描根目录和隔离目录改为配置，不再硬编码用户盘符
+- [x] 增加绝对路径、文件系统根目录、路径包含、符号链接和目标逃逸检查
+- [x] 增加目标路径已存在冲突检查
+- [x] 重复 RJ 的所有候选均进入人工复核，不自动选择主目录
+- [x] 报告保存全部 actions，不截断前 50 项
+- [x] UI 只显示摘要和前 15 项，完整报告写文件
+- [x] UI 扫描使用后台线程，设置页提供两个路径配置项
+- [x] 删除旧的文件移动和业务 SQLite 写入实现
 
 ### 验收
 
-- 临时目录扫描测试通过
-- 根目录不存在测试通过
-- 重复 RJ 分类测试通过
-- 目标冲突测试通过
-- 固定 schema 快照测试通过
+```text
+20/20 portable tests passed
+60-action report completeness passed
+missing/relative/unsafe root tests passed
+duplicate RJ review tests passed
+target conflict fatal tests passed
+config round-trip tests passed
+真实文件和数据库零副作用
+```
 
 ## TAKEOVER-T2：数据库服务收口
 
@@ -256,7 +241,7 @@ external intake 通过后再按以下顺序推进：
 ## 当前下一项
 
 ```text
-TAKEOVER-T0-04：重写 README
-TAKEOVER-T0-05：冻结 external intake 执行入口
-TAKEOVER-T1-01：定义固定 ExternalIntakePlan schema 和 portable tests
+TAKEOVER-T2-01：为 external intake 增加 LibraryVault 只读查询接口
+TAKEOVER-T2-02：定义路径更新事务和 preimage/postimage 数据模型
+TAKEOVER-T2-03：重复 RJ 主记录保护测试
 ```

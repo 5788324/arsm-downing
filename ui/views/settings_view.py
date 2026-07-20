@@ -18,6 +18,20 @@ class SettingsView(ft.Container):
             expand=True,
             tooltip="新下载文件会保存到这里。",
         )
+        self.external_intake_root_input = ft.TextField(
+            label="外部资源扫描目录",
+            value=getattr(config, "external_intake_root", None) or "",
+            expand=True,
+            hint_text=r"例如 E:\arsm",
+            tooltip="只读扫描此目录的直接子文件夹；留空时外部资源整理不可用。",
+        )
+        self.external_quarantine_root_input = ft.TextField(
+            label="外部资源隔离目录",
+            value=getattr(config, "external_quarantine_root", None) or "",
+            expand=True,
+            hint_text=r"例如 E:\arsm_quarantine_external",
+            tooltip="必须位于扫描目录之外；当前仅用于计划校验，不会实际移动文件。",
+        )
         self.metadata_proxy_input = ft.TextField(
             label="元数据代理",
             value=config.metadata_proxy or "",
@@ -75,6 +89,15 @@ class SettingsView(ft.Container):
                     ft.ElevatedButton("添加路径", icon=ft.icons.ADD, on_click=self._add_lib_path),
                 ]),
                 ft.Divider(height=8, color="transparent"),
+                ft.Text("外部资源整理", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
+                ft.Text(
+                    "该功能当前仅生成只读计划和报告，真实移动与数据库写入保持冻结。",
+                    size=12,
+                    color="white70",
+                ),
+                ft.Row([self.external_intake_root_input]),
+                ft.Row([self.external_quarantine_root_input]),
+                ft.Divider(height=8, color="transparent"),
                 ft.Text("代理设置", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
                 ft.Row([self.metadata_proxy_input]),
                 ft.Row([self.cover_proxy_input]),
@@ -130,6 +153,31 @@ class SettingsView(ft.Container):
         metadata_proxy = self.metadata_proxy_input.value.strip()
         cover_proxy = self.cover_proxy_input.value.strip()
         download_proxy = self.download_proxy_input.value.strip()
+
+        external_intake_root = self.external_intake_root_input.value.strip()
+        external_quarantine_root = self.external_quarantine_root_input.value.strip()
+        for label, value in (
+            ("外部资源扫描目录", external_intake_root),
+            ("外部资源隔离目录", external_quarantine_root),
+        ):
+            if value and not Path(value).is_absolute():
+                self.app_controller.show_snack(f"{label}必须使用绝对路径")
+                return
+        if external_intake_root and external_quarantine_root:
+            root_path = Path(external_intake_root).resolve(strict=False)
+            quarantine_path = Path(external_quarantine_root).resolve(strict=False)
+            try:
+                quarantine_path.relative_to(root_path)
+                self.app_controller.show_snack("隔离目录必须位于扫描目录之外")
+                return
+            except ValueError:
+                pass
+            if root_path == quarantine_path:
+                self.app_controller.show_snack("扫描目录和隔离目录不能相同")
+                return
+
+        config.external_intake_root = external_intake_root or None
+        config.external_quarantine_root = external_quarantine_root or None
 
         config.metadata_proxy = metadata_proxy or None
         config.cover_proxy = cover_proxy or None
