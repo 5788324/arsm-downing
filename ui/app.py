@@ -205,6 +205,10 @@ class AppController:
                     elif msg_type == "snack":
                         self.show_snack(msg[1])
 
+                    elif msg_type == "ui_callback":
+                        callback, result = msg[1], msg[2]
+                        callback(result)
+
                     elif msg_type == "close_window":
                         try:
                             self.page.window_destroy()
@@ -222,6 +226,21 @@ class AppController:
 
         finally:
             self.ui_processing = False
+
+    def run_blocking(self, function, on_success=None, *, action_label: str = "后台任务"):
+        """Run blocking filesystem/SQLite presentation work off the Flet loop.
+
+        ``function`` executes through ``asyncio.to_thread``.  The optional
+        callback is marshalled back through the UI queue and therefore never
+        mutates Flet controls from the worker thread.
+        """
+        async def _run():
+            result = await asyncio.to_thread(function)
+            if on_success is not None:
+                self.ui_queue.put(("ui_callback", on_success, result))
+            return result
+
+        return self._submit_background(_run(), action_label)
 
     # ──────────────────────────────────────────────────────
     #  UI setup

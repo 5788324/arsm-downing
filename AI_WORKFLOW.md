@@ -126,8 +126,22 @@ dry-run 优先
 6. 下载核心 416 / Range / .part / 取消恢复与隔离 UI smoke（代码级已完成）
 7. Windows 在线快照、真实 ASMR.one 小样本与 Flet 视觉验收（当前）
 8. 数据库 Schema、缓存和资源库一致性
-9. LibraryView / ToolsView UI 行为、性能和线程安全
+9. ToolsView UI 行为、性能和线程安全（LibraryView 代码级收口已完成）
 10. 迁移和 backlog 安全闭环
 11. Codex Windows 小批量验收
 12. 最终合并、打包和交接
 ```
+
+
+## Windows 实机验收入口
+
+必须使用独立证据目录，不在正式程序目录安装依赖或运行测试：
+
+```powershell
+.\scripts\run_windows_acceptance.ps1 `
+  -EvidenceDir "D:\ARSM-Acceptance" `
+  -ActiveDb "<正式程序目录>\history.db" `
+  -LaunchUi
+```
+
+Codex 负责执行和填写 `ui-observation.json`；ChatGPT 负责分析结果、修复代码和维护 Git/文档。

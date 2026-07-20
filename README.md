@@ -61,10 +61,10 @@ queue.json 不作为历史下载进度真源
 
 - SQLite `works` / `library_items` / `library_index` 数据模型
 - 作品卡片与封面
-- RJ/标题搜索
-- 条件过滤与分页
-- 资源异常视图
-- 打开本地目录
+- RJ/标题/路径搜索（回车触发，避免每次按键全库扫描）
+- 后台加载、条件过滤与分页
+- 配置根目录驱动的资源异常视图
+- 打开本地目录并显示明确错误
 - Dashboard 数据统计
 
 ### 工具
@@ -111,12 +111,22 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-当前结果：`125/125 passed`。其中包括 62 项 external-intake 沙盒/事务测试、SQLite 在线快照、混合下载状态报告、HTTP 200/206/416 真实 aiohttp 集成、下载 UI 语义和 UI 模块导入 smoke test。默认测试只使用临时目录和临时 SQLite，并在工作区出现 `history.db`、`config.json` 或 `queue.json` 时直接拒绝运行。
+当前结果：`139/139 passed`。其中包括 62 项 external-intake 沙盒/事务测试、SQLite 在线快照、混合下载状态报告、HTTP 200/206/416 真实 aiohttp 集成、下载 UI 语义、资源库后台加载/搜索/异常分类和 UI 模块导入 smoke test。默认测试只使用临时目录和临时 SQLite，并在工作区出现 `history.db`、`config.json` 或 `queue.json` 时直接拒绝运行。
 
 隔离下载与 Flet UI 验收：
 
 ```text
 docs/LIVE_DOWNLOAD_AND_UI_SMOKE.md
+docs/WINDOWS_ACCEPTANCE_T5B.md
+```
+
+Windows 一键证据包：
+
+```powershell
+.\scripts\run_windows_acceptance.ps1 `
+  -EvidenceDir "D:\ARSM-Acceptance" `
+  -ActiveDb "<正式程序目录>\history.db" `
+  -LaunchUi
 ```
 
 该流程使用独立 sandbox、独立 SQLite 和独立 Downloads，不读取正在运行程序的 `config.json`、`queue.json` 或 `history.db`。

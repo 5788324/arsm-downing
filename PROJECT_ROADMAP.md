@@ -32,9 +32,9 @@ Python + Flet + SQLite + asyncio + LibraryVault
 4. external intake 逐作品文件执行与恢复状态机（沙盒已完成）
 5. 统一测试、CI、活跃 DB 在线快照（已完成）
 6. 下载核心 416 / Range / `.part`、缓存恢复与隔离 UI smoke（代码级已完成）
-7. Windows 在线快照、真实 ASMR.one 小样本与 Flet 视觉验收（当前）
-8. 数据库 Schema 与资源库一致性
-9. LibraryView、ToolsView、迁移和 backlog 稳定性修复
+7. Windows 一键验收包与 LibraryView 代码级收口（已完成；Windows 证据待 Codex）
+8. 数据库 Schema 与资源库扫描一致性
+9. ToolsView、迁移和 backlog 稳定性修复
 10. 通过稳定性验收后再评估播放器
 ```
 

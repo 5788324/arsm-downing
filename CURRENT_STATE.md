@@ -103,6 +103,8 @@ main 仅接收审查通过的 PR
 - 过期 metadata cache 只在恢复/离线 fallback 路径显式允许，保护长期暂停任务
 - 设置页写入真实 work/file concurrency；强制重复和 canonical directory 行为已修正
 - 新增本地 ASMR.one 兼容服务器、真实 aiohttp Range 集成和隔离 Flet UI 启动器
+- 资源库 UI 移除 E 盘、用户名、假 RJ 和固定统计；搜索实际传入 SQLite，路径诊断在后台线程执行
+- 新增 Windows 一键验收器，集中输出 portable、snapshot、live download 和 UI evidence
 
 真实资源库移动、隔离、元数据刷新和 UI/CLI 执行入口继续保持冻结。文件执行状态机已在 tempfile 沙盒中完成，但尚未经过 Windows 文件锁、真实路径和复制资源库验收。
 
@@ -130,7 +132,7 @@ PRAGMA integrity_check = ok
 1. external intake 沙盒事务已完成，但尚未通过 Windows/T6 复制资源库执行验收，真实执行继续冻结。
 2. `needs_title_layer` 仍缺少基于 metadata title 的无歧义目标命名；当前不允许执行。
 3. 下载核心的 416、Range、`.part` 和主要暂停/恢复语义已完成代码级修复，但真实 ASMR.one/Windows UI 尚未验收。
-4. 资源库扫描快照、旧索引清理和 LibraryView 硬编码/性能问题仍未完成。
+4. LibraryView 的搜索、硬编码路径、后台加载和异常显示已修；资源库扫描快照写入、旧索引清理仍未完成。
 5. Windows/Flet/真实网络只读与隔离下载验收尚未执行。
 
 ### P1 / 接手后尽快修
@@ -171,7 +173,8 @@ TAKEOVER-T2：已完成——LibraryVault 快照、四表路径事务、preimage
 TAKEOVER-T3：已完成——逐文件映射、staging、双重校验、Journal、回滚与崩溃恢复
 TAKEOVER-T4：已完成——统一 pytest、依赖锁定、CI 定义、在线 DB 快照与验收规范
 TAKEOVER-T5A：已完成——下载响应、断点恢复、镜像切换、UI 控制语义和隔离 smoke 工具
-TAKEOVER-T5B：下一步——Windows 在线快照、真实 ASMR.one 小样本和 Flet 视觉验收
+TAKEOVER-T5B：验收包已完成——等待 Codex 在 Windows 执行在线快照、真实小样本和视觉验收
+TAKEOVER-T5C：已完成——资源库搜索、后台加载、异常分类和动态统计代码级收口
 TAKEOVER-T6：沙盒执行验收
 ```
 
@@ -179,7 +182,7 @@ TAKEOVER-T6：沙盒执行验收
 
 ```text
 隔离虚拟环境：Flet 0.27.6 legacy API import PASS
-python -m pytest：125/125 passed
+python -m pytest：139/139 passed
 全项目 compileall：PASS
 pip check：PASS
 活跃状态文件保护：发现 history.db 时 pytest 固定 exit 2

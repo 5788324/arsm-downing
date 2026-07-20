@@ -4,7 +4,7 @@
 
 > 起点：2026-07-18  
 > 基线：`main@1f33595`  
-> 当前阶段：`TAKEOVER-T5B`（T0~T4 与 T5A 已于 2026-07-20 完成）
+> 当前阶段：`TAKEOVER-T5B Windows 执行待验收`（T0~T5A 与 T5C 代码级工作已完成）
 
 ## 总原则
 
@@ -237,7 +237,7 @@ Codex，仅执行必须依赖用户 Windows 本机的部分。
 
 ### 任务
 
-1. 在干净 Bundle/checkout 运行 125 项 portable tests。
+1. 在干净 Bundle/checkout 运行 138 项 portable tests。
 2. 保持当前 100+ 混合状态任务不变，创建在线 SQLite snapshot。
 3. 输出 completed/failed/paused/queued/downloading/resuming 状态报告。
 4. 在全新空 sandbox 运行 `live_download_smoke.py`，默认 RJ01575399 或其他小样本。
@@ -254,6 +254,36 @@ snapshot manifest 和 integrity_check 通过
 真实 ASMR.one 小文件最终大小与 SHA-256 报告通过
 Flet UI 可操作且状态机与数据库/文件结果一致
 所有 smoke 产物仅位于独立 sandbox
+```
+
+## TAKEOVER-T5C：资源库 UI 与验收自动化
+
+### 状态
+
+```text
+PASS（2026-07-20，代码级）
+```
+
+### 已完成
+
+- [x] 资源库搜索实际传入 SQLite；支持 RJ、文件夹和路径
+- [x] 非空搜索改为回车/按钮触发，避免每次按键全库扫描
+- [x] 卡片分页自动钳制，搜索后不会停留在空的越界页
+- [x] summary 改为 works、索引、文件、容量和警告的实时值
+- [x] 移除 E 盘、用户名、固定 227、假 RJ/别名 RJ 硬编码
+- [x] 异常分类基于配置的 output/library roots，支持跨 Windows/POSIX 路径
+- [x] DB 查询与全库路径检查放入后台线程，回调统一返回 Flet UI queue
+- [x] 异常超过 200 项时明确显示截断提示
+- [x] 打开目录失败不再静默吞掉
+- [x] 新增 Windows 一键验收器和 PowerShell 入口
+
+### 验收
+
+```text
+139/139 portable tests passed
+资源库搜索、分页、动态 summary、异常分类和打开目录 tests passed
+Windows acceptance dry-run report passed
+真实 Windows 桌面视觉仍属于 T5B Codex 验收，不在代码级 PASS 中
 ```
 
 ## TAKEOVER-T6：沙盒执行验收
@@ -312,7 +342,7 @@ external intake 通过后再按以下顺序推进：
 ## 当前下一项
 
 ```text
-TAKEOVER-T5B-01：Codex 在干净 Bundle/checkout 运行 125 项 portable gate
+TAKEOVER-T5B-01：Codex 运行 `run_windows_acceptance.ps1`，完成 138 项 portable gate
 TAKEOVER-T5B-02：对活跃 DB 创建在线快照并输出混合状态报告
 TAKEOVER-T5B-03：在独立 sandbox 下载一个公开小样本
 TAKEOVER-T5B-04：在独立 fake server sandbox 实际点击 Flet UI 并截图

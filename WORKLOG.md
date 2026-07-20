@@ -2530,3 +2530,44 @@ Windows 真实 UI 和网络：留给 Codex 独立 sandbox 验收
 正式 Downloads/E:\arsm：未读取或修改
 正式 Python 环境：未升级
 ```
+
+## 2026-07-20 — TAKEOVER-T5C：资源库 UI 收口与 Windows 一键验收包
+
+### 背景
+
+用户继续允许使用独立 sandbox 测试下载和 UI，但正式下载器仍有 100 多个混合状态任务。本轮继续禁止读取或改变正式队列、正式配置和正式数据库。
+
+### 完成
+
+1. 新增 `core/library_diagnostics.py`，将路径归一化、配置根目录判断、warning 解析和异常分类从 Flet View 中拆出。
+2. LibraryView 删除 `E:\arsm`、用户目录、固定 `~227`、假 RJ 和别名 RJ 硬编码。
+3. 搜索实际传入 SQLite，覆盖 RJ、文件夹名和路径；非空查询改为回车/搜索按钮触发，避免每次按键全库扫描。
+4. 新增 `LibraryVault.get_library_page()`，一次串行读取卡片、metadata cover、summary 和 works count。
+5. 新增 `get_library_diagnostic_rows()`，先复制 SQLite rows，再在 worker thread 检查文件系统。
+6. AppController 新增通用 `run_blocking()`；阻塞读取通过 `asyncio.to_thread` 执行，结果经 UI queue 回到 Flet 线程。
+7. 搜索后自动钳制分页；空结果、加载状态、异常截断和打开目录错误均有明确文案。
+8. Dashboard 不再建议直接运行尚未完成安全收口的“资源库重建”。
+9. 新增 `scripts/windows_acceptance.py` 和 `run_windows_acceptance.ps1`，统一运行 portable、在线 DB snapshot、真实小样本和可选 Flet Desktop smoke。
+10. 新增 `docs/WINDOWS_ACCEPTANCE_T5B.md` 和 JSON evidence/观察模板。
+11. 将 4 个资源库历史诊断脚本改为 `TemporaryDirectory + 临时 SQLite`，不再在仓库根目录生成 `history.db/config.json`。
+
+### 自动验证
+
+```text
+python -m pytest：139/139 passed
+python -m compileall：PASS
+pip check：PASS
+git diff --check：PASS
+Windows acceptance 非 Windows dry-run：PASS
+资源库跨平台路径、搜索、分页、summary、异常分类、打开目录：PASS
+```
+
+### 正式现场影响
+
+```text
+100+ 正式任务：未触碰
+正式 history.db/config.json/queue.json：未读取或修改
+正式 Downloads/E:\arsm：未读取或修改
+真实 ASMR.one：已再次尝试 metadata-only；所有镜像均因容器 DNS 解析失败，未声称通过
+Windows Desktop：验收器已准备，仍待 Codex 执行并提交截图证据
+```

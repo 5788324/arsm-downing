@@ -898,14 +898,85 @@ class LibraryVault:
 
     def get_library_summary(self) -> dict:
         try:
-            total = self.conn.execute("SELECT COUNT(*), SUM(total_files), SUM(total_size) FROM library_items").fetchone()
-            return {"total_works": total[0] or 0, "total_files": total[1] or 0,
+            with self._lock:
+                total = self.conn.execute(
+                    "SELECT COUNT(*), SUM(total_files), SUM(total_size) FROM library_items"
+                ).fetchone()
+                return {
+                    "total_works": total[0] or 0,
+                    "total_files": total[1] or 0,
                     "total_size": total[2] or 0,
-                    "with_audio": self.conn.execute("SELECT COUNT(*) FROM library_items WHERE has_audio=1").fetchone()[0],
-                    "with_cover": self.conn.execute("SELECT COUNT(*) FROM library_items WHERE has_cover=1").fetchone()[0],
+                    "with_audio": self.conn.execute(
+                        "SELECT COUNT(*) FROM library_items WHERE has_audio=1"
+                    ).fetchone()[0],
+                    "with_cover": self.conn.execute(
+                        "SELECT COUNT(*) FROM library_items WHERE has_cover=1"
+                    ).fetchone()[0],
                     "with_warnings": self.conn.execute(
-                        "SELECT COUNT(*) FROM library_items WHERE warnings_json IS NOT NULL AND warnings_json != '[]' AND warnings_json != ''"
-                    ).fetchone()[0]}
+                        "SELECT COUNT(*) FROM library_items "
+                        "WHERE warnings_json IS NOT NULL "
+                        "AND warnings_json != '[]' AND warnings_json != ''"
+                    ).fetchone()[0],
+                }
         except Exception as e:
             logging.error(f"get_library_summary error: {e}")
             return {}
+
+    def get_library_page(self, *, search: str = "", offset: int = 0,
+                         limit: int = 20) -> dict:
+        """Return one card page plus summary using a single serialized read."""
+        try:
+            with self._lock:
+                conditions, params = [], []
+                if search:
+                    query = f"%{search}%"
+                    conditions.append(
+                        "(li.rj_id LIKE ? OR li.folder_name LIKE ? OR li.folder_path LIKE ?)"
+                    )
+                    params.extend([query, query, query])
+                where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+                total = int(self.conn.execute(
+                    f"SELECT COUNT(*) FROM library_items li {where}", params
+                ).fetchone()[0])
+                rows = self.conn.execute(
+                    f"""SELECT li.*, mc.cover_url AS metadata_cover_url
+                        FROM library_items li
+                        LEFT JOIN metadata_cache mc ON mc.rj_id = li.rj_id
+                        {where}
+                        ORDER BY li.total_size DESC, li.rj_id
+                        LIMIT ? OFFSET ?""",
+                    [*params, int(limit), int(offset)],
+                ).fetchall()
+                works_count = int(self.conn.execute(
+                    "SELECT COUNT(*) FROM works"
+                ).fetchone()[0])
+                summary = self.get_library_summary()
+                return {
+                    "items": [dict(row) for row in rows],
+                    "total": total,
+                    "works_count": works_count,
+                    "summary": summary,
+                }
+        except Exception as exc:
+            logging.error("get_library_page error: %s", exc)
+            return {"items": [], "total": 0, "works_count": 0, "summary": {}}
+
+    def get_library_diagnostic_rows(self) -> dict:
+        """Return immutable row snapshots for background filesystem diagnosis."""
+        try:
+            with self._lock:
+                works = [dict(row) for row in self.conn.execute(
+                    "SELECT rj_id, title, status, local_path FROM works ORDER BY rj_id"
+                ).fetchall()]
+                items = [dict(row) for row in self.conn.execute(
+                    "SELECT * FROM library_items ORDER BY rj_id"
+                ).fetchall()]
+                return {
+                    "works": works,
+                    "library_items": items,
+                    "works_count": len(works),
+                    "summary": self.get_library_summary(),
+                }
+        except Exception as exc:
+            logging.error("get_library_diagnostic_rows error: %s", exc)
+            return {"works": [], "library_items": [], "works_count": 0, "summary": {}}

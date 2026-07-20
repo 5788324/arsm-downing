@@ -1,61 +1,40 @@
 #!/usr/bin/env python3
-"""资源库布局数据测试 — 验证卡片生成不为空."""
-
-import asyncio
-import sys
+"""Portable resource-library status mapping diagnostic."""
 from pathlib import Path
+import sys
+from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
-async def test():
-    print(f"\n{'='*60}")
-    print(f"  资源库布局数据测试")
-    print(f"{'='*60}\n")
-
-    from core.config import ConfigManager
+def main() -> int:
     from core.database import LibraryVault
     from core.models import WorkMetadata
-
-    cfg = ConfigManager.load()
-    db = LibraryVault()
-
-    # Write test works
-    for status in ("completed", "partial", "external"):
-        rj = f"RJ9990{status[0]}"
-        meta = WorkMetadata(rj_id=rj, title=f"Test {status}",
-                            circle="TC", cv=[], tags=[], price=0,
-                            source_url="", dl_count=0, rating=0.0,
-                            release_date="", cover_url="")
-        db.register(meta, 100, Path(f"/tmp/{rj}"), status=status)
-
-    results = db.search("")
-    # Filter our test entries
-    test_entries = [r for r in results if r["rj_id"].startswith("RJ9990")]
-    assert len(test_entries) == 3, f"应有 3 条, 实际 {len(test_entries)}"
-
-    statuses = {r["status"] for r in test_entries}
-    assert "completed" in statuses
-    assert "partial" in statuses
-    assert "external" in statuses
-    print(f"  ✓ 3 works with distinct statuses loaded")
-
-    # Verify STATUS_LABELS covers all
     from ui.views.library_view import STATUS_LABELS
-    for s in ("completed", "partial", "external", "verified", "missing"):
-        assert s in STATUS_LABELS, f"STATUS_LABELS 缺 {s}"
-        print(f"  ✓ STATUS_LABELS[{s}] = {STATUS_LABELS[s][0]}")
 
-    # Cleanup
-    for rj in ("RJ9990c", "RJ9990p", "RJ9990e"):
-        db.conn.execute("DELETE FROM works WHERE rj_id=?", (rj,))
-    db.conn.commit()
+    print(f"\n{'='*60}\n  资源库布局数据测试\n{'='*60}\n")
+    with TemporaryDirectory(prefix="arsm-library-layout-") as temp:
+        with LibraryVault(Path(temp) / "history.db") as db:
+            for index, status in enumerate(("completed", "partial", "external"), 1):
+                rj = f"RJ{99010000 + index:08d}"
+                meta = WorkMetadata(
+                    rj_id=rj, title=f"Test {status}", circle="TC",
+                    cv=[], tags=[], price=0, source_url="", dl_count=0,
+                    rating=0.0, release_date="", cover_url="",
+                )
+                db.register(meta, 100, Path(temp) / rj, status=status)
 
-    print(f"\n{'='*60}")
-    print(f"  ✓ 资源库布局数据测试通过")
-    print(f"{'='*60}\n")
+            results = db.search("")
+            statuses = {row["status"] for row in results}
+            assert {"completed", "partial", "external"} <= statuses
+            print("  ✓ 临时数据库加载 completed/partial/external")
+
+    for status in ("completed", "partial", "external", "verified", "missing"):
+        assert status in STATUS_LABELS
+        print(f"  ✓ STATUS_LABELS[{status}] = {STATUS_LABELS[status][0]}")
+    print(f"\n{'='*60}\n  ✓ 资源库布局数据测试通过\n{'='*60}\n")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(asyncio.run(test()))
+    raise SystemExit(main())
