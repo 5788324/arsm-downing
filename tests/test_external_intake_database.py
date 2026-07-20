@@ -189,6 +189,48 @@ class ExternalIntakeDatabaseTests(unittest.TestCase):
         self.assertEqual(result["error_code"], "primary_record_protected")
         self.assertEqual(self._fetch_path_state(rj_id), before)
 
+    def test_download_path_must_be_covered_by_explicit_file_mapping(self) -> None:
+        rj_id = "RJ01010014"
+        old = "/library/RJ01010014 old"
+        new = "/library/RJ01010014"
+        self._seed_work(rj_id, old)
+        token = self.vault.get_external_intake_snapshot(rj_id)["snapshot_token"]
+
+        result = self.vault.update_external_intake_paths(
+            rj_id,
+            old,
+            new,
+            expected_preimage_token=token,
+            file_path_mappings={
+                f"{old}/cover.jpg": f"{new}/Title/cover.jpg"
+            },
+        )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error_code"], "download_path_not_mapped")
+        self.assertEqual(self._fetch_path_state(rj_id)["work"], old)
+
+    def test_file_mapping_must_stay_within_source_and_target_roots(self) -> None:
+        rj_id = "RJ01010015"
+        old = "/library/RJ01010015 old"
+        new = "/library/RJ01010015"
+        self._seed_work(rj_id, old)
+        token = self.vault.get_external_intake_snapshot(rj_id)["snapshot_token"]
+
+        result = self.vault.update_external_intake_paths(
+            rj_id,
+            old,
+            new,
+            expected_preimage_token=token,
+            file_path_mappings={
+                "/outside/track.mp3": f"{new}/Title/track.mp3"
+            },
+        )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error_code"], "invalid_file_mapping")
+        self.assertEqual(self._fetch_path_state(rj_id)["work"], old)
+
     def test_pending_download_blocks_transaction(self) -> None:
         rj_id = "RJ01010004"
         source = "/library/RJ01010004"

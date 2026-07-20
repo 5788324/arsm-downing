@@ -4,7 +4,7 @@
 
 > 起点：2026-07-18  
 > 基线：`main@1f33595`  
-> 当前阶段：`TAKEOVER-T3`（`TAKEOVER-T0/T1/T2` 已于 2026-07-20 完成）
+> 当前阶段：`TAKEOVER-T4`（`TAKEOVER-T0/T1/T2/T3` 已于 2026-07-20 完成）
 
 ## 总原则
 
@@ -118,28 +118,45 @@ read-only CLI database hash unchanged
 
 ## TAKEOVER-T3：逐作品执行与自动恢复
 
-### 目标
+### 状态
 
-把批量执行拆成可验证、可停止、可恢复的逐作品事务。
+```text
+PASS（2026-07-20，沙盒执行层）
+```
 
-### 任务
+### 已完成
 
-1. 计划阶段生成逐文件 source/target 映射。
-2. 每个作品独立执行。
-3. 执行前再次校验计划未漂移。
-4. 使用 staging/临时目标。
-5. 文件完成后校验数量、大小和关键哈希。
-6. 数据库更新失败时恢复文件。
-7. 文件恢复失败时立即停止全批次并输出 STOP 报告。
-8. 记录每一项：planned / started / moved / db_updated / verified / rolled_back / failed。
+- [x] 计划 schema v3 生成完整逐文件 source/target 映射
+- [x] source manifest token 在执行前重新校验计划漂移
+- [x] 每个作品独立 Journal 与状态时间线
+- [x] 目标盘 staging copy；源目录同盘 rollback 暂存
+- [x] staging 和 target 均校验相对路径、数量、总大小、单文件大小和关键哈希
+- [x] Title 层映射同步更新 downloads 具体文件路径
+- [x] DB 更新失败自动删除目标并恢复原源目录
+- [x] DB 提交前进程中断自动恢复原源目录
+- [x] DB 提交后进程中断保留目标并清理 rollback
+- [x] 恢复失败标记 STOP，批处理不继续后续作品
+- [x] Journal 路径和所有操作路径必须位于显式 sandbox
+- [x] source/target 嵌套、目标占用、symlink、part、空目录和不完整映射 fail-closed
+- [x] 将 manifest/映射与执行/恢复拆分为独立模块
 
 ### 验收
 
-- 文件移动失败注入测试
-- DB 写入失败注入测试
-- 同名目标冲突测试
-- 部分执行后停止测试
-- 自动恢复结果测试
+```text
+62/62 external-intake portable tests passed
+文件失败注入 rollback passed
+DB failure filesystem restore passed
+同名目标冲突 passed
+部分批次停止 passed
+DB 提交前/后崩溃恢复 passed
+rollback failure -> STOP passed
+Title 层与 downloads 路径一致 passed
+真实 E:\arsm / history.db 零访问
+```
+
+### 仍然冻结
+
+Tools/CLI 真实执行、quarantine 移动、needs_title_layer 自动命名和正式资源库写入仍未开放。
 
 ## TAKEOVER-T4：测试体系与 CI
 
@@ -248,7 +265,7 @@ external intake 通过后再按以下顺序推进：
 ## 当前下一项
 
 ```text
-TAKEOVER-T3-01：定义逐作品文件 action / journal 状态机
-TAKEOVER-T3-02：实现 staging + 相对路径/大小校验
-TAKEOVER-T3-03：注入文件失败与 DB 失败，验证自动恢复
+TAKEOVER-T4-01：建立 pytest/CI 单一测试门
+TAKEOVER-T4-02：锁定依赖并标记 manual/integration tests
+TAKEOVER-T4-03：准备 Windows 只读验收说明
 ```

@@ -36,6 +36,7 @@ class IntakePathUpdateRequest:
     target_path: str
     expected_preimage_token: str = ""
     ensure_library_index: bool = True
+    file_path_mappings: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -240,6 +241,17 @@ def _target_owned_by_other_rj(
     return None
 
 
+def _mapped_download_path(
+    value: str, request: IntakePathUpdateRequest
+) -> str | None:
+    for source_file, target_file in request.file_path_mappings.items():
+        if paths_equivalent(value, source_file):
+            return target_file
+    if request.file_path_mappings:
+        return None
+    return replace_path_prefix(value, request.source_path, request.target_path)
+
+
 def validate_path_update(
     conn: sqlite3.Connection,
     request: IntakePathUpdateRequest,
@@ -253,6 +265,30 @@ def validate_path_update(
     if paths_equivalent(request.source_path, request.target_path):
         return "same_path", "source_path and target_path resolve to the same path"
 
+    if request.file_path_mappings:
+        seen_targets: list[str] = []
+        for source_file, target_file in request.file_path_mappings.items():
+            if replace_path_prefix(
+                source_file, request.source_path, request.target_path
+            ) is None:
+                return (
+                    "invalid_file_mapping",
+                    f"mapped source is outside source_path: {source_file}",
+                )
+            if replace_path_prefix(
+                target_file, request.target_path, request.source_path
+            ) is None:
+                return (
+                    "invalid_file_mapping",
+                    f"mapped target is outside target_path: {target_file}",
+                )
+            if any(paths_equivalent(target_file, seen) for seen in seen_targets):
+                return (
+                    "invalid_file_mapping",
+                    f"multiple source files map to one target: {target_file}",
+                )
+            seen_targets.append(target_file)
+
     if request.expected_preimage_token and request.expected_preimage_token != preimage.get(
         "snapshot_token"
     ):
@@ -264,6 +300,29 @@ def validate_path_update(
             "pending_downloads",
             f"{request.rj_id} has {pending} pending downloads; path update refused",
         )
+
+    if request.file_path_mappings:
+        for row in preimage.get("downloads", []):
+            download_path = str(row.get("local_path") or "")
+            if not download_path:
+                continue
+            mapped = _mapped_download_path(download_path, request)
+            under_source = replace_path_prefix(
+                download_path, request.source_path, request.target_path
+            ) is not None
+            under_target = replace_path_prefix(
+                download_path, request.target_path, request.source_path
+            ) is not None
+            if under_source and mapped is None:
+                return (
+                    "download_path_not_mapped",
+                    f"download path is missing from file mappings: {download_path}",
+                )
+            if not under_source and not under_target:
+                return (
+                    "download_path_mismatch",
+                    f"download path points to a third tree: {download_path}",
+                )
 
     work = preimage.get("work")
     if work and not paths_equivalent(str(work.get("local_path") or ""), request.source_path):
@@ -323,10 +382,7 @@ def validate_path_update(
     matching_refs += sum(
         1
         for row in preimage.get("downloads", [])
-        if replace_path_prefix(
-            str(row.get("local_path") or ""), request.source_path, request.target_path
-        )
-        is not None
+        if _mapped_download_path(str(row.get("local_path") or ""), request) is not None
     )
     if matching_refs == 0:
         return "no_matching_references", "no database path references match source_path"
@@ -371,9 +427,7 @@ def apply_path_update(
         result.updated_rows["works"] += cursor.rowcount
 
     for row in preimage.get("downloads", []):
-        mapped = replace_path_prefix(
-            str(row.get("local_path") or ""), request.source_path, request.target_path
-        )
+        mapped = _mapped_download_path(str(row.get("local_path") or ""), request)
         if mapped is None:
             continue
         cursor = conn.execute(

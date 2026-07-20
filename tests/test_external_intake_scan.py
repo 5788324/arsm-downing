@@ -47,6 +47,10 @@ REQUIRED_ACTION_KEYS = {
     "db_pending_downloads",
     "db_library_item_paths",
     "db_library_index_paths",
+    "source_file_count",
+    "source_total_size",
+    "source_manifest_token",
+    "file_mappings",
 }
 
 
@@ -245,6 +249,26 @@ class ExternalIntakeScanTests(unittest.TestCase):
         self.assertIn("annotate_plan_with_database", source)
         self.assertIn("self.app_controller.db", source)
         self.assertNotIn("LibraryVault(", source)
+
+    def test_plan_contains_complete_file_mappings_and_manifest_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "intake"
+            source = root / "RJ01090006 Mapped Title"
+            (source / "audio").mkdir(parents=True)
+            (source / "audio" / "track.mp3").write_bytes(b"track")
+            (source / "cover.jpg").write_bytes(b"cover")
+
+            plan = ext.build_external_intake_plan(root, base / "quarantine").to_dict()
+
+        action = plan["actions"][0]
+        self.assertEqual(plan["schema_version"], 3)
+        self.assertEqual(action["source_file_count"], 2)
+        self.assertEqual(len(action["source_manifest_token"]), 64)
+        self.assertEqual(
+            {item["target_relative"] for item in action["file_mappings"]},
+            {"Mapped Title/audio/track.mp3", "Mapped Title/cover.jpg"},
+        )
 
     def test_nested_track_names_are_extracted(self) -> None:
         tracks = [

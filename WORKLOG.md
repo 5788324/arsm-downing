@@ -2263,3 +2263,110 @@ python scripts/test_move_work_to_path_handles_stale_target_library_index.py
 ```text
 进入 TAKEOVER-T3：逐作品文件 action/journal、staging、相对路径+大小校验、DB 失败后的文件恢复和失败注入测试。
 ```
+
+---
+
+## 28. 2026-07-20 ChatGPT 接手第四轮：沙盒文件事务与自动恢复
+
+### 范围
+
+```text
+TAKEOVER-T3：逐文件映射、staging、Journal、数据库失败回滚和进程中断恢复
+```
+
+### 完成内容
+
+1. 新增 `core/intake_manifest.py`，集中实现 source manifest、完整逐文件映射、目标映射校验、数量/大小/关键哈希验证。
+2. `ExternalIntakePlan` 升级到 schema v3，每个 action 记录文件数、总大小、manifest token 和全部 source/target 映射。
+3. 顶层目录改名会把文件映射到规范 `RJ/Title/...`，不再只改 RJ 文件夹名称。
+4. 扩展数据库路径事务，`downloads.local_path` 使用逐文件映射，保证 Title 层变化后仍指向真实文件。
+5. 新增 `core/intake_fs.py` 沙盒执行器，只允许所有路径位于显式 `sandbox_root`。
+6. 单作品顺序：plan recheck → staging copy → staging verify → source park → target commit → target verify → DB transaction → cleanup。
+7. staging 位于目标父目录、rollback 位于源目录父级，两次切换都使用同文件系统 `os.replace()`。
+8. DB 更新失败时删除目标并恢复原源目录；恢复失败标记 `stop_required`，批次立即停止。
+9. DB 提交前进程中断可通过 Journal 恢复源目录；DB 提交后中断保留目标和 DB 状态并清理 rollback。
+10. Journal 使用临时文件 + `os.replace()` 原子保存，并拒绝路径越出 sandbox 或文件名与 transaction_id 不一致的 Journal。
+11. 拒绝 source/target 嵌套、目标占用、空目录、symlink、`.part`、残留事务目录、不完整/重复/越界映射和待人工复核 action。
+12. 新增 `docs/EXTERNAL_INTAKE_FILESYSTEM_TRANSACTION_SPEC.md`。
+13. 执行原型按职责拆分为 `intake_manifest`、`intake_journal` 和 `intake_fs` 三个模块，避免继续扩大旧式单体脚本。
+14. Journal transaction ID 增加严格字符白名单，Journal 目录必须位于 sandbox 内，阻止路径穿越写出。
+15. 数据库事务要求 downloads 文件路径精确命中逐文件映射，禁止错误前缀回退和第三路径残留。
+16. 复用已生成的 source manifest，减少计划和执行阶段的重复目录遍历。
+
+### 修改文件
+
+```text
+core/intake_manifest.py
+core/intake_journal.py
+core/intake_fs.py
+core/intake_db.py
+core/database.py
+tools/external_intake.py
+tests/test_external_intake_filesystem.py
+tests/test_external_intake_scan.py
+README.md
+CURRENT_STATE.md
+NEXT_TASK_ROADMAP.md
+PROJECT_ROADMAP.md
+AI_WORKFLOW.md
+docs/EXTERNAL_INTAKE_DB_TRANSACTION_SPEC.md
+docs/EXTERNAL_INTAKE_FILESYSTEM_TRANSACTION_SPEC.md
+docs/TAKEOVER_AUDIT_20260718.md
+docs/FULL_FUNCTION_AUDIT_20260720.md
+WORKLOG.md
+```
+
+### 数据和文件影响
+
+```text
+真实 E:\arsm：未读取、未移动、未删除
+真实 history.db：未连接、未修改
+真实 Tools/CLI execute：继续硬冻结
+文件事务：只在 tempfile sandbox 执行
+数据库事务：只在 tempfile history.db 执行
+```
+
+### 测试
+
+```text
+python -m compileall -q .
+结果：PASS
+
+python -W error::ResourceWarning -m unittest discover -s tests -v
+结果：62/62 passed
+```
+
+覆盖：
+
+- 完整逐文件映射和 Title 层布局
+- downloads 文件路径与磁盘映射一致
+- staging/target 相对路径、数量、大小和哈希
+- source manifest 漂移
+- target 冲突与 sandbox 越界
+- source/target 嵌套
+- 文件故障 rollback
+- SQLite 失败文件恢复
+- rollback 失败 STOP
+- 批次首错停止
+- DB 提交前进程中断恢复
+- DB 提交后进程中断恢复
+- 篡改/越界 Journal 拒绝
+- transaction ID 路径穿越拒绝
+- Journal 目录越出 sandbox 拒绝
+- symlink 源树返回受控失败
+- downloads 未映射/越界映射拒绝
+
+### 已知限制
+
+```text
+当前执行器仅允许 needs_rename_top_level 的无争议沙盒 action。
+needs_title_layer 仍需要可靠 metadata title；当前保持人工复核。
+尚未实现新外部作品的 DB 注册事务和 quarantine 执行。
+尚未进行 Windows 文件锁、杀毒软件、长路径、真实 Flet UI 和复制资源库实机验收。
+```
+
+### 下一步
+
+```text
+进入 TAKEOVER-T4：建立统一 pytest/CI 测试门、依赖锁定和 Windows 只读/沙盒验收说明。
+```

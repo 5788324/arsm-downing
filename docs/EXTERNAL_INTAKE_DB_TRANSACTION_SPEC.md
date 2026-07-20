@@ -33,7 +33,7 @@ UI：复用 AppController 已存在的 LibraryVault，不创建新实例
 
 ## 3. 计划中的数据库上下文
 
-`ExternalIntakePlan` schema v2 为每个 action 增加：
+`ExternalIntakePlan` schema v3 为每个 action 增加：
 
 ```text
 db_preimage_token
@@ -71,7 +71,7 @@ LibraryVault.update_external_intake_paths(
 - `library_items.folder_path / folder_name`
 - `library_index.work_dir / library_path`
 
-路径替换按路径组件计算，不使用不安全的 SQL `REPLACE()` 字符串替换。
+路径替换按路径组件计算，不使用不安全的 SQL `REPLACE()` 字符串替换。T3 传入逐文件映射时，`downloads.local_path` 必须精确命中映射；未映射或越出 source/target 根目录的路径直接拒绝。
 
 ## 5. 重复 RJ 保护
 
@@ -107,7 +107,7 @@ SQLite 中途失败时：
 - 保留提交前 preimage 和 token；
 - postimage 为空。
 
-这些数据将在 `TAKEOVER-T3` 与文件操作状态机结合，形成可恢复的逐作品执行日志。
+这些数据已在 `TAKEOVER-T3` 与文件操作状态机结合，形成可恢复的逐作品 Journal。
 
 ## 7. 当前错误码
 
@@ -124,16 +124,20 @@ SQLite 中途失败时：
 | `target_reference_conflict` | 同 RJ 的 source/target index 均存在 |
 | `target_owned_by_other_rj` | 目标路径属于其他 RJ |
 | `no_matching_references` | source 没有匹配数据库引用 |
+| `invalid_file_mapping` | 文件映射越出 source/target 或目标重复 |
+| `download_path_not_mapped` | 下载文件路径未被逐文件映射覆盖 |
+| `download_path_mismatch` | 下载文件路径指向第三棵目录树 |
 | `sqlite_error` | SQLite 事务异常并已回滚 |
 
-## 8. 未开放事项
+## 8. T3 连接状态
 
-以下仍属于 `TAKEOVER-T3`：
+以下已在 tempfile 沙盒完成：
 
 - 文件 source/target 逐项映射
-- staging 目录
-- 文件复制/移动
+- staging 与 rollback 目录
+- 文件复制和原子目录切换
 - 相对路径、大小、关键哈希校验
 - DB 失败后的文件恢复
 - 文件恢复失败后的全批次 STOP
-- UI 真实执行按钮
+
+仍未开放：UI/CLI 真实执行、正式资源库写入和 quarantine 移动。详见 `EXTERNAL_INTAKE_FILESYSTEM_TRANSACTION_SPEC.md`。

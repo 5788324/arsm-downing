@@ -119,12 +119,12 @@ dry-run 优先
 1. external intake 真实执行硬冻结（已完成）
 2. external intake 计划模型与纯扫描收口（已完成）
 3. external intake LibraryVault 快照与路径事务（已完成）
-4. external intake 逐作品文件执行与自动恢复（当前）
-5. 下载核心 416 / Range / .part / 取消恢复修复
-6. 数据库 Schema、缓存和资源库一致性
-7. UI 行为与线程安全
-8. 迁移和 backlog 安全闭环
-9. 统一 pytest、依赖锁定和 GitHub Actions
+4. external intake 逐作品文件执行与自动恢复（沙盒已完成）
+5. 统一测试、CI 和 Windows 沙盒验收（当前）
+6. 下载核心 416 / Range / .part / 取消恢复修复
+7. 数据库 Schema、缓存和资源库一致性
+8. UI 行为与线程安全
+9. 迁移和 backlog 安全闭环
 10. Codex Windows 小批量验收
 11. 最终合并、打包和交接
 ```

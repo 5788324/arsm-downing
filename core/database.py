@@ -654,6 +654,7 @@ class LibraryVault:
         *,
         expected_preimage_token: str = "",
         ensure_library_index: bool = True,
+        file_path_mappings: dict[str, str] | None = None,
     ) -> dict:
         """Atomically update matching DB path references for one work.
 
@@ -667,6 +668,7 @@ class LibraryVault:
             target_path=str(target_path or "").strip(),
             expected_preimage_token=expected_preimage_token,
             ensure_library_index=ensure_library_index,
+            file_path_mappings=dict(file_path_mappings or {}),
         )
         if self.read_only:
             return {

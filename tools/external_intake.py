@@ -25,13 +25,14 @@ if str(REPO_ROOT) not in sys.path:
 
 from core.database import LibraryVault
 from core.intake_db import paths_equivalent
+from core.intake_manifest import build_identity_file_mappings, build_source_plan_manifest
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
 except (AttributeError, OSError):
     pass
 
-PLAN_SCHEMA_VERSION = 2
+PLAN_SCHEMA_VERSION = 3
 ACTION_CLASSIFICATIONS = (
     "already_normalized",
     "needs_title_layer",
@@ -96,6 +97,10 @@ class ExternalIntakeAction:
     db_pending_downloads: int = 0
     db_library_item_paths: list[str] = field(default_factory=list)
     db_library_index_paths: list[str] = field(default_factory=list)
+    source_file_count: int = 0
+    source_total_size: int = 0
+    source_manifest_token: str = ""
+    file_mappings: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.classification not in ACTION_CLASSIFICATIONS:
@@ -513,6 +518,36 @@ def _classify_unique_dir(root: Path, directory: Path, rj_id: str) -> ExternalInt
     )
 
 
+def _attach_file_plan(
+    action: ExternalIntakeAction, directory: Path
+) -> ExternalIntakeAction:
+    """Attach complete source manifest and per-file target mappings.
+
+    Actions that still require metadata or manual review retain the manifest for
+    drift detection, but remain non-executable.  A canonical top-level rename
+    maps all source files beneath the extracted Title directory.
+    """
+    if action.classification == "fatal" or directory.is_symlink():
+        return action
+    try:
+        manifest = build_source_plan_manifest(directory)
+        prefix = ""
+        if action.classification == "needs_rename_top_level" and action.target_content_dir:
+            prefix = Path(action.target_content_dir).name
+        action.source_file_count = manifest.file_count
+        action.source_total_size = manifest.total_size
+        action.source_manifest_token = manifest.token
+        action.file_mappings = build_identity_file_mappings(
+            directory, prefix=prefix, manifest=manifest
+        )
+    except (OSError, ValueError) as exc:
+        action.classification = "fatal"
+        action.reason = "source_manifest_failed"
+        action.issues.append(str(exc))
+        action.file_mappings = []
+    return action
+
+
 def build_external_intake_plan(
     root: str | os.PathLike[str] | None,
     quarantine_root: str | os.PathLike[str] | None = None,
@@ -576,15 +611,15 @@ def build_external_intake_plan(
             unmatched.append(directory)
 
     for directory in unmatched:
-        plan.add_action(
-            ExternalIntakeAction(
-                source=str(directory),
-                source_name=directory.name,
-                rj_id="",
-                classification="quarantine_candidate",
-                reason="no_rj_match",
-            )
+        action = ExternalIntakeAction(
+            source=str(directory),
+            source_name=directory.name,
+            rj_id="",
+            classification="quarantine_candidate",
+            reason="no_rj_match",
+            target_root=str(quarantine_path / directory.name) if quarantine_path else "",
         )
+        plan.add_action(_attach_file_plan(action, directory))
 
     for rj_id in sorted(grouped):
         candidates = grouped[rj_id]
@@ -604,7 +639,10 @@ def build_external_intake_plan(
                 )
             continue
 
-        plan.add_action(_classify_unique_dir(root_path, candidates[0], rj_id))
+        action = _classify_unique_dir(root_path, candidates[0], rj_id)
+        if action.classification == "quarantine_candidate" and quarantine_path is not None:
+            action.target_root = str(quarantine_path / candidates[0].name)
+        plan.add_action(_attach_file_plan(action, candidates[0]))
 
     if plan.quarantine_actions and quarantine_path is None:
         plan.add_fatal(

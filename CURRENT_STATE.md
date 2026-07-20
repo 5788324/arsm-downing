@@ -77,9 +77,9 @@ main 仅接收审查通过的 PR
 
 ### 4.2 最近代码阶段
 
-`TAKEOVER-T0/T1/T2` 已完成 external intake 的冻结、只读计划和数据库服务收口：
+`TAKEOVER-T0/T1/T2/T3` 已完成 external intake 的冻结、只读计划、数据库服务和沙盒文件事务收口：
 
-- 固定 `ExternalIntakePlan` schema v2 与六类目录分类
+- 固定 `ExternalIntakePlan` schema v3、六类目录分类、manifest token 和完整逐文件映射
 - 扫描根目录、隔离目录改为配置项
 - 重复 RJ 全部标记 `duplicate_review`
 - 目标路径冲突、危险根目录、符号链接升级为 fatal
@@ -90,8 +90,12 @@ main 仅接收审查通过的 PR
 - 成功返回 preimage/postimage；SQLite 失败整事务 rollback 并保留 preimage
 - 重复副本不能按 RJ 号覆盖正常主记录
 - 全新数据库现在会创建 `library_items` 基础 schema
+- 新增 staging/rollback/Journal 状态机，只在显式 sandbox 内执行
+- staging 与目标按相对路径、数量、大小和关键哈希双重校验
+- Title 层文件映射与 downloads.local_path 使用同一映射更新
+- DB 失败自动恢复原源目录；进程提交前后中断可按 Journal 恢复
 
-真实文件移动、隔离、元数据刷新和 UI 执行入口继续保持冻结。当前新增写入服务只在临时 SQLite 测试及现有迁移兼容路径中验证，尚未连接 external intake 文件执行状态机。
+真实资源库移动、隔离、元数据刷新和 UI/CLI 执行入口继续保持冻结。文件执行状态机已在 tempfile 沙盒中完成，但尚未经过 Windows 文件锁、真实路径和复制资源库验收。
 
 ## 5. 最近一次已记录的本机状态
 
@@ -114,8 +118,8 @@ PRAGMA integrity_check = ok
 
 ### P0 / 必须先修
 
-1. external intake 尚未实现文件 staging、逐作品执行、文件校验和 DB 失败后的文件恢复；真实执行继续冻结。
-2. 纯 RJ 根目录仍缺少基于 metadata title 的最终目标命名策略，需在 T3 计划漂移检查中收口。
+1. external intake 沙盒事务已完成，但尚未通过 Windows/T6 复制资源库执行验收，真实执行继续冻结。
+2. `needs_title_layer` 仍缺少基于 metadata title 的无歧义目标命名；当前不允许执行。
 3. 下载核心仍存在 HTTP 416、`.part` 进度、取消/恢复和响应清理问题。
 4. 资源库递归验证、扫描快照、缓存恢复和旧索引清理仍未完成。
 5. Windows/Flet/真实目录只读验收尚未执行。
@@ -155,8 +159,8 @@ Tools -> External Intake -> Execute
 TAKEOVER-T0：已完成——事实校准、核心/CLI/UI 硬冻结
 TAKEOVER-T1：已完成——固定计划模型、路径配置、冲突分类、完整报告和后台 UI 扫描
 TAKEOVER-T2：已完成——LibraryVault 快照、四表路径事务、preimage/postimage 与重复 RJ 保护
-TAKEOVER-T3：下一步——逐作品文件执行、staging、校验与自动恢复
-TAKEOVER-T4：统一 pytest、依赖锁定和 CI
+TAKEOVER-T3：已完成——逐文件映射、staging、双重校验、Journal、回滚与崩溃恢复
+TAKEOVER-T4：下一步——统一 pytest、依赖锁定和 CI
 TAKEOVER-T5：Windows 本机只读 dry-run 验收
 TAKEOVER-T6：沙盒执行验收
 ```
@@ -165,10 +169,13 @@ TAKEOVER-T6：沙盒执行验收
 
 ```text
 python -W error::ResourceWarning -m unittest discover -s tests -p "test_external_intake_*.py" -v
-结果：40/40 passed
+结果：62/62 passed
 完整报告 60 actions 不截断：通过
 重复 RJ 全候选复核和主记录保护：通过
 四表路径事务与 preimage/postimage：通过
+沙盒 staging/Title 映射/关键哈希：通过
+DB 失败文件恢复与崩溃 Journal 恢复：通过
+批次失败立即停止：通过
 SQLite 注入失败全事务回滚：通过
 只读 CLI 数据库哈希不变：通过
 目标冲突与危险路径：通过

@@ -1,6 +1,6 @@
 # arsm-downing 接手审计
 
-> 状态更新（2026-07-20）：TAKEOVER-T0/T1/T2 已完成多层硬冻结、固定计划 schema v2、配置化路径、LibraryVault 只读快照、四表路径事务、preimage/postimage 与重复 RJ 主记录保护；40 项便携测试通过。文件 staging、校验和自动恢复仍待 T3，真实执行继续冻结。
+> 状态更新（2026-07-20）：TAKEOVER-T0/T1/T2/T3 已完成多层硬冻结、计划 schema v3、配置化路径、LibraryVault 快照、四表事务、逐文件映射、staging、关键哈希、Journal、回滚与崩溃恢复；62 项便携测试通过。真实 Tools/CLI/正式资源库执行继续冻结。
 
 - 日期：2026-07-18
 - 基线：`main@1f33595b8fb3e7d895ae6bca1f907186d836bc60`

@@ -84,9 +84,9 @@ queue.json 不作为历史下载进度真源
 - 只读计划使用固定 `ExternalIntakePlan` schema，完整报告不会截断 actions。
 - 重复 RJ 的全部候选进入人工复核；不再自动选择主目录或删除主记录。
 - 扫描根目录、隔离目录由配置提供，不再硬编码 `E:\arsm`。
-- 计划 schema v2 通过现有 `LibraryVault` 附加数据库 preimage token、主记录路径和 pending 状态。
+- 计划 schema v3 附加数据库 preimage、源文件 manifest token 和完整逐文件 source/target 映射。
 - 数据库路径更新已收口为单一事务，同步 `works`、`downloads`、`library_items`、`library_index` 并返回 preimage/postimage。
-- 数据库事务服务尚未连接文件移动流程，真实执行按钮继续冻结。
+- 新增沙盒文件事务：staging、Title 层映射、数量/大小/关键哈希校验、Journal、DB 失败回滚和崩溃恢复；仅允许临时资源库，真实执行按钮继续冻结。
 
 旧命令现在只会得到明确 STOP，不会移动文件或修改数据库：
 
@@ -108,7 +108,7 @@ docs/TAKEOVER_AUDIT_20260718.md
 python -m unittest discover -s tests -p "test_external_intake_*.py" -v
 ```
 
-当前结果：`40/40 passed`。默认测试仅使用临时目录和临时 SQLite。
+当前结果：`62/62 passed`。默认测试仅使用临时目录和临时 SQLite；其中包含真实的临时文件复制、原子改名、数据库更新和自动恢复。
 
 ## 安装
 

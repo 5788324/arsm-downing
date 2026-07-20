@@ -28,7 +28,7 @@
 - 重复 RJ 的隔离路径可能删除正常主记录。
 - 文件系统与数据库更新没有可靠原子恢复。
 
-处理状态（2026-07-20）：旧执行体已删除，核心/CLI/UI 已硬冻结；计划 schema v2 已接入 LibraryVault 快照，数据库路径更新服务具备四表事务与重复 RJ 保护。文件 staging、校验和自动恢复仍待 T3，真实执行继续冻结。
+处理状态（2026-07-20）：旧执行体已删除，核心/CLI/UI 已硬冻结；计划 schema v3 已接入 LibraryVault 快照、逐文件映射和 source manifest；四表事务、staging、关键哈希、Journal、DB 失败回滚与崩溃恢复已在 tempfile 沙盒通过。真实 Tools/CLI/正式资源库执行继续冻结。
 
 ### P0-02 下载断点续传的 HTTP 416 处理不可信
 
