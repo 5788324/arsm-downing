@@ -185,11 +185,7 @@ class ToolsView(ft.Container):
         return Path(getattr(self.app_controller.db, "db_path", "history.db"))
 
     def scan_library(self, e):
-        """Run the legacy library rebuild off the Flet thread.
-
-        The scanner is still a compatibility path, so the UI reports its exact
-        scope and never runs enrichment callbacks from a worker thread.
-        """
+        """Build a filesystem snapshot and atomically refresh library indexes."""
         del e
         paths = list(getattr(self.app_controller.config, "library_paths", []) or [])
         if not paths:
@@ -201,11 +197,21 @@ class ToolsView(ft.Container):
             return self.app_controller.db.rebuild_library(paths)
 
         def _render(result):
-            self.log(f"  发现: {result['found']} 个作品", SUCCESS)
-            self.log(f"  新增 works 索引: {result['indexed']} 个", ACCENT_PRIMARY)
-            if result["errors"]:
-                self.log(f"  错误: {result['errors']}", ERROR)
-            self.log("  提示：此按钮只完成兼容索引扫描；元数据补全和文件核验未自动执行。", WARNING)
+            if not result.get("success"):
+                self.log(f"  扫描失败，旧索引已保留：{result.get('error', 'unknown')}", ERROR)
+                return
+            self.log(
+                f"  发现 {result['found']} 个 RJ / {result['entries']} 个目录",
+                SUCCESS,
+            )
+            self.log(
+                f"  新增 works={result['indexed']} | 更新={result['updated']} | "
+                f"陈旧索引清理={result['removed_index']} | 标记缺失={result['missing']}",
+                ACCENT_PRIMARY,
+            )
+            if result.get("warnings"):
+                self.log(f"  扫描警告: {result['warnings']} 项", WARNING)
+            self.log("  library_items 与 library_index 已由同一快照原子更新。", "grey")
 
         self.app_controller.run_blocking(
             _scan, _render, action_label="资源库扫描"

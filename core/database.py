@@ -11,6 +11,14 @@ from core.intake_db import (
     apply_path_update,
     capture_external_intake_snapshot,
 )
+from core.library_rebuild import (
+    ACTIVE_DOWNLOAD_STATUSES,
+    LibraryRebuildResult,
+    LibraryScanError,
+    choose_canonical_entries,
+    flatten_metadata_track_titles,
+    scan_library_snapshot,
+)
 from core.models import WorkMetadata
 
 # Python 3.12+ deprecates sqlite3's implicit datetime adapter.  Registering an
@@ -519,65 +527,193 @@ class LibraryVault:
         return ""
 
     def scan_library_paths(self, paths: List[str]) -> int:
-        """Scan library paths for RJ folders. Returns count of unique rj_id found."""
-        import re as _re
-        rj_re = _re.compile(r'(?:RJ)?(\d{6,8})', _re.IGNORECASE)
-        found_ids = set()
+        """Refresh only ``library_index`` from one complete filesystem snapshot."""
+        snapshot = scan_library_snapshot(paths)
 
-        def _scan_dir(d: Path, lib_path: str):
-            if not d.is_dir():
-                return
-            m = rj_re.search(d.name)
-            if m:
-                rj_id = f"RJ{int(m.group(1)):08d}"
-                files = list(d.rglob("*"))
-                file_count = sum(1 for f in files if f.is_file())
-                size_bytes = sum(f.stat().st_size for f in files if f.is_file())
-                self.upsert_library_entry(
-                    rj_id, lib_path, str(d),
-                    size_bytes, file_count, 'found')
-                found_ids.add(rj_id)
-                return True
+        def _replace_index(conn):
+            conn.execute("DELETE FROM library_index")
+            conn.executemany(
+                """INSERT INTO library_index
+                   (rj_id, library_path, work_dir, status, size_bytes,
+                    file_count, scanned_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                [entry.to_library_index_row(snapshot.scanned_at)
+                 for entry in snapshot.entries],
+            )
+
+        self._write(_replace_index)
+        return snapshot.unique_rj_count
+
+    @staticmethod
+    def _path_is_under(path_value: str, roots: Iterable[str]) -> bool:
+        if not path_value:
+            return False
+        try:
+            path = Path(path_value).expanduser().resolve(strict=False)
+            return any(path == Path(root).resolve(strict=False) or
+                       Path(root).resolve(strict=False) in path.parents
+                       for root in roots)
+        except (OSError, RuntimeError):
             return False
 
-        for lib_path in paths:
-            p = Path(lib_path)
-            if not p.exists():
-                continue
-            for d in p.iterdir():
-                if not _scan_dir(d, lib_path):
-                    for sub in d.iterdir():
-                        _scan_dir(sub, lib_path)
-        return len(found_ids)
-
     def rebuild_library(self, paths: List[str]) -> dict:
-        """Scan library paths and sync to works table. Returns stats."""
-        result = {"found": 0, "indexed": 0, "errors": 0}
-        _n = self.scan_library_paths(paths)
-        result["found"] = _n
+        """Atomically replace library indexes from a complete scan snapshot.
 
-        def _sync(conn):
-            rows = conn.execute(
-                "SELECT DISTINCT rj_id, work_dir, library_path, size_bytes FROM library_index"
-            ).fetchall()
-            for row in rows:
-                try:
-                    existing = conn.execute(
-                        "SELECT rj_id FROM works WHERE rj_id=?", (row["rj_id"],)
-                    ).fetchone()
-                    if not existing:
-                        conn.execute(
-                            """INSERT OR IGNORE INTO works
-                               (rj_id, title, circle, size_bytes, local_path, status, downloaded_at)
-                               VALUES (?, ?, ?, ?, ?, 'external', ?)""",
-                            (row["rj_id"], row["rj_id"], "",
-                             row["size_bytes"], row["work_dir"], datetime.now()))
-                        result["indexed"] += 1
-                except Exception as e:
-                    logging.error(f"Rebuild sync error {row['rj_id']}: {e}")
-                    result["errors"] += 1
-        self._write(_sync)
-        return result
+        Filesystem scanning happens before the SQLite transaction.  Any scan or
+        write failure therefore leaves the previous indexes untouched.  Existing
+        works with active/resumable downloads are never rewritten.
+        """
+        try:
+            snapshot = scan_library_snapshot(paths)
+        except LibraryScanError as exc:
+            logging.error("Library snapshot failed: %s", exc)
+            return LibraryRebuildResult(
+                success=False, errors=1, error=str(exc)
+            ).as_dict()
+
+        disappeared = [
+            entry.work_dir for entry in snapshot.entries
+            if not Path(entry.work_dir).is_dir()
+        ]
+        if disappeared:
+            return LibraryRebuildResult(
+                success=False,
+                run_id=snapshot.run_id,
+                found=snapshot.unique_rj_count,
+                entries=len(snapshot.entries),
+                errors=1,
+                error=f"scan_changed:{disappeared[0]}",
+            ).as_dict()
+
+        with self._lock:
+            preferred: dict[str, list[str]] = {}
+            for row in self.conn.execute(
+                "SELECT rj_id, local_path FROM works WHERE local_path IS NOT NULL"
+            ).fetchall():
+                preferred.setdefault(row["rj_id"], []).append(row["local_path"])
+            for row in self.conn.execute(
+                "SELECT rj_id, folder_path FROM library_items"
+            ).fetchall():
+                preferred.setdefault(row["rj_id"], []).append(row["folder_path"])
+        canonical = choose_canonical_entries(snapshot, preferred)
+        result = LibraryRebuildResult(
+            success=True,
+            run_id=snapshot.run_id,
+            found=snapshot.unique_rj_count,
+            entries=len(snapshot.entries),
+            warnings=len(snapshot.warnings) + sum(
+                len(entry.warnings) for entry in snapshot.entries
+            ),
+            snapshot=snapshot,
+        )
+
+        def _replace(conn):
+            old_keys = {
+                (row["rj_id"], str(row["work_dir"]))
+                for row in conn.execute(
+                    "SELECT rj_id, work_dir FROM library_index"
+                ).fetchall()
+            }
+            new_keys = {(entry.rj_id, entry.work_dir) for entry in snapshot.entries}
+            result.removed_index = len(old_keys - new_keys)
+
+            active_rj = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT DISTINCT rj_id FROM downloads WHERE status IN (?,?,?,?,?)",
+                    tuple(sorted(ACTIVE_DOWNLOAD_STATUSES)),
+                ).fetchall()
+            }
+            existing_works = {
+                row["rj_id"]: dict(row)
+                for row in conn.execute(
+                    "SELECT rj_id, local_path, status FROM works"
+                ).fetchall()
+            }
+
+            conn.execute("DELETE FROM library_index")
+            conn.executemany(
+                """INSERT INTO library_index
+                   (rj_id, library_path, work_dir, status, size_bytes,
+                    file_count, scanned_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                [entry.to_library_index_row(snapshot.scanned_at)
+                 for entry in snapshot.entries],
+            )
+            conn.execute("DELETE FROM library_items")
+            conn.executemany(
+                """INSERT INTO library_items
+                   (rj_id, folder_path, folder_name, total_files, total_size,
+                    audio_count, image_count, video_count, other_count,
+                    has_audio, has_cover, warnings_json, scan_run_id, scanned_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [entry.to_library_item_row(snapshot.run_id, snapshot.scanned_at)
+                 for entry in canonical.values()],
+            )
+
+            for rj_id, entry in canonical.items():
+                existing = existing_works.get(rj_id)
+                if existing is None:
+                    conn.execute(
+                        """INSERT INTO works
+                           (rj_id, title, circle, downloaded_at, size_bytes,
+                            local_path, status)
+                           VALUES (?, ?, '', ?, ?, ?, 'external')""",
+                        (rj_id, rj_id, snapshot.scanned_at,
+                         entry.total_size, entry.work_dir),
+                    )
+                    result.indexed += 1
+                    continue
+                if rj_id in active_rj:
+                    continue
+                status = str(existing.get("status") or "")
+                current_path = str(existing.get("local_path") or "")
+                if status in {"external", "indexed", "prepared", "missing"}:
+                    conn.execute(
+                        """UPDATE works SET local_path=?, size_bytes=?, status='indexed'
+                           WHERE rj_id=?""",
+                        (entry.work_dir, entry.total_size, rj_id),
+                    )
+                    result.updated += 1
+                elif status == "verified":
+                    conn.execute(
+                        "UPDATE works SET local_path=?, size_bytes=? WHERE rj_id=?",
+                        (entry.work_dir, entry.total_size, rj_id),
+                    )
+                    result.updated += 1
+                elif current_path and Path(current_path) == Path(entry.work_dir):
+                    conn.execute(
+                        "UPDATE works SET size_bytes=? WHERE rj_id=?",
+                        (entry.total_size, rj_id),
+                    )
+
+            scanned_rj = set(canonical)
+            for rj_id, existing in existing_works.items():
+                if rj_id in scanned_rj or rj_id in active_rj:
+                    continue
+                if str(existing.get("status") or "") not in {
+                    "external", "indexed", "prepared", "missing", "verified"
+                }:
+                    continue
+                if self._path_is_under(str(existing.get("local_path") or ""), snapshot.roots):
+                    conn.execute(
+                        "UPDATE works SET status='missing' WHERE rj_id=?",
+                        (rj_id,),
+                    )
+                    result.missing += 1
+
+        try:
+            self._write(_replace)
+        except Exception as exc:
+            logging.error("Library rebuild transaction failed: %s", exc)
+            result.success = False
+            result.indexed = 0
+            result.updated = 0
+            result.missing = 0
+            result.removed_index = 0
+            result.errors = 1
+            result.error = str(exc)
+        return result.as_dict()
 
     def enrich_external_metadata(self, rj_id: str, meta_raw: dict,
                                   cover_url: str, title: str, circle: str):
@@ -589,44 +725,43 @@ class LibraryVault:
 
     def verify_library_item(self, rj_id: str, work_dir: str,
                             metadata_tracks: list) -> str:
-        """Compare metadata tracks with local files. Returns status."""
-        import os as _os
-        d = Path(work_dir)
+        """Compare recursively nested metadata tracks with local files."""
+        directory = Path(work_dir)
         result_status = "missing"
 
         def _verify(conn):
             nonlocal result_status
-            if not d.exists():
+            if not directory.exists():
                 conn.execute(
                     "UPDATE works SET status='missing' WHERE rj_id=? AND local_path=?",
-                    (rj_id, work_dir))
+                    (rj_id, work_dir),
+                )
                 result_status = "missing"
                 return
 
-            has_part = any(f.suffix == ".part" for f in d.rglob("*.part"))
-            if has_part:
+            local_files = [path for path in directory.rglob("*") if path.is_file()]
+            if any(path.name.casefold().endswith(".part") for path in local_files):
                 conn.execute(
                     "UPDATE works SET status='partial' WHERE rj_id=? AND local_path=?",
-                    (rj_id, work_dir))
+                    (rj_id, work_dir),
+                )
                 result_status = "partial"
                 return
 
+            local_names = {path.name.casefold() for path in local_files}
+            local_stems = {path.stem.casefold() for path in local_files}
             missing_count = 0
-            for track in metadata_tracks:
-                if track.get("type") == "folder":
-                    continue
-                tname = track.get("title", "")
-                found = any(
-                    f.name.startswith(Path(tname).stem)
-                    for f in d.rglob("*") if f.is_file())
-                if not found:
+            for title in flatten_metadata_track_titles(metadata_tracks):
+                name = Path(title).name.casefold()
+                stem = Path(title).stem.casefold()
+                if name not in local_names and stem not in local_stems:
                     missing_count += 1
 
-            s = "partial" if missing_count > 0 else "verified"
+            result_status = "partial" if missing_count else "verified"
             conn.execute(
                 "UPDATE works SET status=? WHERE rj_id=? AND local_path=?",
-                (s, rj_id, work_dir))
-            result_status = s
+                (result_status, rj_id, work_dir),
+            )
 
         self._write(_verify)
         return result_status

@@ -186,13 +186,14 @@ TAKEOVER-T6：已完成——复制资源库执行、幂等、DB 失败回滚和
 TAKEOVER-T6B：已完成——Tools 维护操作和 backlog 安全收口
 TAKEOVER-T7：等待维护窗口——当前 100+ 混合任务存在，不执行真实小批量整理
 TAKEOVER-T8A：已完成——迁移 manifest、递归 part/symlink、四表同步、删除确认和沙盒验收
+TAKEOVER-T8B：已完成——资源库完整快照、原子索引替换、陈旧清理、重复 RJ 主路径和递归音轨验证
 ```
 
 ## 8.1 当前验证结果
 
 ```text
 隔离虚拟环境：Flet 0.27.6 legacy API import PASS
-python -m pytest：174/174 passed
+python -m pytest：183/183 passed
 全项目 compileall：PASS
 pip check：PASS
 活跃状态文件保护：发现 history.db 时 pytest 固定 exit 2
@@ -205,6 +206,7 @@ SQLite 在线备份：WAL 并发写入期间 snapshot integrity_check=ok
 真实 ASMR.one：当前容器 DNS 阻塞，待 Windows sandbox
 Flet 视觉点击：当前容器浏览器策略/libmpv 阻塞，待 Windows sandbox
 external intake 复制资源库验收：11/11 checks PASS；迁移 T8A 沙盒验收：10/10 checks PASS
+资源库 T8B 快照重建验收：10/10 checks PASS
 GitHub Actions：Linux 3.10 + Windows 3.12 workflow 已生成，尚待最终推送后真实运行
 真实 history.db：未连接
 真实 E:\arsm：未读取或修改

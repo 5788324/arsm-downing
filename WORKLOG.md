@@ -2678,3 +2678,43 @@ TAKEOVER-T8B：资源库 rebuild 快照写入、旧索引清理、中断恢复�
 TAKEOVER-T5B：等待 Codex Windows 下载/UI 证据。
 TAKEOVER-T7：等待 100+ 混合任务清空后的维护窗口。
 ```
+
+
+## 2026-07-20 — TAKEOVER-T8B：资源库快照重建
+
+### 完成
+
+1. 新增 `core/library_rebuild.py`，扫描阶段生成不可变完整快照。
+2. `library_items` 与 `library_index` 在单个事务中整体替换，自动清理陈旧索引。
+3. 重复 RJ 保留全部目录，并优先沿用现有数据库主路径。
+4. 新发现作品补入 `works(status=external)`；活动/可恢复任务的 works 路径不改动。
+5. 扫描中断、目录消失和 SQLite 故障均保留旧索引。
+6. `verify_library_item()` 支持任意层级 metadata track tree。
+7. Tools 页扫描改为后台快照重建并输出差异统计。
+8. 新增 T8B 独立沙盒验收和正式说明文档。
+
+### 自动验证
+
+```text
+python -m pytest：183/183 passed
+T8B 资源库沙盒验收：10/10 checks PASS
+ResourceWarning 严格模式：PASS
+python compileall：PASS
+git diff --check：PASS
+```
+
+### 正式现场影响
+
+```text
+100+ 正式下载任务：未触碰
+正式 history.db/config.json/queue.json：未读取或修改
+正式 Downloads/E:\arsm：未扫描或重建
+```
+
+### 下一步
+
+```text
+TAKEOVER-T9：合并剩余低风险代码债务、启动/打包和发布候选收口。
+TAKEOVER-T5B：等待 Windows 真实下载与 Flet 视觉证据。
+TAKEOVER-T7：等待下载任务清空后的真实小批量维护窗口。
+```

@@ -116,7 +116,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-当前结果：`174/174 passed`。其中包括 external-intake 沙盒/事务与 T6 复制资源库验收、Tools 维护和 backlog 安全测试、SQLite 在线快照、混合下载状态报告、HTTP 200/206/416 真实 aiohttp 集成、下载 UI 语义、资源库后台加载/搜索/异常分类和 UI 模块导入 smoke test。默认测试只使用临时目录和临时 SQLite，并在工作区出现 `history.db`、`config.json` 或 `queue.json` 时直接拒绝运行。
+当前结果：`183/183 passed`。其中包括 external-intake 沙盒/事务与 T6 复制资源库验收、Tools 维护和 backlog 安全测试、SQLite 在线快照、混合下载状态报告、HTTP 200/206/416 真实 aiohttp 集成、下载 UI 语义、资源库后台加载/搜索/异常分类、资源库快照原子重建/陈旧索引清理、递归音轨验证和 UI 模块导入 smoke test。默认测试只使用临时目录和临时 SQLite，并在工作区出现 `history.db`、`config.json` 或 `queue.json` 时直接拒绝运行。
 
 隔离下载与 Flet UI 验收：
 

@@ -342,6 +342,29 @@ PASS（2026-07-20，代码级）
 
 详细说明：`docs/TOOLS_MAINTENANCE_SAFETY.md`。
 
+
+## TAKEOVER-T8B：资源库快照重建与索引一致性
+
+### 状态
+
+```text
+PASS（2026-07-20，代码级）
+```
+
+### 已完成
+
+- [x] 扫描阶段只生成完整快照，不边扫描边写数据库
+- [x] `library_items` / `library_index` 同一事务整体替换
+- [x] 自动删除不存在目录对应的陈旧索引
+- [x] 重复 RJ 保留全部 index，卡片主路径优先沿用现有数据库路径
+- [x] 新外部作品补入 works；活动/可恢复下载的 works 路径保持不变
+- [x] 扫描中断、目录消失和数据库失败时保留旧索引
+- [x] metadata folder/children 任意层级递归验证
+- [x] Tools 页后台执行并展示新增、更新、清理和缺失统计
+- [x] 独立沙盒验收 10/10 PASS
+
+详细说明：`docs/TAKEOVER_T8B_LIBRARY_REBUILD.md`。
+
 ## TAKEOVER-T7：真实小批量验收
 
 ### 前置条件
@@ -376,7 +399,8 @@ external intake 通过后再按以下顺序推进：
 
 ```text
 TAKEOVER-T8A：已完成——磁盘 manifest、相对路径/哈希校验、递归 `.part`/symlink、源删除确认、四表同步和 10/10 沙盒验收
-TAKEOVER-T8B：当前下一项——资源库 rebuild 快照写入、旧索引清理和中断恢复
+TAKEOVER-T8B：已完成——完整快照、原子替换、陈旧索引清理、重复 RJ 主路径和递归验证
+TAKEOVER-T9：当前下一项——剩余低风险代码债务、启动/打包、发布候选和最终 GitHub/CI 收口
 TAKEOVER-T5B（并行待 Codex）：Windows 在线快照、真实小样本和 Flet 视觉证据
 TAKEOVER-T7（暂停）：只有 100+ 混合任务清空并进入维护窗口后才执行真实 1~3 个作品整理
 ```
