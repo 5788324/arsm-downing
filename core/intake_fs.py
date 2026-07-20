@@ -45,6 +45,17 @@ class SimulatedProcessInterruption(BaseException):
 FaultInjector = Callable[[str, IntakeExecutionJournal], None]
 
 
+def _absolute_unresolved(path: Path) -> Path:
+    """Return an absolute normalized path without resolving filesystem aliases.
+
+    On Windows, ``Path.resolve()`` may expand an 8.3 short path or otherwise
+    change the spelling that is stored in SQLite.  Filesystem safety checks
+    still use ``_resolved()``, while transaction paths retain the caller's
+    absolute spelling so database path matching remains stable.
+    """
+    return Path(os.path.abspath(os.fspath(path.expanduser())))
+
+
 def _resolved(path: Path) -> Path:
     return path.expanduser().resolve(strict=False)
 
@@ -117,9 +128,9 @@ class ExternalIntakeSandboxExecutor:
     def _paths_for_request(
         self, request: IntakeFileExecutionRequest
     ) -> tuple[Path, Path, Path, Path, Path]:
-        sandbox = _resolved(Path(request.sandbox_root))
-        source = _resolved(Path(request.source_path))
-        target = _resolved(Path(request.target_path))
+        sandbox = _absolute_unresolved(Path(request.sandbox_root))
+        source = _absolute_unresolved(Path(request.source_path))
+        target = _absolute_unresolved(Path(request.target_path))
         staging = (
             target.parent
             / ".arsm-intake-staging"

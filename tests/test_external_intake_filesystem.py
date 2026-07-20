@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from core.database import LibraryVault
 from core.intake_fs import (
@@ -120,6 +121,37 @@ class ExternalIntakeFilesystemTests(unittest.TestCase):
             }
         finally:
             connection.close()
+
+    def test_transaction_paths_preserve_request_spelling_without_resolve(self) -> None:
+        source = self._source()
+        request = IntakeFileExecutionRequest(
+            rj_id="RJ01000001",
+            source_path=str(source),
+            target_path=str(self.sandbox / "library" / "RJ01000001"),
+            sandbox_root=str(self.sandbox),
+            expected_preimage_token="a" * 64,
+            expected_source_manifest_token=build_source_plan_manifest(source).token,
+        )
+        executor = ExternalIntakeSandboxExecutor(
+            FailingVault(), self.journal_dir
+        )
+
+        with patch(
+            "core.intake_fs._resolved",
+            side_effect=AssertionError(
+                "transaction path construction must not resolve aliases"
+            ),
+        ):
+            sandbox, actual_source, target, _, _ = (
+                executor._paths_for_request(request)
+            )
+
+        self.assertEqual(str(sandbox), str(self.sandbox.absolute()))
+        self.assertEqual(str(actual_source), str(source.absolute()))
+        self.assertEqual(
+            str(target),
+            str((self.sandbox / "library" / "RJ01000001").absolute()),
+        )
 
     def test_plan_manifest_and_file_mappings_are_complete(self) -> None:
         source = self._source()
