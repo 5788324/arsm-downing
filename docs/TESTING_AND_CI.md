@@ -95,3 +95,13 @@ python scripts/inspect_db_snapshot.py `
 3. portable pytest；
 4. Windows/Flet 验收；
 5. 确认后才能替换用户现有安装环境。
+
+## 下载和 UI Smoke
+
+下载核心的本地真实 HTTP 测试、ASMR.one 兼容服务器和 Windows 隔离 UI 流程见：
+
+```text
+docs/LIVE_DOWNLOAD_AND_UI_SMOKE.md
+```
+
+这些测试不得在正式程序目录或正式 100+ 任务环境中运行。

@@ -13,6 +13,10 @@ from core.intake_db import (
 )
 from core.models import WorkMetadata
 
+# Python 3.12+ deprecates sqlite3's implicit datetime adapter.  Registering an
+# explicit ISO-8601 adapter keeps database writes deterministic across versions.
+sqlite3.register_adapter(datetime, lambda value: value.isoformat())
+
 DB_FILE = Path("history.db")
 
 # Cache expiry: 7 days
@@ -255,17 +259,25 @@ class LibraryVault:
     # ──────────────────────────────────────────────
     #  Metadata cache (P1-1)
     # ──────────────────────────────────────────────
-    def get_metadata_cache(self, rj_id: str) -> Optional[Dict]:
-        """Return cached metadata dict or None if missing/expired."""
+    def get_metadata_cache(self, rj_id: str, *,
+                           allow_stale: bool = False) -> Optional[Dict]:
+        """Return cached metadata.
+
+        Fresh metadata is returned by default. ``allow_stale`` is reserved for
+        recovery paths such as resuming an interrupted download: an expired
+        cache is still safer than making an otherwise resumable local ``.part``
+        file unusable while the metadata service is offline.
+        """
         try:
             row = self.conn.execute(
                 "SELECT * FROM metadata_cache WHERE rj_id = ?", (rj_id,)
             ).fetchone()
             if not row:
                 return None
-            # Check expiry
             fetched = datetime.fromisoformat(row["fetched_at"])
-            if datetime.now() - fetched > timedelta(hours=CACHE_TTL_HOURS):
+            is_stale = datetime.now() - fetched > timedelta(
+                hours=CACHE_TTL_HOURS)
+            if is_stale and not allow_stale:
                 return None
             return {
                 "rj_id": row["rj_id"],
@@ -275,6 +287,7 @@ class LibraryVault:
                 "metadata_json": row["metadata_json"],
                 "tracks_json": row["tracks_json"],
                 "fetched_at": row["fetched_at"],
+                "is_stale": is_stale,
             }
         except Exception as e:
             logging.warning(f"Metadata cache read error: {e}")
@@ -342,6 +355,16 @@ class LibraryVault:
         except Exception as e:
             logging.error(f"Pending downloads read error: {e}")
             return []
+
+    def get_work(self, rj_id: str) -> Optional[sqlite3.Row]:
+        """Return the canonical works row for an RJ id, if present."""
+        try:
+            return self.conn.execute(
+                "SELECT * FROM works WHERE rj_id = ?", (rj_id,)
+            ).fetchone()
+        except Exception as e:
+            logging.error(f"get_work error for {rj_id}: {e}")
+            return None
 
     def get_works_status(self, rj_id: str) -> str:
         """Return works.status for a given rj_id, or empty string if missing."""

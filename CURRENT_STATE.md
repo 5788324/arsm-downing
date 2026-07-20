@@ -77,7 +77,7 @@ main 仅接收审查通过的 PR
 
 ### 4.2 最近代码阶段
 
-`TAKEOVER-T0/T1/T2/T3/T4` 已完成 external intake 安全收口及便携测试门建设：
+`TAKEOVER-T0/T1/T2/T3/T4` 已完成 external intake 安全收口及便携测试门建设；`TAKEOVER-T5A` 已完成下载核心和隔离 UI smoke 的代码级收口：
 
 - 固定 `ExternalIntakePlan` schema v3、六类目录分类、manifest token 和完整逐文件映射
 - 扫描根目录、隔离目录改为配置项
@@ -98,6 +98,11 @@ main 仅接收审查通过的 PR
 - 默认测试在工作区发现 `history.db`、`config.json` 或 `queue.json` 时 fail-closed
 - 新增在线 SQLite 只读快照和 manifest 校验，可在下载器持续运行时生成一致性副本
 - 新增快照状态报告，统计 completed/failed/paused/queued/downloading 等混合任务
+- 下载响应改为显式 200/206/416 计划，严格校验 Range、大小和本地断点
+- 取消/失败记录真实 `.part` 大小；重连、批量控制和 UI 更新分离到正确线程
+- 过期 metadata cache 只在恢复/离线 fallback 路径显式允许，保护长期暂停任务
+- 设置页写入真实 work/file concurrency；强制重复和 canonical directory 行为已修正
+- 新增本地 ASMR.one 兼容服务器、真实 aiohttp Range 集成和隔离 Flet UI 启动器
 
 真实资源库移动、隔离、元数据刷新和 UI/CLI 执行入口继续保持冻结。文件执行状态机已在 tempfile 沙盒中完成，但尚未经过 Windows 文件锁、真实路径和复制资源库验收。
 
@@ -124,9 +129,9 @@ PRAGMA integrity_check = ok
 
 1. external intake 沙盒事务已完成，但尚未通过 Windows/T6 复制资源库执行验收，真实执行继续冻结。
 2. `needs_title_layer` 仍缺少基于 metadata title 的无歧义目标命名；当前不允许执行。
-3. 下载核心仍存在 HTTP 416、`.part` 进度、取消/恢复和响应清理问题。
-4. 资源库递归验证、扫描快照、缓存恢复和旧索引清理仍未完成。
-5. Windows/Flet/真实目录只读验收尚未执行。
+3. 下载核心的 416、Range、`.part` 和主要暂停/恢复语义已完成代码级修复，但真实 ASMR.one/Windows UI 尚未验收。
+4. 资源库扫描快照、旧索引清理和 LibraryView 硬编码/性能问题仍未完成。
+5. Windows/Flet/真实网络只读与隔离下载验收尚未执行。
 
 ### P1 / 接手后尽快修
 
@@ -165,7 +170,8 @@ TAKEOVER-T1：已完成——固定计划模型、路径配置、冲突分类、
 TAKEOVER-T2：已完成——LibraryVault 快照、四表路径事务、preimage/postimage 与重复 RJ 保护
 TAKEOVER-T3：已完成——逐文件映射、staging、双重校验、Journal、回滚与崩溃恢复
 TAKEOVER-T4：已完成——统一 pytest、依赖锁定、CI 定义、在线 DB 快照与验收规范
-TAKEOVER-T5：下一步——Windows 本机只读快照、状态统计和 UI 观察验收
+TAKEOVER-T5A：已完成——下载响应、断点恢复、镜像切换、UI 控制语义和隔离 smoke 工具
+TAKEOVER-T5B：下一步——Windows 在线快照、真实 ASMR.one 小样本和 Flet 视觉验收
 TAKEOVER-T6：沙盒执行验收
 ```
 
@@ -173,13 +179,18 @@ TAKEOVER-T6：沙盒执行验收
 
 ```text
 隔离虚拟环境：Flet 0.27.6 legacy API import PASS
-python -m pytest：94/94 passed
+python -m pytest：125/125 passed
 全项目 compileall：PASS
 pip check：PASS
 活跃状态文件保护：发现 history.db 时 pytest 固定 exit 2
 SQLite 在线备份：WAL 并发写入期间 snapshot integrity_check=ok
 快照 manifest：size + SHA-256 验证通过
 混合下载状态报告：completed/failed/paused/queued/downloading 统计通过
+本地 ASMR 兼容下载：1 MiB final size + SHA-256 PASS
+真实 aiohttp 200/206/416：PASS
+过期 metadata cache 恢复与嵌套音轨 UI fallback：PASS
+真实 ASMR.one：当前容器 DNS 阻塞，待 Windows sandbox
+Flet 视觉点击：当前容器浏览器策略/libmpv 阻塞，待 Windows sandbox
 external intake 62 项沙盒/事务测试：全部包含在统一 pytest 门内
 GitHub Actions：Linux 3.10 + Windows 3.12 workflow 已生成，尚待最终推送后真实运行
 真实 history.db：未连接
@@ -203,5 +214,5 @@ DeepSeek/OpenCode：仅在明确分配时承担低风险、大批量实现，不
 ```text
 项目可继续维护，不需要推倒重写。
 下载器、SQLite 数据层和资源库 UI 已形成较完整基础。
-当前优先级不是播放器，而是收口 external intake 的文件/DB 安全边界、建立可重复测试与恢复可信文档。
+当前优先级不是播放器，而是完成 Windows 隔离下载/UI 验收，再继续资源库、迁移和 Tools 稳定性修复。
 ```

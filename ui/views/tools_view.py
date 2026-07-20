@@ -52,23 +52,23 @@ class ToolsView(ft.Container):
 
             ft.Text("\u8bca\u65ad", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
             ft.Row([
-                ft.ElevatedButton("\u8fd0\u884c\u4e00\u952e\u8bca\u65ad", icon=ft.icons.HEALTH_AND_SAFETY, on_click=self.run_diagnostic),
-                ft.ElevatedButton("\u6d4b\u8bd5\u7f51\u7edc", icon=ft.icons.NETWORK_CHECK, on_click=self.test_network),
+                ft.ElevatedButton("\u8fd0\u884c\u4e00\u952e\u8bca\u65ad", icon=ft.Icons.HEALTH_AND_SAFETY, on_click=self.run_diagnostic),
+                ft.ElevatedButton("\u6d4b\u8bd5\u7f51\u7edc", icon=ft.Icons.NETWORK_CHECK, on_click=self.test_network),
             ], spacing=12, wrap=True),
 
             ft.Text("\u4ed3\u5e93\u4e0e\u5143\u6570\u636e", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
             ft.Row([
-                ft.ElevatedButton("\u626b\u63cf\u4ed3\u5e93", icon=ft.icons.FOLDER_SPECIAL, on_click=self.scan_library,
+                ft.ElevatedButton("\u626b\u63cf\u4ed3\u5e93", icon=ft.Icons.FOLDER_SPECIAL, on_click=self.scan_library,
                     tooltip="\u626b\u63cf library_paths \u4e2d\u7684 RJ \u76ee\u5f55\u5e76\u66f4\u65b0 library_index"),
-                ft.ElevatedButton("\u8bca\u65ad\u5931\u8d25\u4efb\u52a1", icon=ft.icons.BUG_REPORT, on_click=self.diagnose_failed,
+                ft.ElevatedButton("\u8bca\u65ad\u5931\u8d25\u4efb\u52a1", icon=ft.Icons.BUG_REPORT, on_click=self.diagnose_failed,
                     tooltip="\u5206\u6790 downloads \u8868\u4e2d\u7684\u5931\u8d25\u72b6\u6001"),
             ], spacing=12, wrap=True),
 
             ft.Text("\u8fc1\u79fb", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
             ft.Row([
-                ft.ElevatedButton("\u8fc1\u79fb\u5df2\u5b8c\u6210\u4f5c\u54c1", icon=ft.icons.DRIVE_FILE_MOVE, on_click=self.migrate_dry_run,
+                ft.ElevatedButton("\u8fc1\u79fb\u5df2\u5b8c\u6210\u4f5c\u54c1", icon=ft.Icons.DRIVE_FILE_MOVE, on_click=self.migrate_dry_run,
                     tooltip="\u626b\u63cf completed/verified \u4f5c\u54c1\u5e76\u8fc1\u79fb\u5230 output_dir"),
-                ft.ElevatedButton("\u9a8c\u8bc1\u8fc1\u79fb", icon=ft.icons.VERIFIED_USER, on_click=self.verify_migrated),
+                ft.ElevatedButton("\u9a8c\u8bc1\u8fc1\u79fb", icon=ft.Icons.VERIFIED_USER, on_click=self.verify_migrated),
             ], spacing=12, wrap=True),
             ft.Row([self.keep_source_checkbox, self.delete_source_checkbox], spacing=12, wrap=True),
 
@@ -76,7 +76,7 @@ class ToolsView(ft.Container):
             ft.Container(
                 content=ft.Column([
                     ft.Row([
-                        ft.Icon(ft.icons.SECURITY, color=WARNING),
+                        ft.Icon(ft.Icons.SECURITY, color=WARNING),
                         ft.Text("外部资源整理", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
                         ft.Container(expand=True),
                         ft.Text("READ-ONLY", size=11, color=WARNING, weight=ft.FontWeight.BOLD),
@@ -85,19 +85,19 @@ class ToolsView(ft.Container):
                     ft.Row([
                         ft.ElevatedButton(
                             "扫描计划",
-                            icon=ft.icons.FOLDER_SPECIAL,
+                            icon=ft.Icons.FOLDER_SPECIAL,
                             on_click=self.external_scan,
                             tooltip="读取配置路径并分类，不移动文件、不修改数据库",
                         ),
                         ft.ElevatedButton(
                             "生成完整 DRY-RUN 报告",
-                            icon=ft.icons.DESCRIPTION,
+                            icon=ft.Icons.DESCRIPTION,
                             on_click=self.external_dry_run,
                             tooltip="后台扫描并保存完整 JSON/文本报告，actions 不截断",
                         ),
                         ft.ElevatedButton(
                             "真实执行已冻结",
-                            icon=ft.icons.BLOCK,
+                            icon=ft.Icons.BLOCK,
                             disabled=True,
                             tooltip="等待事务、回滚和沙盒验收完成后才会重新开放",
                         ),
@@ -111,15 +111,15 @@ class ToolsView(ft.Container):
 
             ft.Text("\u961f\u5217\u6e05\u7406", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
             ft.Row([
-                ft.ElevatedButton("\u6e05\u7406\u65e0\u6548\u961f\u5217", icon=ft.icons.CLEANING_SERVICES, on_click=self.clean_queue,
+                ft.ElevatedButton("\u6e05\u7406\u65e0\u6548\u961f\u5217", icon=ft.Icons.CLEANING_SERVICES, on_click=self.clean_queue,
                     tooltip="\u6e05\u7406 queue.json \u548c downloads \u4e2d\u7684\u65e0\u6548\u4efb\u52a1\u8bb0\u5f55"),
             ], spacing=12, wrap=True),
 
             ft.Text("\u7f13\u5b58\u4e0e\u6570\u636e\u5e93", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
             ft.Row([
-                ft.ElevatedButton("\u538b\u7f29\u6570\u636e\u5e93(VACUUM)", icon=ft.icons.STORAGE, on_click=self.repair_db,
+                ft.ElevatedButton("\u538b\u7f29\u6570\u636e\u5e93(VACUUM)", icon=ft.Icons.STORAGE, on_click=self.repair_db,
                     tooltip="\u6267\u884c SQLite VACUUM \u538b\u7f29\u6570\u636e\u5e93\u6587\u4ef6"),
-                ft.ElevatedButton("\u6e05\u7406\u5143\u6570\u636e\u7f13\u5b58", icon=ft.icons.DELETE_SWEEP, on_click=self.clear_cache,
+                ft.ElevatedButton("\u6e05\u7406\u5143\u6570\u636e\u7f13\u5b58", icon=ft.Icons.DELETE_SWEEP, on_click=self.clear_cache,
                     tooltip="\u6e05\u7406\u8fc7\u671f metadata_cache \u6761\u76ee"),
             ], spacing=12, wrap=True),
 
@@ -129,8 +129,8 @@ class ToolsView(ft.Container):
             ft.Row([
                 self.backlog_source,
                 self.backlog_batch_size,
-                ft.ElevatedButton("\u9884\u89c8", icon=ft.icons.PREVIEW, on_click=self.backlog_preview),
-                ft.ElevatedButton("\u6062\u590d\u961f\u5217", icon=ft.icons.REFRESH, on_click=self.backlog_reenable, bgcolor=WARNING),
+                ft.ElevatedButton("\u9884\u89c8", icon=ft.Icons.PREVIEW, on_click=self.backlog_preview),
+                ft.ElevatedButton("\u6062\u590d\u961f\u5217", icon=ft.Icons.REFRESH, on_click=self.backlog_reenable, bgcolor=WARNING),
             ], spacing=10),
             ft.Container(self.backlog_preview_text, padding=10, border_radius=8, bgcolor="#1a1a2e"),
 

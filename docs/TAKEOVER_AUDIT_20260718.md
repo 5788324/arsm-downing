@@ -94,7 +94,7 @@ warning
 
 - ToolsView 在 UI 事件中同步执行扫描、文件移动和 DB 操作，可能冻结窗口。
 - 计划报告只保存前 50 个目录，不足以作为完整审计依据。
-- 接手时依赖未锁、无统一测试命令和 CI；现已建立精确兼容集、94 项 pytest 门和 Linux/Windows workflow。
+- 接手时依赖未锁、无统一测试命令和 CI；现已建立精确兼容集、125 项 pytest 门、真实 aiohttp Range 测试和 Linux/Windows workflow。
 - 200 个历史脚本仍需逐步分类迁移，不能视为统一覆盖。
 
 ## 6. 测试审计
@@ -133,5 +133,5 @@ warning
 下载器、资源库和 SQLite 基础：保留
 external intake 当前真实执行：STOP
 播放器开发：后移
-下一步：Windows 在线 snapshot + UI 只读观察验收；真实执行继续 STOP
+下一步：Windows 在线 snapshot + 独立真实 ASMR.one 小样本 + Flet 视觉验收；external intake 真实执行继续 STOP
 ```

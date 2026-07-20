@@ -50,8 +50,10 @@ queue.json 不作为历史下载进度真源
 - 元数据缓存
 - 下载队列
 - 暂停、恢复、失败重试
-- HTTP Range 断点续传
+- HTTP Range 断点续传与 200/206/416 严格校验
 - 下载速度统计
+- 过期 metadata cache 的受控离线恢复
+- 镜像故障切换与隔离下载 smoke test
 - metadata / cover / download 三通道代理
 - 音频标签写入
 
@@ -109,7 +111,15 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-当前结果：`94/94 passed`。其中包括 62 项 external-intake 沙盒/事务测试、SQLite 在线快照、混合下载状态报告和 UI 模块导入 smoke test。默认测试只使用临时目录和临时 SQLite，并在工作区出现 `history.db`、`config.json` 或 `queue.json` 时直接拒绝运行。
+当前结果：`125/125 passed`。其中包括 62 项 external-intake 沙盒/事务测试、SQLite 在线快照、混合下载状态报告、HTTP 200/206/416 真实 aiohttp 集成、下载 UI 语义和 UI 模块导入 smoke test。默认测试只使用临时目录和临时 SQLite，并在工作区出现 `history.db`、`config.json` 或 `queue.json` 时直接拒绝运行。
+
+隔离下载与 Flet UI 验收：
+
+```text
+docs/LIVE_DOWNLOAD_AND_UI_SMOKE.md
+```
+
+该流程使用独立 sandbox、独立 SQLite 和独立 Downloads，不读取正在运行程序的 `config.json`、`queue.json` 或 `history.db`。
 
 ## 安装
 

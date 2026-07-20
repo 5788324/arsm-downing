@@ -123,10 +123,10 @@ dry-run 优先
 3. external intake LibraryVault 快照与路径事务（已完成）
 4. external intake 逐作品文件执行与自动恢复（沙盒已完成）
 5. 统一测试、CI、在线 DB snapshot（已完成）
-6. Windows 只读快照与 UI 观察验收（当前）
-7. 下载核心 416 / Range / .part / 取消恢复修复
+6. 下载核心 416 / Range / .part / 取消恢复与隔离 UI smoke（代码级已完成）
+7. Windows 在线快照、真实 ASMR.one 小样本与 Flet 视觉验收（当前）
 8. 数据库 Schema、缓存和资源库一致性
-9. UI 行为与线程安全
+9. LibraryView / ToolsView UI 行为、性能和线程安全
 10. 迁移和 backlog 安全闭环
 11. Codex Windows 小批量验收
 12. 最终合并、打包和交接

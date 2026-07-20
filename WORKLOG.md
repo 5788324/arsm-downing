@@ -2476,3 +2476,57 @@ Windows 文件锁、长路径、真实 UI 和当前 100+ 任务状态仍需 Code
 ```text
 进入 TAKEOVER-T5：在干净 Bundle 上运行 portable gate，对活跃 DB 创建在线 snapshot，输出混合下载状态报告，并只观察 Flet UI。
 ```
+
+## 2026-07-20 — TAKEOVER-T5A：下载核心与隔离 UI Smoke
+
+### 背景
+
+用户确认正式程序仍有 100 多个混合状态任务，并允许选择公开 ASMR.one 小作品进行隔离测试。本轮不操作正式队列，所有下载、数据库和 UI smoke 均使用临时 sandbox。
+
+### 完成
+
+1. 新增 `core/download_response.py`，将 HTTP 200/206/416 的判断从大型下载函数中拆出并建立显式响应计划。
+2. HTTP 416 只有在本地 final/part 大小与 metadata 精确一致时才允许完成；不完整断点固定失败或重试。
+3. Range 响应校验 `Content-Range` 起点、终点、总大小和 `Content-Length`；不匹配时清理错误断点并从零重试。
+4. 取消和最终失败记录磁盘上的真实 `.part` 大小，不再使用过期的内存计数。
+5. 修复 partial final 未移动到 `.part` 就追加的问题，以及 response 清理和未初始化局部变量风险。
+6. 网络层加入有限镜像故障切换；配置镜像优先，不在单一失败地址无限重试。
+7. 重连改为 pause 完成后再 resume；批量暂停/恢复通过后台 asyncio loop 执行；UI 更新统一回到 UI queue。
+8. 强制重复下载把 `allow_duplicate=True` 真正传入核心；打开目录优先使用 `works.local_path`。
+9. 设置页拆分并写入真实 `work_concurrency` / `file_concurrency`，保存时要求有效输出目录。
+10. `ft.icons` / `ft.colors` 迁移为 Flet 0.27.6 支持的 `ft.Icons` / `ft.Colors`。
+11. metadata cache 增加显式 `allow_stale`；正常新请求仍要求新鲜缓存，恢复/离线 fallback 可使用过期缓存，避免旧暂停任务因 TTL 失去恢复能力。
+12. UI 详情递归还原 metadata 中的嵌套音轨。
+13. 新增真实 aiohttp Range 集成测试、本地 ASMR.one 兼容服务器、隔离 live download 和 Flet UI sandbox 启动器。
+14. 新增 `docs/LIVE_DOWNLOAD_AND_UI_SMOKE.md`。
+15. 日志文件不再在 `ui.app` 导入时打开，改为真实应用启动时显式、幂等配置，消除测试/工具进程文件描述符泄漏。
+
+### 自动验证
+
+```text
+python -m compileall -q core ui tools tests scripts main.py：PASS
+python -m pytest -q：125/125 passed
+本地 ASMR 兼容服务器实际下载：1,048,576 bytes PASS
+SHA-256：902abc8c685216b618f70dae8d2b7dd1ea9aef5563d9480347cc948c237d8877
+HTTP 200 / 206 / 416 aiohttp 集成：PASS
+过期 metadata cache 恢复：PASS
+嵌套音轨递归 UI fallback：PASS
+```
+
+### 当前环境限制
+
+```text
+真实 asmr.one：容器 DNS 无法解析，未声称真实站点下载通过
+Flet Web：Chromium 企业策略 URLBlocklist=*，无法进行浏览器视觉点击
+Flet Desktop/Linux：运行时缺少 libmpv.so.1，无法生成桌面截图
+Windows 真实 UI 和网络：留给 Codex 独立 sandbox 验收
+```
+
+### 正式现场影响
+
+```text
+100+ 正式任务：未暂停、未恢复、未重试、未删除
+正式 config/queue/history.db：未读取或修改
+正式 Downloads/E:\arsm：未读取或修改
+正式 Python 环境：未升级
+```

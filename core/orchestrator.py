@@ -20,6 +20,7 @@ from core.network import NetworkKernel
 from core.audio import AudioProcessor
 from core.speed import SpeedTracker
 from core.status import WorkStatus
+from core.download_response import local_partial_size, plan_download_response
 
 logger = logging.getLogger("echovault")
 
@@ -251,7 +252,20 @@ class Orchestrator:
         self._emit_work_status(rj_id, "Paused")
 
     def cancel_job(self, rj_id):
+        """Legacy cancel behavior: pause and preserve partial files."""
         self.pause_job(rj_id)
+
+    async def reconnect_job(self, rj_id: str) -> dict:
+        """Pause an active job, wait for cancellation, then resume in order."""
+        self.pause_job(rj_id)
+        for _ in range(100):
+            if rj_id not in self.active_tasks:
+                break
+            await asyncio.sleep(0.05)
+        if rj_id in self.active_tasks:
+            return {"status": "pause_timeout",
+                    "message": "Timed out waiting for the active task to pause"}
+        return await self._resume_one(rj_id)
 
     # ══════════════════════════════════════════════
     #  RC1: external metadata enrichment
@@ -271,7 +285,7 @@ class Orchestrator:
                         rj_id, None, cached.get("cover_url", ""),
                         cached.get("title", rj_id), cached.get("circle", ""))
                     return
-                rj_num = rj_id[2:]
+                rj_num = self._numeric_rj_id(rj_id)
                 meta = await self.kernel.fetch(f"/api/workInfo/{rj_num}")
                 if meta:
                     title = meta.get("title", rj_id)
@@ -294,7 +308,8 @@ class Orchestrator:
         ).fetchall()
         results = {}
         for row in rows:
-            cached = self.db.get_metadata_cache(row["rj_id"])
+            cached = self.db.get_metadata_cache(
+                row["rj_id"], allow_stale=True)
             if cached:
                 import json as _j
                 tracks = _j.loads(cached.get("tracks_json", "[]"))
@@ -335,20 +350,25 @@ class Orchestrator:
 
         # 3. Fallback to metadata_cache
         if not result:
-            cached = self.db.get_metadata_cache(rj_id)
+            cached = self.db.get_metadata_cache(rj_id, allow_stale=True)
             if cached:
                 import json as _j
                 tracks = _j.loads(cached.get("tracks_json", "[]"))
-                for t in tracks:
-                    if t.get("type") == "folder":
-                        continue
-                    result.append({
-                        "title": t.get("title", "Unknown"),
-                        "status": "pending",
-                        "downloaded": 0,
-                        "total": t.get("size", 0),
-                        "local_path": "",
-                    })
+
+                def append_tracks(nodes):
+                    for track in nodes or []:
+                        if track.get("type") == "folder":
+                            append_tracks(track.get("children", []))
+                            continue
+                        result.append({
+                            "title": track.get("title", "Unknown"),
+                            "status": "pending",
+                            "downloaded": 0,
+                            "total": track.get("size", 0),
+                            "local_path": "",
+                        })
+
+                append_tracks(tracks)
 
         return result
 
@@ -485,7 +505,7 @@ class Orchestrator:
             if dl.get("failed", 0) > 0:
                 failed_rj.add(rj_id)
                 # Check if this failed RJ can be retried (has metadata cache)
-                if self.db.get_metadata_cache(rj_id):
+                if self.db.get_metadata_cache(rj_id, allow_stale=True):
                     # Check for partial files
                     has_partial = any(
                         dl.get(s, 0) > 0 for s in ("paused", "downloading"))
@@ -568,9 +588,12 @@ class Orchestrator:
 
     # ══════════════════════════════════════════════
         """Resume paused/queued downloads from DB state."""
-        cached = self.db.get_metadata_cache(rj_id)
+        cached = self.db.get_metadata_cache(rj_id, allow_stale=True)
         if not cached:
             return {"status": "no_cache", "message": "No metadata cache"}
+        if cached.get("is_stale"):
+            logger.warning(
+                f"Resume {rj_id} using expired metadata cache")
 
         try:
             meta_raw = _json.loads(cached["metadata_json"])
@@ -676,7 +699,7 @@ class Orchestrator:
                     normalized_downloads += 1
                     normalized_works.add(rj_id)
 
-            if self.db.get_metadata_cache(rj_id):
+            if self.db.get_metadata_cache(rj_id, allow_stale=True):
                 paused_rj_ids.append(rj_id)
             else:
                 logger.warning(f"Skip restore {rj_id}: no metadata cache")
@@ -717,6 +740,13 @@ class Orchestrator:
             asyncio.create_task(_delayed_resume())
 
     # ── utilities ──
+    @staticmethod
+    def _numeric_rj_id(rj_id: str) -> str:
+        digits = rj_id.upper().removeprefix("RJ")
+        if not digits.isdigit():
+            raise ValueError(f"Invalid RJ id: {rj_id}")
+        return str(int(digits))
+
     @staticmethod
     def sanitize(name: str) -> str:
         name = name.strip(". ")
@@ -838,9 +868,10 @@ class Orchestrator:
             (meta, targets, root_path, from_cache) or (None, None, None, False)
         """
         self._emit_work_status(rj_id, "Preparing")
-        if not rj_id.upper().startswith("RJ"):
+        rj_id = rj_id.strip().upper()
+        if not rj_id.startswith("RJ"):
             rj_id = f"RJ{rj_id}"
-        rj_numeric = rj_id[2:]
+        rj_numeric = self._numeric_rj_id(rj_id)
 
         # ── RC1: core-level duplicate guard ──
         if not allow_duplicate:
@@ -854,9 +885,12 @@ class Orchestrator:
         meta_raw = None
         tracks_raw = None
         from_cache = False
+        stale_cached = None
 
         if not force_refresh:
             cached = self.db.get_metadata_cache(rj_id)
+            stale_cached = self.db.get_metadata_cache(
+                rj_id, allow_stale=True)
             if cached:
                 try:
                     meta_raw = _json.loads(cached["metadata_json"])
@@ -864,39 +898,46 @@ class Orchestrator:
                     from_cache = True
                     logging.info(f"Metadata cache HIT for {rj_id}")
                 except Exception:
+                    stale_cached = None
                     try:
                         self.db.invalidate_cache(rj_id)
                     except Exception:
                         pass
 
         if meta_raw is None:
+            fetch_error = None
             try:
                 meta_raw, tracks_raw = await self._fetch_metadata_live(
                     rj_id, rj_numeric)
             except Exception as e:
+                fetch_error = e
                 logger.error(f"Metadata fetch failed for {rj_id}: {e}")
+
+            if (not meta_raw or tracks_raw is None) and stale_cached:
+                try:
+                    meta_raw = _json.loads(stale_cached["metadata_json"])
+                    tracks_raw = _json.loads(stale_cached["tracks_json"])
+                    from_cache = True
+                    logger.warning(
+                        f"Metadata cache STALE fallback for {rj_id}")
+                except Exception:
+                    meta_raw = None
+                    tracks_raw = None
+
+            if not meta_raw or tracks_raw is None:
                 store = self.db.conn.execute(
                     "SELECT rj_id FROM works WHERE rj_id=?", (rj_id,)
                 ).fetchone()
-                if not store:
-                    from core.models import WorkMetadata
-                    self.db.register(
-                        WorkMetadata(rj_id=rj_id, title=rj_id, circle="",
-                                     cv=[], tags=[], price=0, source_url="",
-                                     dl_count=0, rating=0.0, release_date="",
-                                     cover_url=""),
-                        0, Path("."), status='metadata_failed')
-                else:
+                if store:
                     self.db.execute_write(
                         "UPDATE works SET status='metadata_failed' WHERE rj_id=?",
                         (rj_id,))
+                detail = str(fetch_error) if fetch_error else "empty response"
                 self._emit_work_status(
                     rj_id,
-                    f"Metadata failed: proxy {self.config.metadata_proxy or self.config.proxy or 'off'}"
+                    f"Metadata failed ({detail}): proxy "
+                    f"{self.config.metadata_proxy or self.config.proxy or 'off'}"
                 )
-                return None, None, None, False
-            if not meta_raw:
-                self._emit_work_status(rj_id, "Failed to fetch metadata")
                 return None, None, None, False
 
         if tracks_raw is None:
@@ -906,13 +947,17 @@ class Orchestrator:
         meta = self._build_metadata(rj_id, meta_raw)
         root_path = self.get_save_path(meta)
 
-        # Create folder on disk now
+        # Create the destination before registering a prepared work.
         try:
             root_path.mkdir(parents=True, exist_ok=True)
+            if not root_path.is_dir():
+                raise NotADirectoryError(str(root_path))
         except OSError as e:
             logging.error(f"mkdir failed for {root_path}: {e}")
+            self._emit_work_status(rj_id, f"Path failed: {e}")
+            return None, None, None, False
 
-        # Write works as 'prepared'
+        # Write works as 'prepared' only after the destination is usable.
         self.db.register(meta, 0, root_path, status='prepared')
 
         hierarchy = self.parse_hierarchy(tracks_raw, root_path, root_path)
@@ -952,20 +997,36 @@ class Orchestrator:
     # ══════════════════════════════════════════════
     #  queue_job — uses prepare_work then downloads
     # ══════════════════════════════════════════════
-    async def queue_job(self, rj_id: str, force_refresh: bool = False) -> None:
+    async def queue_job(self, rj_id: str, force_refresh: bool = False,
+                        allow_duplicate: bool = False) -> dict:
+        """Prepare and enqueue one work, returning a structured result."""
+        rj_id = rj_id.strip().upper()
+        if not rj_id.startswith("RJ"):
+            rj_id = f"RJ{rj_id}"
+        if rj_id in self.active_tasks:
+            return {"status": "already_running", "rj_id": rj_id}
+        if rj_id in self.queued_rj_ids:
+            return {"status": "already_queued", "rj_id": rj_id}
+
         meta, targets, root_path, from_cache = await self.prepare_work(
-            rj_id, force_refresh)
+            rj_id, force_refresh, allow_duplicate=allow_duplicate)
         if meta is None:
-            return
+            return {"status": "prepare_failed", "rj_id": rj_id}
 
         status_msg = "Queued (cached)" if from_cache else "Queued"
         self._emit_work_status(rj_id, status_msg)
-        # ── RC7.7: store only rj_id + work_data, NOT coroutine ──
         self._queued_work_data[rj_id] = {
             "meta": meta, "targets": targets,
             "root_path": root_path}
         self.queued_rj_ids.add(rj_id)
         await self.download_queue.put(rj_id)
+        return {
+            "status": "queued",
+            "rj_id": rj_id,
+            "track_count": len(targets),
+            "from_cache": from_cache,
+            "allow_duplicate": allow_duplicate,
+        }
 
     # ══════════════════════════════════════════════
     #  download_file — returns bool
@@ -973,11 +1034,9 @@ class Orchestrator:
     async def download_file(self, track: TrackItem, meta: WorkMetadata,
                             cover_path: Optional[Path],
                             file_sem: asyncio.Semaphore) -> bool:
-        """Download a single file. Returns True on success/skip, False on failure."""
+        """Download one file with verified resume and real partial progress."""
         final_path = track.save_path
         part_path = final_path.with_suffix(final_path.suffix + ".part")
-        dl_id = self._make_dl_id(meta.rj_id, track.id or track.title,
-                                 track.save_path, track.title)
 
         if sys.platform == "win32" and len(str(final_path.absolute())) > 255:
             stem = self.sanitize(track.title)[:30]
@@ -985,56 +1044,66 @@ class Orchestrator:
             part_path = final_path.with_suffix(final_path.suffix + ".part")
             track.save_path = final_path
 
+        dl_id = self._make_dl_id(
+            meta.rj_id, track.id or track.title, final_path, track.title)
+
         try:
             final_path.parent.mkdir(parents=True, exist_ok=True)
         except OSError as e:
             logging.error(f"mkdir failed for {final_path}: {e}")
             self.stats.failed += 1
-            self.db.upsert_download(dl_id, meta.rj_id, track.title,
-                                    str(final_path), 'failed', error=str(e))
-            self._emit_progress(meta.rj_id, track.id or track.title, track.title, 0, track.size, "failed")
+            self.db.upsert_download(
+                dl_id, meta.rj_id, track.title, str(final_path),
+                'failed', error=str(e))
+            self._emit_progress(
+                meta.rj_id, track.id or track.title, track.title,
+                0, track.size, "failed")
             return False
 
-        if final_path.exists() and final_path.stat().st_size == track.size:
+        if final_path.exists() and final_path.stat().st_size == track.size > 0:
             self.stats.skipped += 1
-            self.db.upsert_download(dl_id, meta.rj_id, track.title,
-                                    str(final_path), 'completed',
-                                    track.size, track.size)
-            self._emit_progress(meta.rj_id, track.id or track.title, track.title, track.size, track.size, "completed")
+            self.db.upsert_download(
+                dl_id, meta.rj_id, track.title, str(final_path),
+                'completed', track.size, track.size)
+            self._emit_progress(
+                meta.rj_id, track.id or track.title, track.title,
+                track.size, track.size, "completed")
             if part_path.exists():
-                try: part_path.unlink()
-                except OSError: pass
+                try:
+                    part_path.unlink()
+                except OSError:
+                    pass
             return True
 
-        existing_size = 0
-        if part_path.exists():
-            existing_size = part_path.stat().st_size
-            if existing_size > track.size:
-                existing_size = 0
-                try: part_path.unlink()
-                except OSError: pass
-        elif final_path.exists():
-            existing_size = final_path.stat().st_size
-            if existing_size > track.size:
-                existing_size = 0
+        # Normalize all incomplete data into the .part file.  Appending a
+        # ranged response to a new empty .part file would silently corrupt it.
+        if final_path.exists() and final_path.stat().st_size != track.size:
+            final_size = final_path.stat().st_size
+            if final_size > 0 and (track.size <= 0 or final_size < track.size):
+                if not part_path.exists() or part_path.stat().st_size < final_size:
+                    os.replace(str(final_path), str(part_path))
+                else:
+                    final_path.unlink()
+            else:
+                final_path.unlink()
 
-        for attempt in range(self.config.retry_count):
-            self.db.upsert_download(dl_id, meta.rj_id, track.title,
-                                    str(final_path), 'downloading',
-                                    existing_size, track.size)
-            self._emit_progress(meta.rj_id, track.id or track.title, track.title, existing_size, track.size, "downloading")
-            # ── RC3.1: per-attempt diag (moved inside semaphore RC7.6) ──
-            is_resume = existing_size > 0
-            rng = f"bytes={existing_size}-" if existing_size else "none"
-            d_proxy = self.config.get_proxy_for('download') or "direct"
+        if part_path.exists() and track.size > 0 and part_path.stat().st_size > track.size:
+            part_path.unlink()
+
+        retry_count = max(1, int(self.config.retry_count))
+        existing_size = local_partial_size(final_path, part_path, track.size)
+
+        for attempt in range(retry_count):
+            self.db.upsert_download(
+                dl_id, meta.rj_id, track.title, str(final_path),
+                'downloading', existing_size, track.size)
+            self._emit_progress(
+                meta.rj_id, track.id or track.title, track.title,
+                existing_size, track.size, "downloading")
+            headers = {"Range": f"bytes={existing_size}-"} if existing_size else {}
+
             try:
-                headers = {}
-                if existing_size > 0:
-                    headers["Range"] = f"bytes={existing_size}-"
-
-                # ── RC7.6/RC7.7: per-RJ file slot with try/finally ──
                 async with file_sem:
-                    # Track in-flight
                     async with self._global_inflight_lock:
                         self._global_inflight += 1
                         global_inflight = self._global_inflight
@@ -1043,179 +1112,140 @@ class Orchestrator:
                     work_inflight = self._per_rj_inflight[meta.rj_id]
 
                     try:
-                        import urllib.parse as _up
-                        host = _up.urlparse(track.url).hostname or "unknown"
-                        is_resume = existing_size > 0
+                        host = urllib.parse.urlparse(track.url).hostname or "unknown"
                         logger.info(
                             f"FILE_SLOT_ACQUIRE rj={meta.rj_id} "
-                            f"track={track.title[:50]} "
-                            f"host={host} size={track.size} resume={is_resume} "
-                            f"work_inflight={work_inflight} global_inflight={global_inflight} "
-                            f"file_concurrency={self.config.file_concurrency} "
-                            f"work_concurrency={self.config.work_concurrency}")
+                            f"track={track.title[:50]} host={host} size={track.size} "
+                            f"resume={existing_size > 0} work_inflight={work_inflight} "
+                            f"global_inflight={global_inflight}")
                         logger.info(
-                            f"DOWNLOAD_START rj={meta.rj_id} track={track.title[:50]} "
-                            f"host={host} size={track.size} exist={is_resume} "
-                            f"path={final_path}")
-                        logger.info(
-                            f"DOWNLOAD_ATTEMPT rj={meta.rj_id} track={track.title[:40]} "
-                            f"attempt={attempt+1}/{self.config.retry_count} "
-                            f"resume={is_resume} range={rng} download_proxy={d_proxy}")
+                            f"DOWNLOAD_ATTEMPT rj={meta.rj_id} "
+                            f"track={track.title[:40]} attempt={attempt+1}/{retry_count} "
+                            f"range={headers.get('Range', 'none')}")
 
                         success, resp_or_err = await self._stream_with_fallback(
                             track.url, headers)
-
                         if not success:
-                            last_attempt = attempt == self.config.retry_count - 1
-                            if last_attempt:
-                                self.stats.failed += 1
-                                self.db.upsert_download(
-                                    dl_id, meta.rj_id, track.title,
-                                    str(final_path), 'failed',
-                                    error=str(resp_or_err))
-                                self._emit_progress(meta.rj_id, track.id or track.title, track.title,
-                                                    existing_size, track.size, "failed")
-                                return False
-                            existing_size = 0
-                            await asyncio.sleep(
-                                    self.config.retry_backoff ** attempt)
-                            continue
+                            raise OSError(str(resp_or_err))
 
                         resp = resp_or_err
                         try:
-                            if resp.status == 416:
-                                self.stats.skipped += 1
-                                self.db.upsert_download(
-                                    dl_id, meta.rj_id, track.title,
-                                    str(final_path), 'completed', track.size, track.size)
-                                return True
+                            local_size = local_partial_size(
+                                final_path, part_path, track.size)
+                            plan = plan_download_response(
+                                status=resp.status,
+                                headers=resp.headers,
+                                requested_offset=existing_size,
+                                expected_size=track.size,
+                                local_size=local_size,
+                            )
+                            logger.info(
+                                f"DOWNLOAD_RESP rj={meta.rj_id} "
+                                f"track={track.title[:40]} http={resp.status} "
+                                f"action={plan.action} "
+                                f"content_range={resp.headers.get('Content-Range', 'none')}")
 
-                            if resp.status not in (200, 206):
-                                last_attempt = attempt == self.config.retry_count - 1
-                                if last_attempt:
-                                    self.stats.failed += 1
-                                    self.db.upsert_download(
-                                        dl_id, meta.rj_id, track.title,
-                                        str(final_path), 'failed',
-                                        error=f"HTTP {resp.status}")
-                                    self._emit_progress(meta.rj_id, track.id or track.title, track.title,
-                                                        existing_size, track.size, "failed")
-                                    return False
+                            if plan.action == "complete_local":
+                                if part_path.exists() and part_path.stat().st_size == track.size:
+                                    os.replace(str(part_path), str(final_path))
+                                if not final_path.exists() or final_path.stat().st_size != track.size:
+                                    raise IOError("HTTP 416 completion verification failed")
+                            elif plan.action == "retry_from_zero":
+                                logging.warning(
+                                    f"Reset partial download {track.title}: {plan.reason}")
+                                if part_path.exists():
+                                    part_path.unlink()
+                                if final_path.exists() and final_path.stat().st_size != track.size:
+                                    final_path.unlink()
                                 existing_size = 0
+                                if attempt == retry_count - 1:
+                                    raise IOError(plan.reason)
+                                if not resp.closed:
+                                    resp.close()
                                 await asyncio.sleep(
                                     self.config.retry_backoff ** attempt)
                                 continue
+                            elif plan.action == "http_error":
+                                raise IOError(plan.reason)
+                            else:
+                                downloaded = plan.initial_bytes
+                                async with aiofiles.open(part_path, plan.mode) as f:
+                                    async for chunk in resp.content.iter_chunked(
+                                            self.config.chunk_size):
+                                        await f.write(chunk)
+                                        downloaded += len(chunk)
+                                        self.stats.bytes_downloaded += len(chunk)
+                                        self.speed.update(
+                                            meta.rj_id, track.id or track.title,
+                                            downloaded, len(chunk))
+                                        self._emit_progress(
+                                            meta.rj_id, track.id or track.title,
+                                            track.title, downloaded, track.size,
+                                            "downloading")
 
-                            is_partial = resp.status == 206
-                            clen = resp.headers.get("Content-Length", "?")
-                            cr = resp.headers.get("Content-Range", "none")
-                            logger.info(
-                                f"DOWNLOAD_RESP rj={meta.rj_id} track={track.title[:40]} "
-                                f"http={resp.status} partial={is_partial} "
-                                f"content_len={clen} content_range={cr}")
-                            if is_partial:
-                                cr = resp.headers.get("Content-Range", "")
-                                m = re.match(r"bytes\s+(\d+)-\d+/(\d+)", cr)
-                                if m and int(m.group(1)) != existing_size:
-                                    logging.warning(f"Range mismatch {track.title}")
-                                    existing_size = 0
-                                    is_partial = False
-
-                            mode = "ab" if is_partial else "wb"
-                            target = part_path
-                            if resp.status == 200:
-                                existing_size = 0
-                                mode = "wb"
-                            downloaded = existing_size if is_partial else 0
-                            completed_ok = False
-
-                            async with aiofiles.open(target, mode) as f:
-                                async for chunk in resp.content.iter_chunked(
-                                    self.config.chunk_size):
-                                    await f.write(chunk)
-                                    downloaded += len(chunk)
-                                    self.stats.bytes_downloaded += len(chunk)
-                                    self.speed.update(
-                                        meta.rj_id, track.id or track.title,
-                                        downloaded, len(chunk))
-                                    self._emit_progress(
-                                        meta.rj_id, track.id or track.title, track.title,
-                                        downloaded, track.size, "downloading")
-
-                            completed_ok = target.exists() and target.stat().st_size == track.size
+                                actual = part_path.stat().st_size
+                                if track.size > 0 and actual != track.size:
+                                    raise IOError(
+                                        f"Size mismatch {actual} != {track.size}")
+                                os.replace(str(part_path), str(final_path))
                         finally:
                             if not resp.closed:
                                 resp.close()
 
-                            if not target.exists():
-                                continue
+                        if self.config.tag_audio and track.type == 'audio':
+                            try:
+                                AudioProcessor.apply_tags(
+                                    final_path, meta, cover_path)
+                            except Exception as e:
+                                logging.warning(
+                                    f"Tagging failed {final_path}: {e}")
 
-                            actual = target.stat().st_size
-                            if actual != track.size:
-                                logging.warning(f"Size mismatch {track.title}: {actual} vs {track.size}")
-                                if not completed_ok:
-                                    continue
-
-                            if target == part_path and part_path.exists():
-                                os.replace(str(part_path), str(final_path))
-
-                            if self.config.tag_audio and track.type == 'audio':
-                                try:
-                                    AudioProcessor.apply_tags(final_path, meta, cover_path)
-                                except Exception as e:
-                                    logging.warning(f"Tagging failed {final_path}: {e}")
-
-                            self.stats.success += 1
-                            self.db.upsert_download(dl_id, meta.rj_id, track.title,
-                                                    str(final_path), 'completed',
-                                                    track.size, track.size)
-                            self._emit_progress(meta.rj_id, track.id or track.title, track.title,
-                                                track.size, track.size, "completed")
+                        final_size = final_path.stat().st_size
+                        self.stats.success += 1
+                        self.db.upsert_download(
+                            dl_id, meta.rj_id, track.title, str(final_path),
+                            'completed', final_size, track.size or final_size)
+                        self._emit_progress(
+                            meta.rj_id, track.id or track.title, track.title,
+                            final_size, track.size or final_size, "completed")
+                        return True
                     finally:
-                        # ── RC7.7: ALWAYS release (even on CancelledError) ──
                         self._per_rj_inflight[meta.rj_id] = max(
                             0, self._per_rj_inflight.get(meta.rj_id, 1) - 1)
-                        work_inflight_after = self._per_rj_inflight.get(meta.rj_id, 0)
                         async with self._global_inflight_lock:
-                            self._global_inflight = max(0, self._global_inflight - 1)
-                            global_inflight_after = self._global_inflight
-                        logger.info(
-                            f"FILE_SLOT_RELEASE rj={meta.rj_id} "
-                            f"track={track.title[:50]} "
-                            f"work_inflight={work_inflight_after} "
-                            f"global_inflight={global_inflight_after}")
-
-                    return True
+                            self._global_inflight = max(
+                                0, self._global_inflight - 1)
 
             except asyncio.CancelledError:
                 self.speed.pause_track(meta.rj_id, track.id or track.title)
-                self.db.upsert_download(dl_id, meta.rj_id, track.title,
-                                        str(final_path), 'paused',
-                                        existing_size, track.size)
+                actual = local_partial_size(final_path, part_path, track.size)
+                self.db.upsert_download(
+                    dl_id, meta.rj_id, track.title, str(final_path),
+                    'paused', actual, track.size)
+                self._emit_progress(
+                    meta.rj_id, track.id or track.title, track.title,
+                    actual, track.size, "paused")
                 raise
             except Exception as e:
-                last_attempt = attempt == self.config.retry_count - 1
+                actual = local_partial_size(final_path, part_path, track.size)
+                last_attempt = attempt == retry_count - 1
                 if last_attempt:
                     self.stats.failed += 1
-                    # ── RC7.10: keep partial file as paused for resume ──
-                    partial_exists = (part_path.exists() and part_path.stat().st_size > 0
-                                      ) or (final_path.exists() and final_path.stat().st_size > 0
-                                            and final_path.stat().st_size < track.size)
-                    final_status = 'paused' if partial_exists else 'failed'
-                    self.db.upsert_download(dl_id, meta.rj_id, track.title,
-                                            str(final_path), final_status,
-                                            error=str(e))
-                    self._emit_progress(meta.rj_id, track.id or track.title, track.title,
-                                        existing_size if partial_exists else 0,
-                                        track.size, "paused" if partial_exists else "failed")
+                    final_status = 'paused' if actual > 0 else 'failed'
+                    self.db.upsert_download(
+                        dl_id, meta.rj_id, track.title, str(final_path),
+                        final_status, actual, track.size, error=str(e))
+                    self._emit_progress(
+                        meta.rj_id, track.id or track.title, track.title,
+                        actual, track.size, final_status)
                     logging.warning(
                         f"Download {track.title} {final_status} "
-                        f"(partial_file={partial_exists}): {e}")
+                        f"(partial_bytes={actual}): {e}")
                     return False
-                logging.warning(f"Retry {attempt+1}/3 for {track.title}: {e}")
-                existing_size = 0
-                await asyncio.sleep(
-                                self.config.retry_backoff ** attempt)
+                existing_size = actual
+                logging.warning(
+                    f"Retry {attempt+1}/{retry_count} for {track.title}: {e}")
+                await asyncio.sleep(self.config.retry_backoff ** attempt)
 
         return False
 

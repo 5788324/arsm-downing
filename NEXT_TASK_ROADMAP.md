@@ -4,7 +4,7 @@
 
 > 起点：2026-07-18  
 > 基线：`main@1f33595`  
-> 当前阶段：`TAKEOVER-T5`（`TAKEOVER-T0/T1/T2/T3/T4` 已于 2026-07-20 完成）
+> 当前阶段：`TAKEOVER-T5B`（T0~T4 与 T5A 已于 2026-07-20 完成）
 
 ## 总原则
 
@@ -184,7 +184,7 @@ PASS（2026-07-20）
 ### 验收
 
 ```text
-隔离 Python 3.13 环境：94/94 passed
+隔离 Python 3.13 环境：94/94 passed（T4 当时基线；T5A 后当前为 125）
 Flet 0.27.6 ft.icons/ft.colors 与全部 UI 模块 import：PASS
 pip check：PASS
 WAL 并发写入 snapshot：PASS
@@ -193,7 +193,43 @@ GitHub Actions workflow：本地语法/结构检查通过，待最终推送后�
 默认测试未读取 E:\arsm 或真实 history.db
 ```
 
-## TAKEOVER-T5：Windows 本机只读验收
+## TAKEOVER-T5A：下载核心与隔离 UI Smoke
+
+### 状态
+
+```text
+PASS（2026-07-20，代码级与本地网络）
+```
+
+### 已完成
+
+- [x] HTTP 200/206/416 响应计划与严格 Content-Range/Content-Length 校验
+- [x] 完整 `.part` + 416 才允许完成；不完整断点不会误报成功
+- [x] 取消和失败记录真实磁盘断点大小
+- [x] Range 不匹配时受控从零重试，不追加损坏响应
+- [x] 有限镜像故障切换
+- [x] 重连按 pause 完成后 resume；批量控制不跨线程直接操作 UI
+- [x] 强制重复下载、canonical directory 和真实并发设置修复
+- [x] 过期 cache 可显式用于恢复，正常请求仍使用 TTL
+- [x] metadata 嵌套音轨递归显示
+- [x] 本地 ASMR.one 兼容服务器和隔离 live/UI smoke 脚本
+- [x] Flet legacy icon/color 常量迁移为当前锁定版本 API
+
+### 验收
+
+```text
+125/125 portable tests passed
+真实 aiohttp 200/206/416 passed
+本地 1 MiB 下载、最终大小和 SHA-256 passed
+正式 100+ 任务、history.db、queue.json、config.json 零访问
+```
+
+### 未完成
+
+当前容器无法解析真实 asmr.one；Chromium 企业 URLBlocklist 和 Linux 缺少
+`libmpv.so.1` 阻止视觉点击。真实站点和 Windows 桌面结论不得标记 PASS。
+
+## TAKEOVER-T5B：Windows 在线快照、真实下载与视觉验收
 
 ### 负责人
 
@@ -201,25 +237,23 @@ Codex，仅执行必须依赖用户 Windows 本机的部分。
 
 ### 任务
 
-1. 确认 git 分支和工作区干净。
-2. 运行语法检查与 portable tests。
-3. 保持当前 100+ 混合状态下载任务不变，不点击暂停/重试/删除。
-4. 使用 `create_db_snapshot.py` 对活跃 `history.db` 创建在线只读快照。
-5. 使用 `inspect_db_snapshot.py` 统计 completed/failed/paused/queued/downloading 等状态。
-6. 在复制目录或只读条件下生成 external intake plan，不执行。
-7. 对比 2026-06-28 历史快照时明确说明当前下载仍在变化。
-8. 截图核验 UI 状态显示、响应性、报告和 STOP 提示。
+1. 在干净 Bundle/checkout 运行 125 项 portable tests。
+2. 保持当前 100+ 混合状态任务不变，创建在线 SQLite snapshot。
+3. 输出 completed/failed/paused/queued/downloading/resuming 状态报告。
+4. 在全新空 sandbox 运行 `live_download_smoke.py`，默认 RJ01575399 或其他小样本。
+5. 在另一全新 sandbox 运行本地 fake server + `run_ui_smoke.py --view desktop`。
+6. 检查添加、准备、排队、下载、暂停、恢复、重连、完成、失败和打开目录。
+7. 截图记录布局、截断、状态文案、错误按钮、卡顿和进度异常。
+8. 不在正式程序目录安装依赖或运行 smoke。
 
 ### 验收
 
 ```text
-不改 DB、不改变下载队列
-不升级活跃程序依赖
-不手工复制 WAL/SHM
-不移动或隔离文件
+不改正式 DB、不改变正式下载队列
 snapshot manifest 和 integrity_check 通过
-混合状态统计完整
-UI 观察不触发控制操作
+真实 ASMR.one 小文件最终大小与 SHA-256 报告通过
+Flet UI 可操作且状态机与数据库/文件结果一致
+所有 smoke 产物仅位于独立 sandbox
 ```
 
 ## TAKEOVER-T6：沙盒执行验收
@@ -278,7 +312,8 @@ external intake 通过后再按以下顺序推进：
 ## 当前下一项
 
 ```text
-TAKEOVER-T5-01：Codex 在干净 Bundle/checkout 运行 94 项 portable gate
-TAKEOVER-T5-02：对活跃 history.db 创建在线快照并输出混合状态报告
-TAKEOVER-T5-03：仅观察当前 Flet UI，不操作 100+ 正在运行的任务
+TAKEOVER-T5B-01：Codex 在干净 Bundle/checkout 运行 125 项 portable gate
+TAKEOVER-T5B-02：对活跃 DB 创建在线快照并输出混合状态报告
+TAKEOVER-T5B-03：在独立 sandbox 下载一个公开小样本
+TAKEOVER-T5B-04：在独立 fake server sandbox 实际点击 Flet UI 并截图
 ```

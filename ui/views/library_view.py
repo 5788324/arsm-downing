@@ -246,9 +246,9 @@ def _cover_widget(src, h=180):
     return ft.Container(height=h, border_radius=14, clip_behavior=ft.ClipBehavior.HARD_EDGE,
         bgcolor=BG_SURFACE_LIGHT, content=ft.Image(src=src, fit=ft.ImageFit.COVER))
 def _no_cover_widget(h=180):
-    return ft.Container(height=h, border_radius=14, bgcolor=ft.colors.with_opacity(0.55, BG_SURFACE_LIGHT),
+    return ft.Container(height=h, border_radius=14, bgcolor=ft.Colors.with_opacity(0.55, BG_SURFACE_LIGHT),
         alignment=ft.alignment.center,
-        content=ft.Column([ft.Icon(ft.icons.IMAGE_NOT_SUPPORTED_OUTLINED, color=WARNING, size=36),
+        content=ft.Column([ft.Icon(ft.Icons.IMAGE_NOT_SUPPORTED_OUTLINED, color=WARNING, size=36),
             ft.Text("无封面", size=12, color="grey")], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=6))
 def _lib_data_get(db, rid):
     try:

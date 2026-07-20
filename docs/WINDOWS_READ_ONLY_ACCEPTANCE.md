@@ -43,7 +43,7 @@ queue.json
 ```powershell
 python -m pip install -r requirements-dev.txt
 python -m compileall -q core ui tools tests scripts main.py
-python -m pytest
+python -m pytest  # 当前应为 125 passed
 ```
 
 正式程序环境保持不变。
@@ -103,7 +103,44 @@ python scripts/inspect_db_snapshot.py `
 
 这里只是观察，不代表当前 UI 已通过质量验收。
 
-## 第五步：External Intake 只读计划
+
+## 第五步：隔离的真实下载和 UI Smoke
+
+该步骤不是在正式程序中添加任务。使用两个全新的空目录：
+
+```text
+D:\ARSM-Smoke\live-download
+D:\ARSM-Smoke\ui
+```
+
+真实站点最小文件测试：
+
+```powershell
+python scripts/live_download_smoke.py `
+  --sandbox "D:\ARSM-Smoke\live-download" `
+  --rj RJ01575399 `
+  --max-bytes 67108864
+```
+
+UI 使用本地固定服务器，避免把视觉验收与真实站点波动混在一起：
+
+```powershell
+python scripts/fake_asmr_server.py --port 8765
+```
+
+另一个终端：
+
+```powershell
+python scripts/run_ui_smoke.py `
+  --sandbox "D:\ARSM-Smoke\ui" `
+  --rj RJ99999999 `
+  --mirror http://127.0.0.1:8765 `
+  --view desktop
+```
+
+记录下载卡片、进度、暂停恢复、重连、失败提示和打开目录。正式队列不执行任何控制操作。
+
+## 第六步：External Intake 只读计划
 
 正式队列仍活跃时，不对真实目录执行 external intake。只有复制目录与 snapshot DB
 可以用于计划和沙盒验收。真实执行按钮继续冻结。
@@ -116,6 +153,8 @@ python scripts/inspect_db_snapshot.py `
 - 在线快照创建成功且 manifest 验证通过；
 - snapshot `integrity_check` 为 `ok`；
 - 能完整报告混合任务状态；
+- 独立 live download 的最终大小和报告通过；
+- 独立 Flet UI sandbox 的状态和文件结果一致；
 - 正式队列、文件、数据库、依赖和设置均未发生变化。
 
 真实小批量文件操作继续阻塞，直到目标 RJ 不再含有
