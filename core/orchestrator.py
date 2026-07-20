@@ -43,6 +43,7 @@ class Orchestrator:
         self._queued_work_data: Dict[str, dict] = {}  # RC7.7: rj_id→{meta,targets,root_path}
         self.queued_rj_ids: set = set()
         self.active_tasks: Dict[str, asyncio.Task] = {}
+        self.worker_tasks: List[asyncio.Task] = []
         self.cancelled_rjs: set = set()
         self._shutting_down: bool = False
         # ── RC7.8: pause/resume lifecycle ──
@@ -185,8 +186,11 @@ class Orchestrator:
                     f"metadata_proxy={mp} download_proxy={dp} "
                     f"download_fallback_to_proxy={fb}")
         self._log_concurrency_state("boot_workers")
-        tasks = [asyncio.create_task(self.boot_worker()) for _ in range(n)]
-        return tasks
+        self.worker_tasks = [
+            asyncio.create_task(self.boot_worker(), name=f"arsm-worker-{index+1}")
+            for index in range(n)
+        ]
+        return list(self.worker_tasks)
 
     def _log_concurrency_state(self, label: str = ""):
         """Diagnostic: log current concurrency / queue state."""
@@ -211,18 +215,28 @@ class Orchestrator:
         return self.pause_job(rj_id)
 
     async def shutdown(self):
-        """Graceful shutdown: pause all, flush DB, stop workers."""
+        """Graceful shutdown: pause work, await cancellation, flush, and close HTTP."""
+        if self._shutting_down:
+            return
         self._shutting_down = True
         logger.info("Shutdown: pausing all active tasks")
         self.pause_all()
-        # Cancel all active tasks
-        for rj_id, task in list(self.active_tasks.items()):
+
+        active = list(dict.fromkeys(self.active_tasks.values()))
+        for task in active:
             task.cancel()
-        # Wait briefly for cancellations
-        await asyncio.sleep(0.5)
-        # ── RC7.7: final cleanup ──
+        if active:
+            await asyncio.gather(*active, return_exceptions=True)
+
+        workers = [task for task in self.worker_tasks if not task.done()]
+        for task in workers:
+            task.cancel()
+        if workers:
+            await asyncio.gather(*workers, return_exceptions=True)
+        self.worker_tasks.clear()
+
         self._queued_work_data.clear()
-        # Flush DB
+        self.queued_rj_ids.clear()
         self.db.commit()
         await self.kernel.shutdown()
         logger.info("Shutdown complete")

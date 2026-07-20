@@ -127,9 +127,9 @@ dry-run 优先
 7. T6 复制资源库沙盒执行与故障恢复（已完成）
 8. Tools 缓存/VACUUM/队列预览和 backlog 安全闭环（已完成）
 9. Windows 在线快照、真实 ASMR.one 小样本与 Flet 视觉验收（并行待 Codex）
-10. 迁移、数据库 Schema 和资源库 rebuild 一致性（当前）
+10. 迁移、数据库 Schema 和资源库 rebuild 一致性（已完成）
 11. 100+ 混合任务清空后进行 T7 Windows 小批量验收
-12. 最终合并、打包和交接
+12. 0.9.0-rc.1 构建和交接（代码级已完成，待 GitHub/Windows 证据）
 ```
 
 

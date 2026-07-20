@@ -208,6 +208,10 @@ class SettingsView(ft.Container):
             if value:
                 new_paths.append(value)
         config.library_paths = new_paths if new_paths else [str(config.output_dir)]
-        config.save()
+        try:
+            config.save()
+        except OSError as exc:
+            self.app_controller.show_snack(f"设置保存失败: {exc}")
+            return
 
         self.app_controller.show_snack("设置已保存")

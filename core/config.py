@@ -1,10 +1,26 @@
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 
-CONFIG_FILE = Path("config.json")
-CONFIG_EXAMPLE_FILE = Path("config.example.json")
+from core.paths import app_path, resource_path, resolve_runtime_path
+
+CONFIG_FILE: Optional[Path] = None
+CONFIG_EXAMPLE_FILE: Optional[Path] = None
+_replace_file = os.replace
+
+
+def _config_file() -> Path:
+    return CONFIG_FILE if CONFIG_FILE is not None else app_path("config.json")
+
+
+def _config_example_file() -> Path:
+    return (
+        CONFIG_EXAMPLE_FILE
+        if CONFIG_EXAMPLE_FILE is not None
+        else resource_path("config.example.json")
+    )
 HOSTNAME_MIRRORS = [
     "https://api.asmr-200.com",
     "https://api.asmr.one",
@@ -18,7 +34,7 @@ class ConfigManager:
 
     def __init__(self):
         # ── Paths ──
-        self.output_dir = Path("Downloads")
+        self.output_dir = app_path("Downloads")
         self.library_paths: list = []  # P3.3: extra library scan paths
         self.external_intake_root: Optional[str] = None
         self.external_quarantine_root: Optional[str] = None
@@ -79,17 +95,24 @@ class ConfigManager:
     def load(cls) -> 'ConfigManager':
         """Load configuration from file or create default."""
         import shutil
-        if not CONFIG_FILE.exists() and CONFIG_EXAMPLE_FILE.exists():
-            shutil.copy(CONFIG_EXAMPLE_FILE, CONFIG_FILE)
+        config_file = _config_file()
+        example_file = _config_example_file()
+        if not config_file.exists() and example_file.exists():
+            config_file.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(example_file, config_file)
         config = cls()
-        if CONFIG_FILE.exists():
+        if config_file.exists():
             try:
-                with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                with config_file.open('r', encoding='utf-8') as f:
                     data = json.load(f)
 
-                config.output_dir = Path(
+                config.output_dir = resolve_runtime_path(
                     data.get('output_dir', 'Downloads'))
-                config.library_paths = data.get('library_paths', [])
+                config.library_paths = [
+                    str(resolve_runtime_path(value))
+                    for value in data.get('library_paths', [])
+                    if str(value).strip()
+                ]
                 config.external_intake_root = data.get('external_intake_root')
                 config.external_quarantine_root = data.get('external_quarantine_root')
                 config.max_concurrent = int(
@@ -167,8 +190,20 @@ class ConfigManager:
             "dns": self.dns,
             "achievements": self.achievements
         }
+        config_file = _config_file()
+        temp_file = config_file.with_suffix(config_file.suffix + ".tmp")
         try:
-            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            config_file.parent.mkdir(parents=True, exist_ok=True)
+            with temp_file.open('w', encoding='utf-8', newline='\n') as f:
                 json.dump(data, f, indent=4, ensure_ascii=False)
-        except IOError as e:
+                f.write("\n")
+                f.flush()
+                os.fsync(f.fileno())
+            _replace_file(temp_file, config_file)
+        except OSError as e:
             logging.error(f"Failed to save config: {e}")
+            try:
+                temp_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise

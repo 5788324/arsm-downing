@@ -11,6 +11,8 @@ pytestmark = pytest.mark.portable
     "module_name",
     [
         "core.audio",
+        "core.paths",
+        "core.version",
         "core.config",
         "core.database",
         "core.database_snapshot",

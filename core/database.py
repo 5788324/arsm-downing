@@ -20,12 +20,13 @@ from core.library_rebuild import (
     scan_library_snapshot,
 )
 from core.models import WorkMetadata
+from core.paths import app_path
 
 # Python 3.12+ deprecates sqlite3's implicit datetime adapter.  Registering an
 # explicit ISO-8601 adapter keeps database writes deterministic across versions.
 sqlite3.register_adapter(datetime, lambda value: value.isoformat())
 
-DB_FILE = Path("history.db")
+DB_FILE: Optional[Path] = None
 
 # Cache expiry: 7 days
 CACHE_TTL_HOURS = 168
@@ -39,8 +40,9 @@ class LibraryVault:
     Reads use the shared connection (check_same_thread=False) for speed.
     """
 
-    def __init__(self, db_path: str | Path = DB_FILE, *, read_only: bool = False):
-        self.db_path = str(Path(db_path))
+    def __init__(self, db_path: str | Path | None = None, *, read_only: bool = False):
+        selected_path = db_path if db_path is not None else (DB_FILE or app_path("history.db"))
+        self.db_path = str(Path(selected_path))
         self.read_only = read_only
         self._lock = threading.RLock()
         with self._lock:
@@ -65,7 +67,7 @@ class LibraryVault:
             self._init_schema()
 
     @classmethod
-    def open_read_only(cls, db_path: str | Path = DB_FILE) -> "LibraryVault":
+    def open_read_only(cls, db_path: str | Path | None = None) -> "LibraryVault":
         """Open an existing database without creating files or changing schema."""
         return cls(db_path, read_only=True)
 

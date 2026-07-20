@@ -7,10 +7,13 @@ import time
 import logging
 from pathlib import Path
 
+from core.paths import app_path
+from core.version import display_title
+
 logger = logging.getLogger("echovault")
 
 
-def configure_logging(log_dir: str | Path = "logs") -> None:
+def configure_logging(log_dir: str | Path | None = None) -> None:
     """Configure application logging only when a real app is launched.
 
     Importing ``ui.app`` is part of the portable test gate.  Opening a file
@@ -20,7 +23,7 @@ def configure_logging(log_dir: str | Path = "logs") -> None:
     root = logging.getLogger()
     if getattr(root, "_arsm_configured", False):
         return
-    directory = Path(log_dir)
+    directory = Path(log_dir) if log_dir is not None else app_path("logs")
     directory.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         level=logging.INFO,
@@ -49,7 +52,7 @@ class AppController:
 
     def __init__(self, page: ft.Page):
         self.page = page
-        self.page.title = "ARSM Suite"
+        self.page.title = display_title()
         self.page.theme = PremiumTheme.get_theme()
         self.page.theme_mode = ft.ThemeMode.DARK
         self.page.bgcolor = BG_DARK
@@ -57,6 +60,8 @@ class AppController:
 
         # ── RC7: graceful shutdown on window close ──
         self.page.on_window_event = self._on_window_event
+        self._closing = False
+        self._ui_poller_stop = threading.Event()
 
         # ── UI message queue for thread-safe cross-thread updates ──
         self.ui_queue: queue.Queue = queue.Queue()
@@ -69,7 +74,10 @@ class AppController:
 
         # ── Async event loop on a dedicated thread ──
         self.loop = asyncio.new_event_loop()
-        threading.Thread(target=self._run_loop, daemon=True).start()
+        self._loop_thread = threading.Thread(
+            target=self._run_loop, name="arsm-async-loop", daemon=True
+        )
+        self._loop_thread.start()
 
         # ── Initialize Views ──
         self.views = {
@@ -107,26 +115,52 @@ class AppController:
     # ──────────────────────────────────────────────────────
     def _run_loop(self):
         asyncio.set_event_loop(self.loop)
-        self.loop.run_forever()
+        try:
+            self.loop.run_forever()
+        finally:
+            pending = [task for task in asyncio.all_tasks(self.loop) if not task.done()]
+            for task in pending:
+                task.cancel()
+            if pending:
+                self.loop.run_until_complete(
+                    asyncio.gather(*pending, return_exceptions=True)
+                )
+            self.loop.close()
+
+    async def _shutdown_backend(self):
+        """Stop workers and close backend resources exactly once."""
+        await self.orc.shutdown()
+        self.db.close()
 
     def _on_window_event(self, e):
-        """Graceful shutdown on window close."""
-        if e.data == "close":
+        """Graceful, idempotent shutdown on window close."""
+        if e.data != "close" or self._closing:
+            return
+        self._closing = True
+        try:
             self.page.window_prevent_close = True
             self.page.update()
+        except Exception:
+            logger.debug("Unable to set window close guard", exc_info=True)
 
-            async def _do_shutdown():
-                try:
-                    await self.orc.shutdown()
-                finally:
-                    self.loop.stop()
+        future = asyncio.run_coroutine_threadsafe(
+            self._shutdown_backend(), self.loop
+        )
 
-            fut = asyncio.run_coroutine_threadsafe(_do_shutdown(), self.loop)
+        def _finish_close(done_future):
+            error = None
+            try:
+                done_future.result()
+            except Exception as exc:  # close the UI even if cleanup reports an error
+                error = str(exc)
+                logger.exception("Application shutdown failed")
+            self.ui_queue.put(("close_window", error))
+            try:
+                self.loop.call_soon_threadsafe(self.loop.stop)
+            except RuntimeError:
+                pass
 
-            def _finish_close(_future):
-                self.ui_queue.put(("close_window",))
-
-            fut.add_done_callback(_finish_close)
+        future.add_done_callback(_finish_close)
 
     # ──────────────────────────────────────────────────────
     #  Thread-safe message enqueue (called from any thread)
@@ -168,8 +202,7 @@ class AppController:
         self.ui_processing = False
 
         def poll_loop():
-            while True:
-                time.sleep(0.1)
+            while not self._ui_poller_stop.wait(0.1):
                 try:
                     if not self.ui_processing and not self.ui_queue.empty():
                         self.ui_processing = True
@@ -210,13 +243,17 @@ class AppController:
                         callback(result)
 
                     elif msg_type == "close_window":
+                        self._ui_poller_stop.set()
+                        error = msg[1] if len(msg) > 1 else None
+                        if error:
+                            logger.error("Closing after shutdown error: %s", error)
                         try:
                             self.page.window_destroy()
                         except Exception:
                             try:
                                 self.page.window_close()
                             except Exception:
-                                pass
+                                logger.debug("Unable to close Flet window", exc_info=True)
 
                     processed = True
                 except queue.Empty:

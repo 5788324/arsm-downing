@@ -134,20 +134,18 @@ PRAGMA integrity_check = ok
 
 ## 6. 当前已确认问题
 
-### P0 / 必须先修
+### 发布候选阻塞项
 
-1. T6 复制资源库沙盒事务已通过，但 Windows 文件锁、长路径和真实资源库 T7 验收尚未执行，真实入口继续冻结。
-2. `needs_title_layer` 仍缺少基于 metadata title 的无歧义目标命名；当前不允许执行。
-3. 下载核心的 416、Range、`.part` 和主要暂停/恢复语义已完成代码级修复，但真实 ASMR.one/Windows UI 尚未验收。
-4. LibraryView 的搜索、硬编码路径、后台加载和异常显示已修；资源库扫描快照写入、旧索引清理仍未完成。
-5. 用户当前仍有 100 多个混合状态任务，真实 backlog 恢复、VACUUM、队列删除和 T7 目录整理不得执行。
+1. 当前容器无法完成真实 ASMR.one 与 Windows Flet Desktop 视觉验收。
+2. Windows one-folder EXE、文件锁、长路径、杀毒软件和 release workflow artifact 仍需 Codex/GitHub Runner 证据。
+3. 用户正式环境仍有 100 多个混合状态任务，真实迁移、VACUUM、backlog execute 和 T7 小批量整理继续暂停。
+4. `needs_title_layer` 的真实批量命名仍未开放，只允许计划和沙盒验证。
 
-### P1 / 接手后尽快修
+### 非阻塞债务
 
-1. `PROJECT_ROADMAP.md` 仍包含历史阶段内容，当前执行以 `NEXT_TASK_ROADMAP.md` 为准。
-2. GitHub Actions 已在本地分支建立，但在最终推送前尚未由远端 Runner 验证 Python 3.10/Linux 与 Python 3.12/Windows。
-3. ToolsView 的缓存、VACUUM、队列预览、网络诊断、backlog 和迁移 dry-run/verify 已后台化；兼容资源库 rebuild 仍需继续审计。
-4. 迁移代码级风险已在 T8A 收口，但 Windows 文件锁、长路径和真实小批量证据仍未完成。
+1. 历史 `scripts/test_*.py` 数量较多，默认 pytest 已覆盖核心行为，旧脚本后续可逐步归档。
+2. 播放器仍属于后续版本，不进入 `0.9.0-rc.1`。
+3. UI 视觉细节以 Windows 截图验收为准，当前仅完成代码级和组件级验证。
 
 ## 7. 当前禁止事项
 
@@ -174,46 +172,30 @@ Tools -> External Intake -> Execute
 ## 8. 当前阶段
 
 ```text
-TAKEOVER-T0：已完成——事实校准、核心/CLI/UI 硬冻结
-TAKEOVER-T1：已完成——固定计划模型、路径配置、冲突分类、完整报告和后台 UI 扫描
-TAKEOVER-T2：已完成——LibraryVault 快照、四表路径事务、preimage/postimage 与重复 RJ 保护
-TAKEOVER-T3：已完成——逐文件映射、staging、双重校验、Journal、回滚与崩溃恢复
-TAKEOVER-T4：已完成——统一 pytest、依赖锁定、CI 定义、在线 DB 快照与验收规范
-TAKEOVER-T5A：已完成——下载响应、断点恢复、镜像切换、UI 控制语义和隔离 smoke 工具
-TAKEOVER-T5B：验收包已完成——等待 Codex 在 Windows 执行在线快照、真实小样本和视觉验收
-TAKEOVER-T5C：已完成——资源库搜索、后台加载、异常分类和动态统计代码级收口
-TAKEOVER-T6：已完成——复制资源库执行、幂等、DB 失败回滚和提交后恢复
-TAKEOVER-T6B：已完成——Tools 维护操作和 backlog 安全收口
-TAKEOVER-T7：等待维护窗口——当前 100+ 混合任务存在，不执行真实小批量整理
-TAKEOVER-T8A：已完成——迁移 manifest、递归 part/symlink、四表同步、删除确认和沙盒验收
-TAKEOVER-T8B：已完成——资源库完整快照、原子索引替换、陈旧清理、重复 RJ 主路径和递归音轨验证
+TAKEOVER-T0~T8B：已完成代码级收口
+TAKEOVER-T9：已完成——版本、运行目录、音频标签、关闭流程、构建和发布文档
+TAKEOVER-T5B：并行待 Windows/Codex——真实下载、Flet Desktop 和 Windows 文件系统证据
+TAKEOVER-T7：等待维护窗口——当前 100+ 混合任务存在，不执行真实目录整理
 ```
+
+当前发布候选：`ARSM Suite 0.9.0-rc.1`。
 
 ## 8.1 当前验证结果
 
 ```text
-隔离虚拟环境：Flet 0.27.6 legacy API import PASS
-python -m pytest：183/183 passed
+python -W error::ResourceWarning -m pytest -q：204/204 passed
 全项目 compileall：PASS
 pip check：PASS
-活跃状态文件保护：发现 history.db 时 pytest 固定 exit 2
-SQLite 在线备份：WAL 并发写入期间 snapshot integrity_check=ok
-快照 manifest：size + SHA-256 验证通过
-混合下载状态报告：completed/failed/paused/queued/downloading 统计通过
-本地 ASMR 兼容下载：1 MiB final size + SHA-256 PASS
-真实 aiohttp 200/206/416：PASS
-过期 metadata cache 恢复与嵌套音轨 UI fallback：PASS
-真实 ASMR.one：当前容器 DNS 阻塞，待 Windows sandbox
-Flet 视觉点击：当前容器浏览器策略/libmpv 阻塞，待 Windows sandbox
-external intake 复制资源库验收：11/11 checks PASS；迁移 T8A 沙盒验收：10/10 checks PASS
-资源库 T8B 快照重建验收：10/10 checks PASS
-GitHub Actions：Linux 3.10 + Windows 3.12 workflow 已生成，尚待最终推送后真实运行
-真实 history.db：未连接
-真实 E:\arsm：未读取或修改
-真实文件移动/删除：无
+release_check --skip-tests：PASS
+Linux PyInstaller Analysis/PYZ/EXE/COLLECT：PASS
+活跃状态文件保护：PASS
+SQLite 在线备份与 manifest：PASS
+HTTP 200/206/416 本地 aiohttp：PASS
+External Intake / migration / library rebuild 沙盒：PASS
+Windows release workflow：已生成，待 GitHub Runner
+真实 ASMR.one 与 Flet Desktop：待 Windows/Codex
+真实 history.db / E:\arsm：未连接、未读取、未修改
 ```
-
-详细任务见 `NEXT_TASK_ROADMAP.md`。
 
 ## 9. AI 协作分工
 
@@ -227,7 +209,8 @@ DeepSeek/OpenCode：仅在明确分配时承担低风险、大批量实现，不
 ## 10. 当前接手结论
 
 ```text
-项目可继续维护，不需要推倒重写。
-下载器、SQLite 数据层和资源库 UI 已形成较完整基础。
-当前优先级不是播放器。T8A 迁移代码级收口已完成；T7 在 100+ 活跃/可恢复任务清空前保持冻结。下一项处理资源库 rebuild 快照写入、旧索引清理和剩余 UI 稳定性，同时等待 Windows 隔离下载/UI 证据。
+项目已进入 0.9.0-rc.1 发布候选。
+核心下载、资源库、迁移、External Intake 沙盒、Tools 维护、测试和构建链已完成代码级收口。
+下一步不再扩大功能范围：先推送 GitHub、运行 Linux/Windows CI，再由 Codex 完成 Windows EXE、真实小样本和 UI 证据。
+播放器与真实批量目录整理分别进入后续版本和维护窗口。
 ```

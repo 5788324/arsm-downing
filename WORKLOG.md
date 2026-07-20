@@ -2718,3 +2718,47 @@ TAKEOVER-T9：合并剩余低风险代码债务、启动/打包和发布候选�
 TAKEOVER-T5B：等待 Windows 真实下载与 Flet 视觉证据。
 TAKEOVER-T7：等待下载任务清空后的真实小批量维护窗口。
 ```
+
+## 2026-07-20 — TAKEOVER-T9：0.9.0-rc.1 发布候选收口
+
+### 完成
+
+1. 新增 `core/version.py`，统一应用名与版本 `0.9.0-rc.1`。
+2. 新增 `core/paths.py`，源码运行保持当前目录，冻结版固定使用 EXE 所在目录。
+3. `config.json` 改为临时文件、flush、fsync 和 `os.replace` 原子保存；保存失败保留旧配置。
+4. AppController 关闭改为幂等，等待 active/workers 取消，关闭 HTTP、SQLite 和事件循环。
+5. Orchestrator shutdown 删除固定 sleep，改为实际 await cancellation。
+6. 音频标签扩展至 MP3、FLAC、OGG、Opus、M4A/M4B/MP4、WAV、AIFF、WMA/ASF。
+7. 封面 MIME 按 JPEG/PNG/GIF/WebP 文件签名识别；OGG/Opus 使用 `metadata_block_picture`，MP4 支持 JPEG/PNG cover。
+8. 删除含 `C:\Users\...\Temp` 的旧 spec，新增 `ARSMSuite.spec`、Windows 版本资源和 one-folder 构建。
+9. 新增 `requirements-build.txt`、`scripts/build_windows.ps1`、`scripts/release_check.py` 和 release workflow。
+10. 新增 `docs/BUILD_AND_RELEASE.md`、`docs/TAKEOVER_T9_RELEASE_CANDIDATE.md` 与 `HANDOFF.md`。
+
+### 自动验证
+
+```text
+python -W error::ResourceWarning -m pytest -q：204/204 passed
+python -m compileall：PASS
+pip check：PASS
+release_check --skip-tests：PASS
+Linux PyInstaller Analysis/PYZ/EXE/COLLECT：PASS
+```
+
+### 正式现场影响
+
+```text
+100+ 正式下载任务：未触碰
+正式 history.db/config.json/queue.json：未读取或修改
+正式 Downloads/E:\arsm：未读取或修改
+正式程序依赖：未升级
+GitHub：等待本轮单次提交后一次性更新 Draft PR
+```
+
+### 下一步
+
+```text
+GitHub Linux/Windows CI
+Windows release artifact
+Codex Windows EXE、Flet Desktop 和真实 ASMR.one 小样本证据
+T7 继续等待维护窗口
+```

@@ -78,63 +78,34 @@ queue.json 不作为历史下载进度真源
 
 ## 当前重要状态
 
-仓库最新阶段正在收口外部资源接入功能。该功能涉及批量目录整理、隔离和数据库路径更新，目前真实执行入口保持 **代码级硬冻结**：
+当前发布候选版本：`0.9.0-rc.1`。
 
-- 旧的文件移动、隔离和业务 SQLite 写入实现已从 `tools/external_intake.py` 删除。
-- `execute_normalize()`、元数据刷新和 CLI `--execute` 均在副作用前固定 STOP。
-- Tools 页以明确的 `READ-ONLY` 卡片展示，扫描在后台线程执行，真实执行按钮禁用。
-- 只读计划使用固定 `ExternalIntakePlan` schema，完整报告不会截断 actions。
-- 重复 RJ 的全部候选进入人工复核；不再自动选择主目录或删除主记录。
-- 扫描根目录、隔离目录由配置提供，不再硬编码 `E:\arsm`。
-- 计划 schema v3 附加数据库 preimage、源文件 manifest token 和完整逐文件 source/target 映射。
-- 数据库路径更新已收口为单一事务，同步 `works`、`downloads`、`library_items`、`library_index` 并返回 preimage/postimage。
-- 新增沙盒文件事务：staging、Title 层映射、数量/大小/关键哈希校验、Journal、DB 失败回滚和崩溃恢复；仅允许临时资源库，真实执行按钮继续冻结。
-- T6 复制资源库验收已覆盖正常改名、Title 层复核、重复 RJ、空目录、`.part`、DB 失败和提交后恢复，结果 11/11 PASS。
-- 沙盒验收脚本不会删除普通现有目录；只有专用 marker 标识的验收目录才允许复用。
-- Tools 页队列清理当前只读预览；缓存只删除无恢复任务引用的过期项；VACUUM 和 backlog 执行在混合任务存在时固定拒绝。
-- T8A 迁移模块使用磁盘实测大小、递归 `.part`/symlink 拒绝、相对路径与逐文件哈希验证、四表路径事务和源删除确认；独立沙盒验收 10/10 PASS。
-- Tools 页迁移按钮仅生成后台只读计划；真实迁移执行没有可见入口，等待维护窗口。
+已完成代码级收口：
 
-旧命令现在只会得到明确 STOP，不会移动文件或修改数据库：
+- HTTP 200/206/416、Range、`.part`、暂停/恢复和镜像切换。
+- 资源库后台搜索、快照重建、陈旧索引清理和递归音轨验证。
+- 迁移与 External Intake 的 staging、manifest、四表事务、Journal 和沙盒回滚。
+- Tools 缓存、VACUUM、队列清理预览和 backlog 受控恢复。
+- MP3/FLAC/OGG/Opus/M4A/WAV/AIFF/WMA 标签与真实封面 MIME。
+- 稳定运行目录、原子配置保存、幂等关闭和 PyInstaller one-folder 构建。
 
-```bash
-python tools/external_intake.py --execute --confirm-bulk
-```
+当前仍保持冻结：
 
-详细原因见：
+- External Intake 真实 execute。
+- 正式资源库批量迁移和隔离。
+- 正式 backlog 批量恢复和 VACUUM。
+- 当前 100+ 混合下载任务运行期间的维护操作。
+
+Windows 最终验收仍需 Codex 完成：真实 ASMR.one 小样本、Flet Desktop 视觉、Windows 文件锁/长路径和 release artifact。
+
+详细说明：
 
 ```text
-docs/TAKEOVER_AUDIT_20260718.md
+CURRENT_STATE.md
+HANDOFF.md
+docs/TAKEOVER_T9_RELEASE_CANDIDATE.md
+docs/BUILD_AND_RELEASE.md
 ```
-
-只读扫描、临时目录测试和普通下载/资源库代码审查不受影响。
-
-当前统一便携测试门：
-
-```bash
-python -m pip install -r requirements-dev.txt
-python -m pytest
-```
-
-当前结果：`183/183 passed`。其中包括 external-intake 沙盒/事务与 T6 复制资源库验收、Tools 维护和 backlog 安全测试、SQLite 在线快照、混合下载状态报告、HTTP 200/206/416 真实 aiohttp 集成、下载 UI 语义、资源库后台加载/搜索/异常分类、资源库快照原子重建/陈旧索引清理、递归音轨验证和 UI 模块导入 smoke test。默认测试只使用临时目录和临时 SQLite，并在工作区出现 `history.db`、`config.json` 或 `queue.json` 时直接拒绝运行。
-
-隔离下载与 Flet UI 验收：
-
-```text
-docs/LIVE_DOWNLOAD_AND_UI_SMOKE.md
-docs/WINDOWS_ACCEPTANCE_T5B.md
-```
-
-Windows 一键证据包：
-
-```powershell
-.\scripts\run_windows_acceptance.ps1 `
-  -EvidenceDir "D:\ARSM-Acceptance" `
-  -ActiveDb "<正式程序目录>\history.db" `
-  -LaunchUi
-```
-
-该流程使用独立 sandbox、独立 SQLite 和独立 Downloads，不读取正在运行程序的 `config.json`、`queue.json` 或 `history.db`。
 
 ## 安装
 
@@ -196,12 +167,23 @@ python tools/external_intake.py `
 python main.py
 ```
 
+### 6. Windows 便携版构建
+
+```powershell
+.\scripts\build_windows.ps1
+```
+
+详见 [`docs/BUILD_AND_RELEASE.md`](docs/BUILD_AND_RELEASE.md)。
+
 ## 项目结构
 
 ```text
 main.py                     Flet 应用入口
 core/
-  config.py                 配置
+  config.py                 配置与原子保存
+  paths.py                  源码/便携版运行目录
+  version.py                应用版本
+  audio.py                  多格式音频标签与封面
   database.py               LibraryVault / SQLite 数据层
   database_snapshot.py      活跃 SQLite 在线只读快照
   database_inspection.py    快照完整性与任务状态报告
@@ -216,7 +198,9 @@ ui/
   views/                    Dashboard、下载、资源库、工具、设置
 tools/                      backlog、批量核验、external intake 等工具
 scripts/                    手动诊断、快照工具与兼容脚本
-docs/                       规范、功能审查与接手审计
+docs/                       规范、验收、构建与接手审计
+HANDOFF.md                  Windows/Codex 最终交接
+ARSMSuite.spec              PyInstaller one-folder 构建
 CURRENT_STATE.md             当前事实基线
 NEXT_TASK_ROADMAP.md         当前详细执行路线图
 PROJECT_ROADMAP.md           历史/总体路线图

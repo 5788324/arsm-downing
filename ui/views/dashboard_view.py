@@ -70,7 +70,10 @@ class DashboardView(ft.Container):
             )
             self.achievements_list.controls.append(Styles.glass_container(card, padding=10))
         if changed:
-            self.app_controller.config.save()
+            try:
+                self.app_controller.config.save()
+            except OSError as exc:
+                self.app_controller.show_snack(f"成就保存失败: {exc}")
         self.update()
 
     def _build_stat_card(self, title, value, icon, source="", width=170):

@@ -395,12 +395,40 @@ external intake 通过后再按以下顺序推进：
 5. 播放器技术验证
 6. P7 播放器 MVP
 
+
+## TAKEOVER-T9：发布候选收口
+
+### 状态
+
+```text
+PASS（2026-07-20，代码级）
+```
+
+### 已完成
+
+- [x] 版本统一为 `0.9.0-rc.1`，窗口标题和 Windows 版本资源一致
+- [x] 源码/便携版运行目录稳定，不依赖快捷方式工作目录
+- [x] 配置使用临时文件、fsync 和原子替换
+- [x] 关闭流程等待 active/workers，关闭 HTTP、SQLite 和事件循环
+- [x] 音频标签扩展到 MP3/FLAC/OGG/Opus/M4A/WAV/AIFF/WMA
+- [x] 封面 MIME 按文件签名识别；OGG/Opus/MP4 cover 支持
+- [x] 重建 PyInstaller one-folder spec，移除本机临时路径
+- [x] 增加 Windows 构建脚本、release workflow、release_check 和交接文档
+- [x] Linux PyInstaller Analysis/PYZ/EXE/COLLECT 通过
+- [x] portable tests 204/204 通过
+
+### 待外部证据
+
+- [ ] GitHub Linux/Windows CI
+- [ ] GitHub Windows release artifact
+- [ ] Codex Windows EXE 启动/关闭和 Flet Desktop 截图
+- [ ] 真实 ASMR.one 小样本下载
+
 ## 当前下一项
 
 ```text
-TAKEOVER-T8A：已完成——磁盘 manifest、相对路径/哈希校验、递归 `.part`/symlink、源删除确认、四表同步和 10/10 沙盒验收
-TAKEOVER-T8B：已完成——完整快照、原子替换、陈旧索引清理、重复 RJ 主路径和递归验证
-TAKEOVER-T9：当前下一项——剩余低风险代码债务、启动/打包、发布候选和最终 GitHub/CI 收口
-TAKEOVER-T5B（并行待 Codex）：Windows 在线快照、真实小样本和 Flet 视觉证据
-TAKEOVER-T7（暂停）：只有 100+ 混合任务清空并进入维护窗口后才执行真实 1~3 个作品整理
+TAKEOVER-T9：已完成——0.9.0-rc.1 发布候选、音频标签、运行目录、关闭流程和构建链
+TAKEOVER-T5B：立即下一项——GitHub CI + Windows/Codex 真实下载、EXE 和 UI 证据
+TAKEOVER-T7：继续暂停——等待 100+ 混合任务清空后的维护窗口
+后续版本：播放器 MVP 和历史脚本归档
 ```
