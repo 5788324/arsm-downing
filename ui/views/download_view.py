@@ -13,7 +13,7 @@ from ui.theme import Styles, ACCENT_PRIMARY, ACCENT_SECONDARY, SUCCESS, WARNING,
 from core.status import WorkStatus
 from core.orchestrator import Orchestrator
 
-RJ_PATTERN = re.compile(r"(?:RJ)?(\d{6,})")
+RJ_PATTERN = re.compile(r"(?<!\d)(?:RJ)?(\d{6,8})(?!\d)", re.IGNORECASE)
 QUEUE_FILE = Path("queue.json")
 
 
@@ -41,7 +41,7 @@ class DownloadView(ft.Container):
 
         self.download_btn = ft.ElevatedButton(
             "\u4e0b\u8f7d",
-            icon=ft.icons.DOWNLOAD,
+            icon=ft.Icons.DOWNLOAD,
             style=ft.ButtonStyle(
                 bgcolor=ACCENT_PRIMARY, color="white",
                 shape=ft.RoundedRectangleBorder(radius=10),
@@ -52,7 +52,7 @@ class DownloadView(ft.Container):
 
         self.file_picker = ft.FilePicker(on_result=self.on_file_selected)
         self.batch_btn = ft.ElevatedButton(
-            "\u6279\u91cf\u5bfc\u5165\u6587\u4ef6", icon=ft.icons.FOLDER_OPEN,
+            "\u6279\u91cf\u5bfc\u5165\u6587\u4ef6", icon=ft.Icons.FOLDER_OPEN,
             style=ft.ButtonStyle(
                 bgcolor=BG_SURFACE_LIGHT, color="white",
                 shape=ft.RoundedRectangleBorder(radius=10),
@@ -63,14 +63,14 @@ class DownloadView(ft.Container):
         )
 
         self.btn_pause_all = ft.ElevatedButton(
-            "\u5168\u90e8\u6682\u505c", icon=ft.icons.PAUSE_CIRCLE,
+            "\u5168\u90e8\u6682\u505c", icon=ft.Icons.PAUSE_CIRCLE,
             style=ft.ButtonStyle(
                 bgcolor=WARNING, color="white",
                 shape=ft.RoundedRectangleBorder(radius=10)),
             on_click=lambda e: self._batch_pause()
         )
         self.btn_resume_all = ft.ElevatedButton(
-            "\u5168\u90e8\u5f00\u59cb", icon=ft.icons.PLAY_CIRCLE,
+            "\u5168\u90e8\u5f00\u59cb", icon=ft.Icons.PLAY_CIRCLE,
             style=ft.ButtonStyle(
                 bgcolor=SUCCESS, color="white",
                 shape=ft.RoundedRectangleBorder(radius=10)),
@@ -140,10 +140,20 @@ class DownloadView(ft.Container):
                 if not derived["visible"]:
                     continue
 
-                # Restore tracks from queue.json only for paused/failed states
-                # (preserves per-file progress context). Queued/resuming get fresh empty tracks.
+                # Restore per-file progress from SQLite first. queue.json is only a
+                # cosmetic fallback for very old databases.
                 tracks = {}
-                if derived["enum"] in (WorkStatus.PAUSED, WorkStatus.FAILED):
+                try:
+                    for row in db.get_downloads_by_rj(rj_id):
+                        tracks[row["track_title"]] = {
+                            "downloaded": row["downloaded_bytes"] or 0,
+                            "total": row["total_bytes"] or 0,
+                            "status": row["status"],
+                        }
+                except Exception:
+                    tracks = {}
+
+                if not tracks and derived["enum"] in (WorkStatus.PAUSED, WorkStatus.FAILED):
                     if QUEUE_FILE.exists():
                         try:
                             with open(QUEUE_FILE, "r", encoding="utf-8") as f:
@@ -158,7 +168,7 @@ class DownloadView(ft.Container):
 
                 self.active_downloads[rj_id] = {
                     "status": derived["status"],
-                    "tracks": {},  # fresh — no stale queue.json progress
+                    "tracks": tracks,
                     "control": None, "last_time": time.time(),
                     "last_bytes": 0, "cache_hit": False,
                     "_derived_enum": derived["enum"],
@@ -172,58 +182,10 @@ class DownloadView(ft.Container):
             logging.error(f"load_queue failed: {e}")
 
     def _batch_pause(self):
-        ids = self.app_controller.orc.pause_all()
-        self._refresh_queue()
-        if not ids:
-            self.app_controller.show_snack("没有可暂停的任务")
-        else:
-            self.app_controller.show_snack(f"已暂停 {len(ids)} 个任务")
+        self.app_controller.pause_all_downloads()
 
     def _batch_resume(self):
-        orc = self.app_controller.orc
-        loop = self.app_controller.loop
-        rj_ids = orc.resume_all()
-        if not rj_ids:
-            self.app_controller.show_snack("没有可恢复的任务")
-            return
-        import asyncio
-
-        # Check which RJs actually have resumable downloads
-        db = self.app_controller.db
-        resumable = []
-        failed_only = []
-        for rid in rj_ids:
-            dl = db.get_downloads_summary(rid)
-            can_resume = (dl.get("paused", 0) + dl.get("queued", 0) + dl.get("downloading", 0)) > 0
-            if can_resume: resumable.append(rid)
-            else: failed_only.append(rid)
-
-        if not resumable and failed_only:
-            self.app_controller.show_snack(
-                f"无法自动恢复 — {len(failed_only)} 个任务仅有失败记录，需手动逐项重试")
-            return
-
-        async def _resume_all():
-            for i, rj_id in enumerate(rj_ids):
-                r = await orc._resume_one(rj_id)
-                st = r.get("status", "unknown")
-                if st == "queued":
-                    self.update_work_status(rj_id, "Queued")
-                elif st == "already_queued":
-                    pass
-                elif st == "already_running":
-                    pass
-                elif st == "no_pending":
-                    self.update_work_status(rj_id, "No pending tracks")
-                else:
-                    self.update_work_status(rj_id, f"恢复失败: {r.get('message', st)}")
-                if i % 5 == 0:
-                    await asyncio.sleep(0.5)
-            self._refresh_queue()
-
-        asyncio.run_coroutine_threadsafe(_resume_all(), loop)
-        self.app_controller.show_snack(
-            f"正在恢复 {len(rj_ids)} 个任务...")
+        self.app_controller.resume_all_downloads()
 
     def process_input(self, text: str):
         codes = []
@@ -516,7 +478,7 @@ class DownloadView(ft.Container):
 
         # 2. Metadata cache (works for new downloads with no local files yet)
         try:
-            cached = self.app_controller.db.get_metadata_cache(rj_id)
+            cached = self.app_controller.db.get_metadata_cache(rj_id, allow_stale=True)
             if cached and cached.get("cover_url"):
                 return cached["cover_url"]
         except Exception:
@@ -544,9 +506,9 @@ class DownloadView(ft.Container):
             width=width,
             height=height,
             border_radius=12,
-            bgcolor=ft.colors.with_opacity(0.55, BG_SURFACE_LIGHT),
+            bgcolor=ft.Colors.with_opacity(0.55, BG_SURFACE_LIGHT),
             alignment=ft.alignment.center,
-            content=ft.Icon(ft.icons.ALBUM, color=ACCENT_PRIMARY, size=min(width, height) // 2),
+            content=ft.Icon(ft.Icons.ALBUM, color=ACCENT_PRIMARY, size=min(width, height) // 2),
         )
 
     def build_queue_item(self, rj_id: str, update_list: bool = True):
@@ -594,78 +556,78 @@ class DownloadView(ft.Container):
         actions = []
         if ns == "metadata_failed" or ns == "no_pending":
             btn_retry = ft.IconButton(
-                icon=ft.icons.REFRESH, icon_color=ACCENT_PRIMARY,
+                icon=ft.Icons.REFRESH, icon_color=ACCENT_PRIMARY,
                 tooltip="\u91cd\u65b0\u51c6\u5907",
                 on_click=lambda e, r=rj_id: self._retry_prepare(r))
             btn_open = ft.IconButton(
-                icon=ft.icons.FOLDER_OPEN, icon_color=ACCENT_SECONDARY,
+                icon=ft.Icons.FOLDER_OPEN, icon_color=ACCENT_SECONDARY,
                 tooltip="\u6253\u5f00\u76ee\u5f55",
                 on_click=lambda e, r=rj_id: self._open_work_dir(r))
             btn_remove = ft.IconButton(
-                icon=ft.icons.DELETE_OUTLINE, icon_color=ERROR,
+                icon=ft.Icons.DELETE_OUTLINE, icon_color=ERROR,
                 tooltip="\u79fb\u9664",
                 on_click=lambda e, r=rj_id: self.cancel_item(r))
             actions.extend([btn_retry, btn_open, btn_remove])
             prog_bar = ft.ProgressBar(value=None, color="grey")
         elif ns == "duplicate":
             btn_open = ft.IconButton(
-                icon=ft.icons.FOLDER_OPEN, icon_color=ACCENT_SECONDARY,
+                icon=ft.Icons.FOLDER_OPEN, icon_color=ACCENT_SECONDARY,
                 tooltip="\u6253\u5f00\u76ee\u5f55",
                 on_click=lambda e, r=rj_id: self._open_work_dir(r))
             btn_force = ft.IconButton(
-                icon=ft.icons.FORCE_GRAPH_3, icon_color=WARNING,
+                icon=ft.Icons.FORCE_GRAPH_3, icon_color=WARNING,
                 tooltip="\u4ecd\u7136\u4e0b\u8f7d",
                 on_click=lambda e, r=rj_id: self._force_download(r))
             btn_clear = ft.IconButton(
-                icon=ft.icons.DELETE_OUTLINE, icon_color="grey",
+                icon=ft.Icons.DELETE_OUTLINE, icon_color="grey",
                 tooltip="\u6e05\u9664",
                 on_click=lambda e, r=rj_id: self.cancel_item(r))
             actions.extend([btn_open, btn_force, btn_clear])
         elif ns == "failed":
             btn_retry = ft.IconButton(
-                icon=ft.icons.REPLAY, icon_color=ACCENT_PRIMARY,
+                icon=ft.Icons.REPLAY, icon_color=ACCENT_PRIMARY,
                 tooltip="\u91cd\u8bd5\u4e0b\u8f7d",
                 on_click=lambda e, r=rj_id: self._retry_failed(r))
             btn_clear = ft.IconButton(
-                icon=ft.icons.DELETE_OUTLINE, icon_color=ERROR,
+                icon=ft.Icons.DELETE_OUTLINE, icon_color=ERROR,
                 tooltip="\u6e05\u7406\u5931\u8d25\u4efb\u52a1",
                 on_click=lambda e, r=rj_id: self.cancel_item(r))
             btn_open = ft.IconButton(
-                icon=ft.icons.FOLDER_OPEN, icon_color=ACCENT_SECONDARY,
+                icon=ft.Icons.FOLDER_OPEN, icon_color=ACCENT_SECONDARY,
                 tooltip="\u6253\u5f00\u4e0b\u8f7d\u76ee\u5f55",
                 on_click=lambda e, r=rj_id: self._open_work_dir(r))
             actions.extend([btn_retry, btn_clear, btn_open])
         elif ns == "paused":
             btn_resume = ft.IconButton(
-                icon=ft.icons.PLAY_ARROW, icon_color=SUCCESS,
+                icon=ft.Icons.PLAY_ARROW, icon_color=SUCCESS,
                 tooltip="\u7ee7\u7eed\u4e0b\u8f7d",
                 on_click=lambda e, r=rj_id: self.toggle_pause(r))
             btn_cancel = ft.IconButton(
-                icon=ft.icons.CANCEL, icon_color=ERROR,
-                tooltip="\u53d6\u6d88\u4e0b\u8f7d",
+                icon=ft.Icons.CANCEL, icon_color=ERROR,
+                tooltip="暂停并从本次列表隐藏（保留断点）",
                 on_click=lambda e, r=rj_id: self.cancel_item(r))
             actions.extend([btn_resume, btn_cancel])
         elif ns == "queued" or ns == "resuming":
             btn_pause = ft.IconButton(
-                icon=ft.icons.PAUSE, icon_color=ACCENT_PRIMARY,
+                icon=ft.Icons.PAUSE, icon_color=ACCENT_PRIMARY,
                 tooltip="\u6682\u505c",
                 on_click=lambda e, r=rj_id: self.toggle_pause(r))
             btn_cancel = ft.IconButton(
-                icon=ft.icons.CANCEL, icon_color=ERROR,
-                tooltip="\u53d6\u6d88\u4e0b\u8f7d",
+                icon=ft.Icons.CANCEL, icon_color=ERROR,
+                tooltip="暂停并从本次列表隐藏（保留断点）",
                 on_click=lambda e, r=rj_id: self.cancel_item(r))
             actions.extend([btn_pause, btn_cancel])
         elif ns == "downloading":
             btn_pause = ft.IconButton(
-                icon=ft.icons.PAUSE, icon_color=ACCENT_PRIMARY,
+                icon=ft.Icons.PAUSE, icon_color=ACCENT_PRIMARY,
                 tooltip="\u6682\u505c",
                 on_click=lambda e, r=rj_id: self.toggle_pause(r))
             btn_cancel = ft.IconButton(
-                icon=ft.icons.CANCEL, icon_color=ERROR,
-                tooltip="\u53d6\u6d88\u4e0b\u8f7d",
+                icon=ft.Icons.CANCEL, icon_color=ERROR,
+                tooltip="暂停并从本次列表隐藏（保留断点）",
                 on_click=lambda e, r=rj_id: self.cancel_item(r))
             btn_reconnect = ft.IconButton(
-                icon=ft.icons.REFRESH, icon_color=ACCENT_SECONDARY,
+                icon=ft.Icons.REFRESH, icon_color=ACCENT_SECONDARY,
                 tooltip="\u91cd\u8fde\uff08\u6682\u505c\u540e\u91cd\u65b0\u8fde\u63a5\uff09",
                 on_click=lambda e, r=rj_id: self._reconnect_job(r))
             actions.extend([btn_pause, btn_cancel, btn_reconnect])
@@ -902,17 +864,14 @@ class DownloadView(ft.Container):
         data["status"] = "队列中"
         data["cache_hit"] = False
         self.build_queue_item(rj_id)
-        self.app_controller.start_download(rj_id)
+        self.app_controller.start_download(rj_id, allow_duplicate=True)
 
     def _reconnect_job(self, rj_id: str):
         """Pause → resume to force CDN reconnection."""
         data = self.active_downloads.get(rj_id)
         if not data:
             return
-        self.app_controller.pause_download(rj_id)
-        self.app_controller.resume_download(rj_id)
-        self.update_work_status(rj_id, "Resuming...")
-        self.app_controller.show_snack(f"{rj_id} 重连中...")
+        self.app_controller.reconnect_download(rj_id)
 
     def _retry_prepare(self, rj_id: str):
         """Retry metadata preparation."""
@@ -922,33 +881,37 @@ class DownloadView(ft.Container):
         data["status"] = "准备中..."
         data["cache_hit"] = False
         self.build_queue_item(rj_id)
-        self.app_controller.start_download(rj_id)
+        self.app_controller.start_download(rj_id, force_refresh=True)
         self.app_controller.show_snack(f"{rj_id} 重新准备元数据中...")
 
     def _open_work_dir(self, rj_id: str):
-        """Open the download directory for this work."""
-        cfg = self.app_controller.config
-        cached = self.app_controller.db.get_metadata_cache(rj_id)
-        if cached:
-            title = Orchestrator.sanitize(cached.get("title", ""))
-            dir_template = cfg.dir_template
-            folder = dir_template.format(rj_id=rj_id, title=title,
-                                         circle="", year="")
-            path = cfg.output_dir / folder
-        else:
-            path = cfg.output_dir
+        """Open the canonical directory recorded by the works table."""
+        work = self.app_controller.db.get_work(rj_id)
+        path = Path(work["local_path"]) if work and work["local_path"] else None
 
-        path = Path(path)
-        if path.exists():
-            try:
-                if platform.system() == "Windows":
-                    os.startfile(path)
-                elif platform.system() == "Darwin":
-                    subprocess.run(["open", path])
-                else:
-                    subprocess.run(["xdg-open", path])
-            except Exception:
-                pass
+        if path is None:
+            cached = self.app_controller.db.get_metadata_cache(rj_id, allow_stale=True)
+            if cached:
+                title = Orchestrator.sanitize(cached.get("title", ""))
+                folder = self.app_controller.config.dir_template.format(
+                    rj_id=rj_id, title=title, circle="", year="")
+                path = self.app_controller.config.output_dir / folder
+            else:
+                path = self.app_controller.config.output_dir
+
+        if not path.exists():
+            self.app_controller.show_snack(f"目录不存在: {path}")
+            return
+
+        try:
+            if platform.system() == "Windows":
+                os.startfile(path)
+            elif platform.system() == "Darwin":
+                subprocess.run(["open", str(path)], check=False)
+            else:
+                subprocess.run(["xdg-open", str(path)], check=False)
+        except Exception as exc:
+            self.app_controller.show_snack(f"打开目录失败: {exc}")
 
     def cancel_item(self, rj_id: str):
         data = self.active_downloads.get(rj_id)
@@ -956,6 +919,8 @@ class DownloadView(ft.Container):
             return
         if not self._is_terminal(data["status"]):
             self.app_controller.cancel_download(rj_id)
+            self.app_controller.show_snack(
+                f"{rj_id} 已暂停并从本次列表隐藏；重启后仍可恢复")
         if data.get("control") and data["control"] in self.queue_list.controls:
             self.queue_list.controls.remove(data["control"])
         self.active_downloads.pop(rj_id, None)

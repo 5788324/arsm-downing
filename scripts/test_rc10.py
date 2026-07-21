@@ -1,115 +1,128 @@
-"""RC10 tests: backlog CLI, backlog UI, library items, download compatibility."""
-import sys, os, json, sqlite3
+"""Portable RC10 compatibility checks for backlog and library queries."""
+from __future__ import annotations
+
+import sys
 from pathlib import Path
-from datetime import datetime
+from tempfile import TemporaryDirectory
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from core.database import LibraryVault
 from tools.backlog_list import run_backlog_list
 from tools.backlog_reenable import dry_run as reenable_dry, load_rj_ids_from_file
-from core.database import LibraryVault
 
 passed = failed = 0
-def check(name, condition):
+
+
+def check(name: str, condition: bool) -> None:
     global passed, failed
-    if condition: passed += 1; print(f"  PASS: {name}")
-    else: failed += 1; print(f"  FAIL: {name}")
+    if condition:
+        passed += 1
+        print(f"  PASS: {name}")
+    else:
+        failed += 1
+        print(f"  FAIL: {name}")
 
-db = LibraryVault()
-print("=== RC10 Tests ===\n")
 
-# ── Backlog list CLI ──
-print("1. backlog_list --source ignored --limit 20")
-g, s, candidates = run_backlog_list(source="ignored", limit=20, sort_by="downloads_asc")
-check("returns candidates", len(candidates) > 0)
-check("respects limit", len(candidates) <= 20)
-check("all ignored_backlog", all(c["recommended_action"] == "requeue_registered_backlog" for c in candidates))
-check("sorted downloads_asc", all(c["downloads_total"] <= candidates[-1]["downloads_total"] for c in candidates[:-1]) if len(candidates) > 1 else True)
+def add_download(vault: LibraryVault, rj_id: str, suffix: str, status: str, path: Path) -> None:
+    vault.execute_write(
+        """INSERT INTO downloads
+           (id,rj_id,track_title,local_path,status,downloaded_bytes,total_bytes,updated_at)
+           VALUES (?,?,?,?,?,0,100,'2026-07-20T00:00:00')""",
+        (f"{rj_id}:{suffix}", rj_id, suffix, str(path), status),
+    )
 
-print("\n2. backlog_list --source stale --limit 10")
-g2, s2, c2 = run_backlog_list(source="stale", limit=10, sort_by="rj_asc")
-check("returns candidates", len(c2) > 0)
-check("all stale_backlog", all(c["recommended_action"] in ("retry_from_zero","manual_review_resume_or_retry") for c in c2))
 
-print("\n3. backlog_list --source all --sort downloads_desc")
-g3, s3, c3 = run_backlog_list(source="all", limit=15, sort_by="downloads_desc")
-check("sorted correctly", len(c3) > 0)
+print("=== Portable RC10 Compatibility ===\n")
+with TemporaryDirectory(prefix="arsm_rc10_") as raw:
+    root = Path(raw)
+    db_path = root / "history.db"
+    vault = LibraryVault(db_path)
+    try:
+        for index, rj_id in enumerate(("RJ01000001", "RJ01000002", "RJ01510133"), start=1):
+            folder = root / rj_id
+            folder.mkdir()
+            vault.execute_write(
+                "INSERT INTO works (rj_id,title,local_path,status,size_bytes) VALUES (?,?,?,?,?)",
+                (rj_id, f"Title {index}", str(folder), "completed", index * 100),
+            )
+            vault.execute_write(
+                """INSERT INTO library_items
+                   (rj_id,folder_path,folder_name,total_files,total_size,audio_count,image_count,
+                    video_count,other_count,has_audio,has_cover,warnings_json,scan_run_id,scanned_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    rj_id,
+                    str(folder),
+                    folder.name,
+                    index + 1,
+                    index * 100,
+                    1,
+                    1 if index == 1 else 0,
+                    0,
+                    0,
+                    1,
+                    1 if index == 1 else 0,
+                    "[]" if index != 3 else '["warning"]',
+                    "test",
+                    "2026-07-20T00:00:00",
+                ),
+            )
+        add_download(vault, "RJ01000001", "ignored", "ignored", root / "i.mp3")
+        add_download(vault, "RJ01000002", "stale", "stale", root / "s.mp3")
+        add_download(vault, "RJ01000002", "completed", "completed", root / "c.mp3")
+        add_download(vault, "RJ01510133", "ignored", "ignored", root / "x.mp3")
+    finally:
+        vault.close()
 
-print("\n4. backlog_list excludes current paused")
-g4, s4, c4 = run_backlog_list(source="all", limit=200)
-has_paused = any(c["rj_id"] == "RJ01510133" and c["recommended_action"] != "paused_current_do_not_recover" for c in c4)
-check("RJ01510133 not in active backlog", not has_paused)
+    groups, summary, candidates = run_backlog_list(
+        source="all",
+        limit=20,
+        sort_by="downloads_desc",
+        db_path=db_path,
+        report_root=root / "reports",
+    )
+    check("backlog candidates returned", len(candidates) == 3)
+    check("specific RJ remains visible", any(item["rj_id"] == "RJ01510133" for item in candidates))
+    check("all-row aggregation works", next(item for item in candidates if item["rj_id"] == "RJ01000002")["completed_count"] == 1)
+    check("report row count", summary["total_download_rows"] == 4)
+    check("groups generated", bool(groups))
 
-# ── Backlog re-enable ──
-print("\n5. backlog_reenable dry-run")
-r = reenable_dry(["RJ01588893", "RJ01534605"])
-check("dry_run flag is True", r["dry_run"])
-check("target is queued", r["totals"]["target_status"] == "queued")
-check("completed not touched", all(d["old_status"] in ("stale","ignored") for rj in r["would_update"] for d in rj["details"]))
+    selected_file = root / "selected.txt"
+    selected_file.write_text("# portable\nRJ01000001\nRJ01000002\n", encoding="utf-8")
+    selected = load_rj_ids_from_file(selected_file)
+    preview = reenable_dry(selected, db_path=db_path)
+    check("RJ file parsed", selected == ["RJ01000001", "RJ01000002"])
+    check("dry-run targets two rows", preview["totals"]["total_rows"] == 2)
+    check("completed not targeted", all(
+        row["old_status"] in {"stale", "ignored"}
+        for work in preview["would_update"]
+        for row in work["details"]
+    ))
 
-print("\n6. backlog_reenable --from-file")
-# Create temp file with RJs that have stale/ignored rows
-rj_with_backlog = db.conn.execute("SELECT DISTINCT rj_id FROM downloads WHERE status='stale' LIMIT 2").fetchall()
-test_rj_ids = [r[0] for r in rj_with_backlog]
-check("found test RJs with stale rows", len(test_rj_ids) >= 1)
-if test_rj_ids:
-    tmp = Path(".local_backups/test_rj_list.txt")
-    tmp.write_text("\n".join(test_rj_ids), encoding="utf-8")
-    rj_ids_from_file = load_rj_ids_from_file(str(tmp))
-    check("reads file correctly", len(rj_ids_from_file) == len(test_rj_ids))
-    rd = reenable_dry(rj_ids_from_file)
-    check("from-file dry-run works", rd["totals"]["total_rows"] > 0)
-    try: tmp.unlink(missing_ok=True)
-    except PermissionError: pass
+    vault = LibraryVault.open_read_only(db_path)
+    try:
+        items = vault.get_library_items(limit=5)
+        search = vault.get_library_items(search="RJ010", limit=10)
+        audio = vault.get_library_items(filter_audio=True, limit=5)
+        missing_cover = vault.get_library_items(filter_cover=True, limit=5)
+        warnings = vault.get_library_items(filter_warnings=True, limit=5)
+        library_summary = vault.get_library_summary()
+        pending = vault.get_pending_downloads()
+        pending_rjs = vault.get_pending_rj_ids()
+    finally:
+        vault.close()
 
-# ── Library items queries ──
-print("\n7. library_items query")
-items = db.get_library_items(limit=5)
-check("returns rows", len(items) > 0)
-check("has rj_id", all("rj_id" in i for i in items))
-check("has folder_path", all("folder_path" in i for i in items))
+    check("library items returned", len(items) == 3)
+    check("library search works", len(search) == 2)
+    check("audio filter works", len(audio) == 3)
+    check("missing-cover filter works", len(missing_cover) == 2)
+    check("warning filter works", [item["rj_id"] for item in warnings] == ["RJ01510133"])
+    check("library summary works", library_summary["total_works"] == 3 and library_summary["total_files"] == 9)
+    check("stale/ignored hidden from pending", not any(item["status"] in {"stale", "ignored"} for item in pending))
+    check("stale/ignored RJs hidden from pending set", not {"RJ01000001", "RJ01000002", "RJ01510133"} & set(pending_rjs))
 
-print("\n8. library_items search")
-items2 = db.get_library_items(search="RJ01", limit=10)
-check("search returns results", len(items2) > 0)
-
-print("\n9. library_items filter has_audio")
-items3 = db.get_library_items(filter_audio=True, limit=5)
-check("filter_audio works", all(i.get("has_audio") == 1 for i in items3))
-
-print("\n10. library_items filter missing_cover")
-items4 = db.get_library_items(filter_cover=True, limit=5)
-check("filter_cover works", all(i.get("has_cover") == 0 for i in items4))
-
-print("\n11. library_summary")
-s = db.get_library_summary()
-check("total_works", s.get("total_works", 0) > 0)
-check("total_files", s.get("total_files", 0) > 0)
-check("total_size", s.get("total_size", 0) > 0)
-
-# ── Download page compatibility ──
-print("\n12. download queue hides stale/ignored")
-pending = db.get_pending_downloads()
-stale_in_pending = any(d["status"] in ("stale","ignored") for d in pending)
-check("stale not in pending downloads", not stale_in_pending)
-
-pending_rjs = db.get_pending_rj_ids()
-stale_rows = db.conn.execute("SELECT DISTINCT rj_id FROM downloads WHERE status='stale' LIMIT 5").fetchall()
-stale_in_pending_rjs = any(r[0] in pending_rjs for r in stale_rows)
-check("stale not in pending rj_ids", not stale_in_pending_rjs)
-
-print("\n13. download queue shows queued+paused")
-queued_rjs = db.conn.execute("SELECT COUNT(DISTINCT rj_id) FROM downloads WHERE status IN ('queued','paused')").fetchone()[0]
-check("queued+paused RJs present", queued_rjs > 0)
-
-# ── Backlog UI service layer ──
-print("\n14. backlog stats accessible")
-stale_count = db.conn.execute("SELECT COUNT(*) FROM downloads WHERE status='stale'").fetchone()[0]
-ignored_count = db.conn.execute("SELECT COUNT(*) FROM downloads WHERE status='ignored'").fetchone()[0]
-check("stale count > 0", stale_count > 0)
-check("ignored count > 0", ignored_count > 0)
-
-print(f"\n{'='*40}")
+print(f"\n{'=' * 40}")
 print(f"Results: {passed} passed, {failed} failed")
 print(f"Overall: {'PASS' if failed == 0 else 'FAIL'}")
-sys.exit(0 if failed == 0 else 1)
+raise SystemExit(0 if failed == 0 else 1)

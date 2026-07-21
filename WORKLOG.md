@@ -2015,13 +2015,750 @@ test_bulk_guardrails.py:  16/18 passed (2 failures: active downloads present aft
 ```text
 Codex re-review UI fixes. If passed, enter P7 media player MVP.
 ```
+
+---
+
+## 25. 2026-07-20 ChatGPT 接手第一轮：external intake 硬冻结
+
+### 范围
+
+```text
+TAKEOVER-T0：事实校准、高风险入口冻结、便携测试基线和协作文档同步
 ```
+
+### 完成内容
+
+1. `execute_normalize()` 在任何备份目录、隔离目录、SQLite 连接或文件移动之前直接抛出 `ExternalIntakeExecutionDisabled`。
+2. CLI `--execute` 与会写入状态的 `--refresh-metadata` 均固定输出 STOP 并以退出码 2 结束。
+3. Tools 页“执行整理”按钮改为禁用状态；防御性旧回调不再导入或调用执行函数。
+4. 扫描计划增加固定零值、`root_exists`、`execution_frozen` 和 `would_be_executable_without_freeze`，缺少 `E:\arsm` 时 dry-run 不再崩溃。
+5. 原 `scripts/test_external_intake.py` 改为便携测试入口，不再扫描真实 `E:\arsm`。
+6. 新增临时目录、临时 SQLite、CLI、只读数据库和 UI 源码守卫测试。
+7. 更新 README、CURRENT_STATE、NEXT_TASK_ROADMAP、PROJECT_ROADMAP、AI_WORKFLOW 和审计状态。
+
+### 修改文件
+
+```text
+tools/external_intake.py
+ui/views/tools_view.py
+scripts/test_external_intake.py
+tests/__init__.py
+tests/test_external_intake_freeze.py
+tests/test_external_intake_scan.py
+README.md
+CURRENT_STATE.md
+NEXT_TASK_ROADMAP.md
+PROJECT_ROADMAP.md
+AI_WORKFLOW.md
+docs/TAKEOVER_AUDIT_20260718.md
+docs/FULL_FUNCTION_AUDIT_20260720.md
+WORKLOG.md
 ```
+
+### 数据和文件影响
+
+```text
+真实 history.db：未连接、未修改
+真实 E:\arsm：未读取、未移动、未隔离、未删除
+下载核心：未修改
+现有业务数据：无变化
 ```
+
+### 测试
+
+```text
+python -m py_compile tools/external_intake.py ui/views/tools_view.py tests/test_external_intake_freeze.py tests/test_external_intake_scan.py scripts/test_external_intake.py
+python -m unittest discover -s tests -p "test_external_intake_*.py" -v
+python scripts/test_external_intake.py
+
+结果：12/12 passed（两个入口均通过）
 ```
+
+### 下一步
+
+```text
+进入 TAKEOVER-T1：定义固定 ExternalIntakePlan、消除硬编码路径、完善目标冲突和完整报告；继续保持所有真实执行入口冻结。
 ```
+
+---
+
+## 26. 2026-07-20 ChatGPT 接手第二轮：ExternalIntakePlan 与只读 UI 收口
+
+### 范围
+
+```text
+TAKEOVER-T1：固定计划模型、路径安全、目标冲突、完整报告、配置与只读 UI
 ```
+
+### 完成内容
+
+1. 使用 dataclass 定义固定 `ExternalIntakePlan`、`ExternalIntakeAction` 和结构化 notice。
+2. 建立六类目录分类：已规范、需 Title 层、需改顶层名、隔离候选、重复复核、fatal。
+3. 重复 RJ 的全部目录均进入复核，不再按排序擅自选择主记录。
+4. 增加绝对路径、文件系统根目录、扫描/隔离目录包含关系、符号链接、目标逃逸和已存在目标冲突检查。
+5. 删除 external intake 中旧的 `shutil.move`、业务表 UPDATE/DELETE 和备份/隔离执行体；兼容入口继续硬 STOP。
+6. CLI/Tools/Settings 不再硬编码 `E:\arsm`；新增 `external_intake_root` 与 `external_quarantine_root` 配置。
+7. Tools 页改为 READ-ONLY 卡片，扫描通过 `asyncio.to_thread` 运行，主 UI 只渲染结果。
+8. JSON 报告保存全部 actions；UI 仅显示摘要和前 15 项。
+9. 只读 SQLite 核验使用 `mode=ro` 并显式关闭连接。
+10. 修正 Windows 保留文件名、尾随点/空格和 metadata track 递归提取。
+11. 顶层或嵌套符号链接直接判为 fatal，避免扫描和未来执行越出配置根目录。
+12. UI 增加重复扫描防抖；设置页拒绝相对路径和位于扫描目录内部的隔离路径。
+
+### 修改文件
+
+```text
+tools/external_intake.py
+core/config.py
+config.example.json
+ui/views/tools_view.py
+ui/views/settings_view.py
+tests/test_external_intake_freeze.py
+tests/test_external_intake_scan.py
+tests/test_external_intake_config.py
+README.md
+CURRENT_STATE.md
+NEXT_TASK_ROADMAP.md
+PROJECT_ROADMAP.md
+AI_WORKFLOW.md
+docs/FULL_FUNCTION_AUDIT_20260720.md
+WORKLOG.md
 ```
+
+### 数据和文件影响
+
+```text
+真实 history.db：未连接、未修改
+真实 E:\arsm：未读取、未移动、未隔离、未删除
+报告写入：仅测试临时目录
+下载核心：未修改
 ```
+
+### 测试
+
+```text
+python -W error::ResourceWarning -m unittest discover -s tests -p "test_external_intake_*.py" -v
+结果：20/20 passed
+
+python scripts/test_external_intake.py
+结果：20/20 passed
+
+python scripts/test_tools_view_handlers_exist.py
+结果：PASS（13 handlers）
+
+python scripts/test_tools_clean_invalid_button.py
+结果：PASS
 ```
+
+### 已知限制
+
+```text
+当前环境未安装 Flet，无法运行真实窗口；本轮仅完成 Python 语法、AST/UI 结构和业务行为测试。
+External intake 真实执行仍冻结。
+其他 ToolsView、下载、资源库和迁移问题仍按完整审计处理。
+```
+
+### 下一步
+
+```text
+进入 TAKEOVER-T2：LibraryVault 查询/写入服务、preimage/postimage、重复 RJ 主记录保护和可恢复执行设计。
+```
+
+---
+
+## 27. 2026-07-20 ChatGPT 接手第三轮：LibraryVault 数据库事务收口
+
+### 范围
+
+```text
+TAKEOVER-T2：external intake 只读数据库上下文、四表路径事务、preimage/postimage 与重复 RJ 主记录保护
+```
+
+### 完成内容
+
+1. 新增 `core/intake_db.py`，集中实现数据库快照、稳定 SHA-256 token、路径组件映射、事务校验和四表路径更新。
+2. `LibraryVault` 支持显式 `db_path`、上下文关闭和真正 SQLite `mode=ro` 只读打开；缺少数据库时不会创建空文件。
+3. 全新数据库补齐 `library_items` 基础 schema 与 `scan_run_id` 索引，并为旧表执行安全补列。
+4. 新增 `get_external_intake_snapshot(s)`，统一读取 works、metadata title/tracks、library_items、library_index、downloads 和 pending 数量。
+5. `ExternalIntakePlan` 升级到 schema v2，每个 action 包含 DB preimage token、主记录路径、pending、library item/index 路径。
+6. Tools 页后台扫描复用 AppController 已存在的唯一 Vault；不在 UI 创建新的 LibraryVault。
+7. external intake 的文件列表核验不再直接 `sqlite3.connect` 或查询业务表，统一通过只读 Vault。
+8. 新增 `update_external_intake_paths()`：单一 `BEGIN IMMEDIATE` 事务同步 works、downloads、library_items、library_index。
+9. 路径更新按路径组件计算，不再使用 SQL `REPLACE()` 的字符串前缀替换。
+10. 成功结果返回 preimage/postimage、两个 token、逐表 updated_rows 和 transaction_id。
+11. SQLite 注入失败时全部表 rollback，返回 preimage；postimage 保持为空。
+12. 重复 RJ 副本不能因 RJ 号相同覆盖正常 `works.local_path`；同 RJ source/target index 冲突不再自动删除记录。
+13. 目标被其他 RJ 占用、canonical library item 指向第三路径、pending downloads、计划后 DB 漂移均 fail-closed。
+14. 旧 `move_work_to_path()` 委托统一事务，现同步 `library_items`；缺失 legacy index 时可在主记录成功更新后补建。
+15. 新增 `docs/EXTERNAL_INTAKE_DB_TRANSACTION_SPEC.md`，记录事务、错误码和 T3 边界。
+
+### 修改文件
+
+```text
+core/database.py
+core/intake_db.py
+tools/external_intake.py
+ui/views/tools_view.py
+tests/test_external_intake_database.py
+tests/test_external_intake_scan.py
+scripts/test_move_work_to_path_handles_stale_target_library_index.py
+README.md
+CURRENT_STATE.md
+NEXT_TASK_ROADMAP.md
+PROJECT_ROADMAP.md
+AI_WORKFLOW.md
+docs/ARSM_LIBRARY_SPEC.md
+docs/EXTERNAL_INTAKE_DB_TRANSACTION_SPEC.md
+docs/TAKEOVER_AUDIT_20260718.md
+docs/FULL_FUNCTION_AUDIT_20260720.md
+WORKLOG.md
+```
+
+### 数据和文件影响
+
+```text
+真实 history.db：未连接、未修改
+真实 E:\arsm：未读取、未移动、未隔离、未删除
+external intake 文件执行：仍冻结
+测试 SQLite：仅 tempfile 临时数据库
+现有迁移兼容测试：仅 tempfile 与 /tmp 样本
+```
+
+### 测试
+
+```text
+python -W error::ResourceWarning -m unittest discover -s tests -p "test_external_intake_*.py" -v
+结果：40/40 passed
+
+python scripts/test_external_intake.py
+结果：40/40 passed
+
+python scripts/test_database_no_shared_conn_writes.py
+结果：PASS
+
+python scripts/test_no_shared_conn_writes.py
+结果：PASS
+
+python scripts/test_move_work_to_path_handles_stale_target_library_index.py
+结果：PASS
+
+临时 cwd：
+- test_move_updates_works_local_path.py：PASS
+- test_move_updates_downloads_local_path.py：PASS
+- test_move_rejects_pending_work.py：PASS
+- test_migration_copy_verify_update_db_delete_source.py：PASS
+```
+
+### 已知限制
+
+```text
+当前环境未安装 Flet，未执行真实窗口视觉/交互验收。
+数据库事务已完成，但尚未连接 external intake 的文件 staging/move/restore 状态机。
+真实执行按钮、CLI --execute、metadata refresh 继续硬冻结。
+下载核心、资源库扫描、其他 ToolsView 和 backlog 问题仍按完整审计推进。
+```
+
+### 下一步
+
+```text
+进入 TAKEOVER-T3：逐作品文件 action/journal、staging、相对路径+大小校验、DB 失败后的文件恢复和失败注入测试。
+```
+
+---
+
+## 28. 2026-07-20 ChatGPT 接手第四轮：沙盒文件事务与自动恢复
+
+### 范围
+
+```text
+TAKEOVER-T3：逐文件映射、staging、Journal、数据库失败回滚和进程中断恢复
+```
+
+### 完成内容
+
+1. 新增 `core/intake_manifest.py`，集中实现 source manifest、完整逐文件映射、目标映射校验、数量/大小/关键哈希验证。
+2. `ExternalIntakePlan` 升级到 schema v3，每个 action 记录文件数、总大小、manifest token 和全部 source/target 映射。
+3. 顶层目录改名会把文件映射到规范 `RJ/Title/...`，不再只改 RJ 文件夹名称。
+4. 扩展数据库路径事务，`downloads.local_path` 使用逐文件映射，保证 Title 层变化后仍指向真实文件。
+5. 新增 `core/intake_fs.py` 沙盒执行器，只允许所有路径位于显式 `sandbox_root`。
+6. 单作品顺序：plan recheck → staging copy → staging verify → source park → target commit → target verify → DB transaction → cleanup。
+7. staging 位于目标父目录、rollback 位于源目录父级，两次切换都使用同文件系统 `os.replace()`。
+8. DB 更新失败时删除目标并恢复原源目录；恢复失败标记 `stop_required`，批次立即停止。
+9. DB 提交前进程中断可通过 Journal 恢复源目录；DB 提交后中断保留目标和 DB 状态并清理 rollback。
+10. Journal 使用临时文件 + `os.replace()` 原子保存，并拒绝路径越出 sandbox 或文件名与 transaction_id 不一致的 Journal。
+11. 拒绝 source/target 嵌套、目标占用、空目录、symlink、`.part`、残留事务目录、不完整/重复/越界映射和待人工复核 action。
+12. 新增 `docs/EXTERNAL_INTAKE_FILESYSTEM_TRANSACTION_SPEC.md`。
+13. 执行原型按职责拆分为 `intake_manifest`、`intake_journal` 和 `intake_fs` 三个模块，避免继续扩大旧式单体脚本。
+14. Journal transaction ID 增加严格字符白名单，Journal 目录必须位于 sandbox 内，阻止路径穿越写出。
+15. 数据库事务要求 downloads 文件路径精确命中逐文件映射，禁止错误前缀回退和第三路径残留。
+16. 复用已生成的 source manifest，减少计划和执行阶段的重复目录遍历。
+
+### 修改文件
+
+```text
+core/intake_manifest.py
+core/intake_journal.py
+core/intake_fs.py
+core/intake_db.py
+core/database.py
+tools/external_intake.py
+tests/test_external_intake_filesystem.py
+tests/test_external_intake_scan.py
+README.md
+CURRENT_STATE.md
+NEXT_TASK_ROADMAP.md
+PROJECT_ROADMAP.md
+AI_WORKFLOW.md
+docs/EXTERNAL_INTAKE_DB_TRANSACTION_SPEC.md
+docs/EXTERNAL_INTAKE_FILESYSTEM_TRANSACTION_SPEC.md
+docs/TAKEOVER_AUDIT_20260718.md
+docs/FULL_FUNCTION_AUDIT_20260720.md
+WORKLOG.md
+```
+
+### 数据和文件影响
+
+```text
+真实 E:\arsm：未读取、未移动、未删除
+真实 history.db：未连接、未修改
+真实 Tools/CLI execute：继续硬冻结
+文件事务：只在 tempfile sandbox 执行
+数据库事务：只在 tempfile history.db 执行
+```
+
+### 测试
+
+```text
+python -m compileall -q .
+结果：PASS
+
+python -W error::ResourceWarning -m unittest discover -s tests -v
+结果：62/62 passed
+```
+
+覆盖：
+
+- 完整逐文件映射和 Title 层布局
+- downloads 文件路径与磁盘映射一致
+- staging/target 相对路径、数量、大小和哈希
+- source manifest 漂移
+- target 冲突与 sandbox 越界
+- source/target 嵌套
+- 文件故障 rollback
+- SQLite 失败文件恢复
+- rollback 失败 STOP
+- 批次首错停止
+- DB 提交前进程中断恢复
+- DB 提交后进程中断恢复
+- 篡改/越界 Journal 拒绝
+- transaction ID 路径穿越拒绝
+- Journal 目录越出 sandbox 拒绝
+- symlink 源树返回受控失败
+- downloads 未映射/越界映射拒绝
+
+### 已知限制
+
+```text
+当前执行器仅允许 needs_rename_top_level 的无争议沙盒 action。
+needs_title_layer 仍需要可靠 metadata title；当前保持人工复核。
+尚未实现新外部作品的 DB 注册事务和 quarantine 执行。
+尚未进行 Windows 文件锁、杀毒软件、长路径、真实 Flet UI 和复制资源库实机验收。
+```
+
+### 下一步
+
+```text
+进入 TAKEOVER-T4：建立统一 pytest/CI 测试门、依赖锁定和 Windows 只读/沙盒验收说明。
+```
+
+---
+
+## 29. 2026-07-20 ChatGPT 接手第五轮：统一测试门、CI 与活跃数据库只读快照
+
+### 用户现场条件
+
+```text
+正式下载器仍在运行
+任务数量：100+
+状态混合：completed / failed / paused / queued / downloading 等
+本轮不得停止、重试、删除或迁移这些任务
+```
+
+### 范围
+
+```text
+TAKEOVER-T4：pytest、依赖兼容集、GitHub Actions、在线 DB snapshot 和 Windows 只读验收规范
+```
+
+### 完成内容
+
+1. 新增 `pytest.ini`，默认只收集 `tests/`，严格区分 portable、manual、windows_integration 和 live_network。
+2. external intake 的 62 项 unittest 兼容测试已纳入统一 `python -m pytest`，不再依赖独立发现命令。
+3. 新增共享 pytest fixture，并在工作区存在 `history.db`、`config.json` 或 `queue.json` 时 fail-closed，避免在活跃程序目录运行测试。
+4. 新增 `requirements-dev.txt`；运行依赖全部精确锁定。
+5. Flet 固定为 `0.27.6`，因为当前 UI 使用 legacy `ft.icons` 和 `ft.colors`；隔离环境已验证所有 UI 模块可导入。
+6. 新增 `.github/workflows/ci.yml`，定义 Ubuntu/Python 3.10 与 Windows/Python 3.12 的 compile、UI import smoke 和 pytest gate。
+7. 新增 `core/database_snapshot.py` 与 `scripts/create_db_snapshot.py`，通过 SQLite online backup API 对活跃数据库创建一致性快照。
+8. 快照不手工复制或修改 WAL/SHM，输出前执行 `PRAGMA integrity_check`，并生成 size/SHA-256 manifest。
+9. 新增 `core/database_inspection.py` 与 `scripts/inspect_db_snapshot.py`，只接受 manifest-verified snapshot，统计 downloads/works 的全部状态。
+10. 并发 WAL 写入测试验证下载器持续写入时仍能获得完整快照。
+11. 新增 `docs/TESTING_AND_CI.md` 和 `docs/WINDOWS_READ_ONLY_ACCEPTANCE.md`，明确 100+ 活跃任务期间的禁止操作和 Codex 验收步骤。
+12. 历史 `scripts/test_*.py` 继续作为兼容/诊断脚本保留；live network 和实机测试不会混入默认 CI。
+
+### 修改文件
+
+```text
+.github/workflows/ci.yml
+pytest.ini
+requirements.txt
+requirements-dev.txt
+core/database_snapshot.py
+core/database_inspection.py
+scripts/create_db_snapshot.py
+scripts/inspect_db_snapshot.py
+tests/conftest.py
+tests/test_database_snapshot.py
+tests/test_database_inspection.py
+tests/test_import_smoke.py
+tests/test_test_gate.py
+tests/manual/README.md
+tests/windows_integration/README.md
+docs/TESTING_AND_CI.md
+docs/WINDOWS_READ_ONLY_ACCEPTANCE.md
+docs/FULL_FUNCTION_AUDIT_20260720.md
+docs/TAKEOVER_AUDIT_20260718.md
+README.md
+CURRENT_STATE.md
+NEXT_TASK_ROADMAP.md
+PROJECT_ROADMAP.md
+AI_WORKFLOW.md
+WORKLOG.md
+```
+
+### 测试
+
+```text
+隔离环境安装：flet==0.27.6 + pinned runtime + pytest==8.4.2
+pip check：PASS
+Flet legacy API / 全部 UI 模块 import：PASS
+python -m compileall -q core ui tools tests scripts main.py：PASS
+python -m pytest：94/94 passed
+live-state guard：临时 history.db 存在时固定 exit 2
+SQLite snapshot CLI：PASS
+manifest-verified inspection CLI：PASS
+WAL 并发写入 snapshot：PASS
+GitHub Actions YAML 结构解析：PASS
+git diff --check：PASS
+```
+
+### 数据和运行中任务影响
+
+```text
+正式下载任务：未暂停、未恢复、未重试、未删除、未排序
+正式依赖环境：未安装或升级任何包
+真实 history.db：未打开、未复制、未修改
+真实 history.db-wal / history.db-shm：未访问
+真实 E:\arsm：未读取、未扫描、未移动
+本轮数据库：仅 tempfile 模拟 WAL 数据库
+```
+
+### 已知限制
+
+```text
+GitHub Actions 文件已建立，但按“最终一次推送”规则尚未在远端 Runner 实际运行。
+当前 Flet 版本只是兼容锁定，不代表 UI 质量已验收。
+200 个历史 scripts/test_*.py 尚未全部迁移为 pytest；默认门当前聚焦 94 项可信 portable tests。
+Windows 文件锁、长路径、真实 UI 和当前 100+ 任务状态仍需 Codex 只读观察。
+```
+
+### 下一步
+
+```text
+进入 TAKEOVER-T5：在干净 Bundle 上运行 portable gate，对活跃 DB 创建在线 snapshot，输出混合下载状态报告，并只观察 Flet UI。
+```
+
+## 2026-07-20 — TAKEOVER-T5A：下载核心与隔离 UI Smoke
+
+### 背景
+
+用户确认正式程序仍有 100 多个混合状态任务，并允许选择公开 ASMR.one 小作品进行隔离测试。本轮不操作正式队列，所有下载、数据库和 UI smoke 均使用临时 sandbox。
+
+### 完成
+
+1. 新增 `core/download_response.py`，将 HTTP 200/206/416 的判断从大型下载函数中拆出并建立显式响应计划。
+2. HTTP 416 只有在本地 final/part 大小与 metadata 精确一致时才允许完成；不完整断点固定失败或重试。
+3. Range 响应校验 `Content-Range` 起点、终点、总大小和 `Content-Length`；不匹配时清理错误断点并从零重试。
+4. 取消和最终失败记录磁盘上的真实 `.part` 大小，不再使用过期的内存计数。
+5. 修复 partial final 未移动到 `.part` 就追加的问题，以及 response 清理和未初始化局部变量风险。
+6. 网络层加入有限镜像故障切换；配置镜像优先，不在单一失败地址无限重试。
+7. 重连改为 pause 完成后再 resume；批量暂停/恢复通过后台 asyncio loop 执行；UI 更新统一回到 UI queue。
+8. 强制重复下载把 `allow_duplicate=True` 真正传入核心；打开目录优先使用 `works.local_path`。
+9. 设置页拆分并写入真实 `work_concurrency` / `file_concurrency`，保存时要求有效输出目录。
+10. `ft.icons` / `ft.colors` 迁移为 Flet 0.27.6 支持的 `ft.Icons` / `ft.Colors`。
+11. metadata cache 增加显式 `allow_stale`；正常新请求仍要求新鲜缓存，恢复/离线 fallback 可使用过期缓存，避免旧暂停任务因 TTL 失去恢复能力。
+12. UI 详情递归还原 metadata 中的嵌套音轨。
+13. 新增真实 aiohttp Range 集成测试、本地 ASMR.one 兼容服务器、隔离 live download 和 Flet UI sandbox 启动器。
+14. 新增 `docs/LIVE_DOWNLOAD_AND_UI_SMOKE.md`。
+15. 日志文件不再在 `ui.app` 导入时打开，改为真实应用启动时显式、幂等配置，消除测试/工具进程文件描述符泄漏。
+
+### 自动验证
+
+```text
+python -m compileall -q core ui tools tests scripts main.py：PASS
+python -m pytest -q：125/125 passed
+本地 ASMR 兼容服务器实际下载：1,048,576 bytes PASS
+SHA-256：902abc8c685216b618f70dae8d2b7dd1ea9aef5563d9480347cc948c237d8877
+HTTP 200 / 206 / 416 aiohttp 集成：PASS
+过期 metadata cache 恢复：PASS
+嵌套音轨递归 UI fallback：PASS
+```
+
+### 当前环境限制
+
+```text
+真实 asmr.one：容器 DNS 无法解析，未声称真实站点下载通过
+Flet Web：Chromium 企业策略 URLBlocklist=*，无法进行浏览器视觉点击
+Flet Desktop/Linux：运行时缺少 libmpv.so.1，无法生成桌面截图
+Windows 真实 UI 和网络：留给 Codex 独立 sandbox 验收
+```
+
+### 正式现场影响
+
+```text
+100+ 正式任务：未暂停、未恢复、未重试、未删除
+正式 config/queue/history.db：未读取或修改
+正式 Downloads/E:\arsm：未读取或修改
+正式 Python 环境：未升级
+```
+
+## 2026-07-20 — TAKEOVER-T5C：资源库 UI 收口与 Windows 一键验收包
+
+### 背景
+
+用户继续允许使用独立 sandbox 测试下载和 UI，但正式下载器仍有 100 多个混合状态任务。本轮继续禁止读取或改变正式队列、正式配置和正式数据库。
+
+### 完成
+
+1. 新增 `core/library_diagnostics.py`，将路径归一化、配置根目录判断、warning 解析和异常分类从 Flet View 中拆出。
+2. LibraryView 删除 `E:\arsm`、用户目录、固定 `~227`、假 RJ 和别名 RJ 硬编码。
+3. 搜索实际传入 SQLite，覆盖 RJ、文件夹名和路径；非空查询改为回车/搜索按钮触发，避免每次按键全库扫描。
+4. 新增 `LibraryVault.get_library_page()`，一次串行读取卡片、metadata cover、summary 和 works count。
+5. 新增 `get_library_diagnostic_rows()`，先复制 SQLite rows，再在 worker thread 检查文件系统。
+6. AppController 新增通用 `run_blocking()`；阻塞读取通过 `asyncio.to_thread` 执行，结果经 UI queue 回到 Flet 线程。
+7. 搜索后自动钳制分页；空结果、加载状态、异常截断和打开目录错误均有明确文案。
+8. Dashboard 不再建议直接运行尚未完成安全收口的“资源库重建”。
+9. 新增 `scripts/windows_acceptance.py` 和 `run_windows_acceptance.ps1`，统一运行 portable、在线 DB snapshot、真实小样本和可选 Flet Desktop smoke。
+10. 新增 `docs/WINDOWS_ACCEPTANCE_T5B.md` 和 JSON evidence/观察模板。
+11. 将 4 个资源库历史诊断脚本改为 `TemporaryDirectory + 临时 SQLite`，不再在仓库根目录生成 `history.db/config.json`。
+
+### 自动验证
+
+```text
+python -m pytest：139/139 passed
+python -m compileall：PASS
+pip check：PASS
+git diff --check：PASS
+Windows acceptance 非 Windows dry-run：PASS
+资源库跨平台路径、搜索、分页、summary、异常分类、打开目录：PASS
+```
+
+### 正式现场影响
+
+```text
+100+ 正式任务：未触碰
+正式 history.db/config.json/queue.json：未读取或修改
+正式 Downloads/E:\arsm：未读取或修改
+真实 ASMR.one：已再次尝试 metadata-only；所有镜像均因容器 DNS 解析失败，未声称通过
+Windows Desktop：验收器已准备，仍待 Codex 执行并提交截图证据
+```
+
+## 2026-07-20 — TAKEOVER-T6/T6B：复制资源库沙盒验收与 Tools 安全收口
+
+### 背景
+
+用户正式下载器仍挂有 100 多个 completed/failed/paused/queued/downloading 混合状态任务。本轮继续禁止连接或维护正式 `history.db`、正式队列和 `E:\arsm`，只使用复制出的临时目录、临时 SQLite 和模拟故障。
+
+### 完成
+
+1. 新增 `scripts/intake_sandbox_acceptance.py`，实际执行正常改名、Title 层复核、重复 RJ、空目录、`.part`、数据库失败和提交后清理失败恢复。
+2. 第二次扫描验证已处理作品回到 `already_normalized`；数据库路径和最终目录一致。
+3. 沙盒脚本增加 marker 保护：不再删除任意现有目录，只允许新目录或带合法 `.arsm-intake-sandbox.json` 的验收目录。
+4. 新增 `core/tools_maintenance.py`，所有维护操作使用独立 SQLite 连接，preview 为真正只读。
+5. 队列清理改为只读预览，不执行 downloads DELETE、不改写 `queue.json`、不顺带 VACUUM。
+6. 元数据缓存改为真实安全清理：仅删除过期且不被 queued/paused/downloading/resuming/failed/stale/ignored 引用的缓存，preview token 变化时不删除。
+7. VACUUM 放入后台线程；任何活动或可恢复任务存在时固定拒绝。
+8. 网络诊断不再把代理地址当目标网页，异步结果统一回到 UI queue。
+9. 系统诊断改为只读，不再创建输出目录或修改数据库。
+10. 失败任务诊断和 backlog 统计改为独立只读连接及后台线程，避免在 Flet 线程扫描文件系统。
+11. backlog 预览删除特定 RJ 硬编码，混合作品统计包含 completed/paused 等全部行。
+12. backlog 执行默认 `continue`，保留断点；`.part` 存在时拒绝 `retry-from-zero`。
+13. backlog 执行要求运行时完全空闲，执行前生成 SQLite online backup、preimage、rollback SQL；获取写锁后再次核验队列和 preimage。
+14. 修复旧 backlog 备份/WAL、SQL NULL/引号、状态聚合和报告目录问题。
+15. `scripts/test_backlog_recovery.py` 与 `scripts/test_rc10.py` 改为 `TemporaryDirectory + 临时 SQLite`，不再在仓库根目录产生正式状态文件。
+16. 新增 `docs/TAKEOVER_T6_SANDBOX_ACCEPTANCE.md` 与 `docs/TOOLS_MAINTENANCE_SAFETY.md`。
+
+### 自动验证
+
+```text
+python -m compileall -q core ui tools tests scripts main.py：PASS
+python -W error::ResourceWarning -m pytest -q：158/158 passed
+T6 复制资源库 acceptance：11/11 checks PASS
+ToolsView handler：13/13 PASS
+Tools 队列清理安全结构：PASS
+LibraryVault shared-connection write checks：PASS
+Portable backlog compatibility：12/12 PASS
+Portable RC10 compatibility：16/16 PASS
+```
+
+### 数据和现场影响
+
+```text
+正式 100+ 下载任务：未暂停、未恢复、未重试、未清理
+正式 history.db/config.json/queue.json：未读取、未复制、未修改
+正式 Downloads/E:\arsm：未读取、未扫描、未移动
+VACUUM：只在临时空闲数据库测试
+backlog execute：只在临时 SQLite 测试
+真实 external intake：继续代码级冻结
+```
+
+### 当前边界
+
+```text
+T6 代码级复制资源库验收已通过。
+Windows 文件锁、长路径、杀毒软件和真实资源库仍未验收。
+T7 必须等待 100+ 混合任务清空并进入明确维护窗口。
+下一轮继续迁移模块和资源库 rebuild 一致性，不执行真实目录整理。
+```
+
+
+## 2026-07-20 — TAKEOVER-T8A：迁移模块安全重构
+
+### 背景
+
+用户正式下载器仍有 100 多个 completed/failed/paused/queued/downloading 混合任务。本轮只使用临时目录和临时 SQLite，不连接正式 `history.db`，不读取或迁移正式 `E:\arsm`。
+
+### 完成
+
+1. 新增 `core/migration_manifest.py`，记录完整相对路径、逐文件大小、mtime 和完整/采样 SHA-256。
+2. 递归拒绝任意深度 `.part`、源根目录 symlink 和内部 symlink。
+3. 候选空间估算改用磁盘实测，保留 `db_size_bytes` 仅用于漂移告警。
+4. dry-run 生成 manifest token；执行时源目录变化固定返回 `source_plan_changed`。
+5. staging 和最终 target 均按相对路径、逐文件大小和哈希验证，不再只比较总数/总字节。
+6. 目标路径只要存在就拒绝，不删除空目录或用户标记文件。
+7. 数据库路径更新复用统一事务，同步 works/downloads/library_items/library_index。
+8. DB 失败删除未提交目标并保留源；源删除失败且源完整时反向恢复 DB 并删除目标。
+9. 源发生部分删除或 DB 提交后的后置步骤失败时固定 `stop_required`。
+10. cleanup plan 改为按 RJ 原子 upsert，保存 source/target manifest token。
+11. Tools 按钮改为“预览迁移计划”，dry-run 和 post-verify 使用后台线程及只读 SQLite。
+12. 新增 `scripts/migration_sandbox_acceptance.py` 和 `docs/TAKEOVER_T8A_MIGRATION_SAFETY.md`。
+
+### 自动验证
+
+```text
+python -m pytest：174/174 passed
+迁移沙盒 acceptance：10/10 checks PASS
+历史 migration 兼容脚本：PASS
+python compileall：PASS
+pip check：PASS
+```
+
+### 正式现场影响
+
+```text
+100+ 正式下载任务：未触碰
+正式 history.db/config.json/queue.json：未读取或修改
+正式 Downloads/E:\arsm：未读取、未扫描、未迁移、未删除
+真实迁移入口：无可见按钮，继续冻结
+```
+
+### 下一步
+
+```text
+TAKEOVER-T8B：资源库 rebuild 快照写入、旧索引清理、中断恢复和幂等验证。
+TAKEOVER-T5B：等待 Codex Windows 下载/UI 证据。
+TAKEOVER-T7：等待 100+ 混合任务清空后的维护窗口。
+```
+
+
+## 2026-07-20 — TAKEOVER-T8B：资源库快照重建
+
+### 完成
+
+1. 新增 `core/library_rebuild.py`，扫描阶段生成不可变完整快照。
+2. `library_items` 与 `library_index` 在单个事务中整体替换，自动清理陈旧索引。
+3. 重复 RJ 保留全部目录，并优先沿用现有数据库主路径。
+4. 新发现作品补入 `works(status=external)`；活动/可恢复任务的 works 路径不改动。
+5. 扫描中断、目录消失和 SQLite 故障均保留旧索引。
+6. `verify_library_item()` 支持任意层级 metadata track tree。
+7. Tools 页扫描改为后台快照重建并输出差异统计。
+8. 新增 T8B 独立沙盒验收和正式说明文档。
+
+### 自动验证
+
+```text
+python -m pytest：183/183 passed
+T8B 资源库沙盒验收：10/10 checks PASS
+ResourceWarning 严格模式：PASS
+python compileall：PASS
+git diff --check：PASS
+```
+
+### 正式现场影响
+
+```text
+100+ 正式下载任务：未触碰
+正式 history.db/config.json/queue.json：未读取或修改
+正式 Downloads/E:\arsm：未扫描或重建
+```
+
+### 下一步
+
+```text
+TAKEOVER-T9：合并剩余低风险代码债务、启动/打包和发布候选收口。
+TAKEOVER-T5B：等待 Windows 真实下载与 Flet 视觉证据。
+TAKEOVER-T7：等待下载任务清空后的真实小批量维护窗口。
+```
+
+## 2026-07-20 — TAKEOVER-T9：0.9.0-rc.1 发布候选收口
+
+### 完成
+
+1. 新增 `core/version.py`，统一应用名与版本 `0.9.0-rc.1`。
+2. 新增 `core/paths.py`，源码运行保持当前目录，冻结版固定使用 EXE 所在目录。
+3. `config.json` 改为临时文件、flush、fsync 和 `os.replace` 原子保存；保存失败保留旧配置。
+4. AppController 关闭改为幂等，等待 active/workers 取消，关闭 HTTP、SQLite 和事件循环。
+5. Orchestrator shutdown 删除固定 sleep，改为实际 await cancellation。
+6. 音频标签扩展至 MP3、FLAC、OGG、Opus、M4A/M4B/MP4、WAV、AIFF、WMA/ASF。
+7. 封面 MIME 按 JPEG/PNG/GIF/WebP 文件签名识别；OGG/Opus 使用 `metadata_block_picture`，MP4 支持 JPEG/PNG cover。
+8. 删除含 `C:\Users\...\Temp` 的旧 spec，新增 `ARSMSuite.spec`、Windows 版本资源和 one-folder 构建。
+9. 新增 `requirements-build.txt`、`scripts/build_windows.ps1`、`scripts/release_check.py` 和 release workflow。
+10. 新增 `docs/BUILD_AND_RELEASE.md`、`docs/TAKEOVER_T9_RELEASE_CANDIDATE.md` 与 `HANDOFF.md`。
+
+### 自动验证
+
+```text
+python -W error::ResourceWarning -m pytest -q：204/204 passed
+python -m compileall：PASS
+pip check：PASS
+release_check --skip-tests：PASS
+Linux PyInstaller Analysis/PYZ/EXE/COLLECT：PASS
+```
+
+### 正式现场影响
+
+```text
+100+ 正式下载任务：未触碰
+正式 history.db/config.json/queue.json：未读取或修改
+正式 Downloads/E:\arsm：未读取或修改
+正式程序依赖：未升级
+GitHub：等待本轮单次提交后一次性更新 Draft PR
+```
+
+### 下一步
+
+```text
+GitHub Linux/Windows CI
+Windows release artifact
+Codex Windows EXE、Flet Desktop 和真实 ASMR.one 小样本证据
+T7 继续等待维护窗口
 ```

@@ -1,0 +1,68 @@
+name: portable-test-gate
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "core/**"
+      - "ui/**"
+      - "tools/**"
+      - "tests/**"
+      - "scripts/**"
+      - "main.py"
+      - "requirements*.txt"
+      - "pytest.ini"
+      - ".github/workflows/ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "core/**"
+      - "ui/**"
+      - "tools/**"
+      - "tests/**"
+      - "scripts/**"
+      - "main.py"
+      - "requirements*.txt"
+      - "pytest.ini"
+      - ".github/workflows/ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  portable:
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python-version: "3.10"
+          - os: windows-latest
+            python-version: "3.12"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements-dev.txt
+
+      - name: Compile Python sources
+        run: python -m compileall -q core ui tools tests scripts main.py
+
+      - name: Import smoke test
+        run: python -c "import flet as ft; assert hasattr(ft, 'icons') and hasattr(ft, 'colors'); import ui.app"
+
+      - name: Run portable tests
+        run: python -m pytest

@@ -1,5 +1,7 @@
-flet
-aiohttp
-aiofiles
-mutagen
-yarl
+# Runtime compatibility set validated against the current legacy Flet API surface.
+# Do not upgrade the active downloader environment while jobs are running.
+flet==0.27.6
+aiohttp==3.13.5
+aiofiles==25.1.0
+mutagen==1.48.1
+yarl==1.24.5

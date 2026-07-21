@@ -6,7 +6,7 @@ import random
 from typing import Optional
 from aiohttp import ClientTimeout
 
-from core.config import ConfigManager
+from core.config import ConfigManager, HOSTNAME_MIRRORS
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
@@ -50,11 +50,19 @@ class NetworkKernel:
         if self.session and not self.session.closed:
             await self.session.close()
 
+    def _ordered_mirrors(self) -> list[str]:
+        configured = (self.config.mirror or "").rstrip("/")
+        result = []
+        for mirror in [configured, *HOSTNAME_MIRRORS]:
+            value = (mirror or "").rstrip("/")
+            if value and value not in result:
+                result.append(value)
+        return result
+
     async def fetch(self, endpoint: str, params: dict = None) -> Optional[dict]:
-        """Fetch JSON data from API endpoint using metadata proxy."""
+        """Fetch JSON metadata with bounded mirror failover."""
         await self.boot()
 
-        # Rate limiting: 0.5s between requests
         if self._rate_limit_lock is None:
             self._rate_limit_lock = asyncio.Lock()
         async with self._rate_limit_lock:
@@ -64,28 +72,45 @@ class NetworkKernel:
                 await asyncio.sleep(0.5 - elapsed)
             self._last_req = time.time()
 
-        url = f"{self.config.mirror}{endpoint}"
         proxy = self.config.get_proxy_for('metadata')
         logger = logging.getLogger("echovault")
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(f"FETCH metadata {url} proxy={proxy or 'direct'}")
+        last_error = None
 
-        for attempt in range(3):
-            try:
-                async with self.session.get(
-                    url, params=params, proxy=proxy
-                ) as resp:
-                    if resp.status == 429:
-                        await asyncio.sleep(2 ** (attempt + 2))
-                        continue
-                    if resp.status == 404:
-                        return None
-                    resp.raise_for_status()
-                    return await resp.json()
-            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                if attempt == 2:
-                    logging.error(f"API request failed: {e} for {url}")
-                await asyncio.sleep(1)
+        for mirror_index, mirror in enumerate(self._ordered_mirrors()):
+            url = f"{mirror}{endpoint}"
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    f"FETCH metadata {url} proxy={proxy or 'direct'}")
+
+            for attempt in range(2):
+                try:
+                    async with self.session.get(
+                        url, params=params, proxy=proxy
+                    ) as resp:
+                        if resp.status == 429:
+                            last_error = RuntimeError(f"HTTP 429 from {mirror}")
+                            await asyncio.sleep(2 ** (attempt + 1))
+                            continue
+                        if resp.status == 404:
+                            return None
+                        resp.raise_for_status()
+                        payload = await resp.json()
+                        if mirror_index > 0:
+                            logger.info(
+                                f"METADATA_MIRROR_RECOVERED mirror={mirror}")
+                        return payload
+                except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
+                    last_error = exc
+                    logger.warning(
+                        f"Metadata request failed mirror={mirror} "
+                        f"attempt={attempt+1}/2: {exc}")
+                    if attempt == 0:
+                        await asyncio.sleep(0.25)
+
+            logger.warning(f"Switching metadata mirror after failure: {mirror}")
+
+        logging.error(
+            f"API request failed on all mirrors for {endpoint}: {last_error}")
         return None
 
     async def stream(self, url: str, headers: dict = None,

@@ -2,6 +2,8 @@
 
 # arsm-downing / arsm-suite 下一阶段执行路线图
 
+> **状态说明（2026-07-20）**：本文件保留中长期产品路线和历史阶段。当前开发事实、优先级和可执行任务以 `CURRENT_STATE.md` 与 `NEXT_TASK_ROADMAP.md` 为准。播放器暂不进入当前稳定性修复范围。
+
 ## 0. 当前方向
 
 本项目继续作为一个单一 Flet 个人应用推进，不拆成多个独立项目。
@@ -24,12 +26,17 @@ Python + Flet + SQLite + asyncio + LibraryVault
 长期目标可以是一个本地个人媒体库，但当前阶段不跳到完整媒体库开发。当前优先顺序是：
 
 ```text
-1. RC8.7 收官已完成
-2. P1：UI 侧 LibraryVault 单例确认
-3. P2：RC9 下载状态只读诊断
-4. P3：资源库只读扫描 MVP
-5. P4.5：library_items schema 决策
-6. 后续再做 P4 / P5 / P6 / P7
+1. external intake 真实执行硬冻结（已完成）
+2. external intake 固定计划模型与纯扫描收口（已完成）
+3. external intake LibraryVault 快照与路径事务（已完成）
+4. external intake 逐作品文件执行与恢复状态机（沙盒已完成）
+5. 统一测试、CI、活跃 DB 在线快照（已完成）
+6. 下载核心 416 / Range / `.part`、缓存恢复与隔离 UI smoke（代码级已完成）
+7. Windows 一键验收包与 LibraryView 代码级收口（已完成；Windows 证据待 Codex）
+8. T6 复制资源库沙盒执行与 Tools/backlog 安全收口（已完成）
+9. 迁移安全已完成；数据库 Schema 与资源库扫描一致性（当前）
+10. Windows 维护窗口和 T7 小批量验收
+11. 通过稳定性验收后再评估播放器
 ```
 
 ---
@@ -442,3 +449,11 @@ JSON 报告
 ```text
 当前阶段不追求完整媒体库；先完成 P1/P2/P3/P4.5。SQLite 仍是唯一真源，LibraryVault 是唯一 DB 入口，P3 JSON 不进入 UI 数据路径，P4 下载状态修复和 P5 资源库索引入库必须分开执行。
 ```
+
+
+## 2026-07-20 接手阶段补充
+
+- T8A 迁移安全重构：完成。
+- T8B 资源库快照重建：完成，`library_items/library_index` 原子替换并清理陈旧索引。
+- T9 发布候选收口：完成，版本 `0.9.0-rc.1`，构建链与交接文档已建立。
+- 下一阶段：GitHub CI 与 Windows/Codex 最终证据；播放器继续留在后续版本。

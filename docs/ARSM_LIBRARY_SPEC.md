@@ -131,6 +131,29 @@ CREATE TABLE metadata_cache (
 );
 ```
 
+
+### library_items
+```sql
+CREATE TABLE library_items (
+    rj_id TEXT PRIMARY KEY,
+    folder_path TEXT NOT NULL,
+    folder_name TEXT NOT NULL,
+    total_files INTEGER DEFAULT 0,
+    total_size INTEGER DEFAULT 0,
+    audio_count INTEGER DEFAULT 0,
+    image_count INTEGER DEFAULT 0,
+    video_count INTEGER DEFAULT 0,
+    other_count INTEGER DEFAULT 0,
+    has_audio INTEGER DEFAULT 0,
+    has_cover INTEGER DEFAULT 0,
+    warnings_json TEXT DEFAULT '[]',
+    scan_run_id TEXT,
+    scanned_at TIMESTAMP
+);
+```
+
+`library_items` 是当前资源库 UI 的作品级主索引；`library_index` 保留为兼容扫描/重复路径索引。全新数据库必须同时创建两张表。
+
 ### library_index
 ```sql
 CREATE TABLE library_index (
@@ -178,8 +201,11 @@ queued → downloading → completed → registered
 
 1. **只迁移终端作品**: `works.status` in (`completed`, `verified`)，且无 pending downloads
 2. **禁止迁移**: 含 `queued`/`paused`/`downloading`/`failed` downloads 或 `.part` 文件的作品
-3. **迁移时更新**: `works.local_path`, `downloads.local_path`, `library_index.work_dir`
-4. **回滚安全**: 迁移失败必须 rollback，不能留半改状态
+3. **迁移时更新**: `works.local_path`, `downloads.local_path`, `library_items.folder_path`, `library_index.work_dir`
+4. **路径匹配**: 不得仅按 RJ 号修改；当前记录路径必须匹配明确的 source path
+5. **审计数据**: 每次路径事务生成 preimage/postimage 及 SHA-256 token
+6. **回滚安全**: 任一 SQLite 写入失败必须 rollback 全事务，不能留半改状态
+7. **重复保护**: 重复副本不得覆盖或删除正常主记录；source/target 同时存在时进入人工复核
 
 ---
 

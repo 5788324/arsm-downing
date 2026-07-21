@@ -39,8 +39,9 @@ class DashboardView(ft.Container):
         ]
         diff = works_count - lib_count
         self.source_note.value = (
-            f"\u6570\u636e\u6765\u6e90\uff1aworks={works_count}\uff0clibrary_items={lib_count}\uff0c\u5dee\u503c={diff}\u3002"
-            "\u5982\u679c\u4e24\u8005\u4e0d\u4e00\u81f4\uff0c\u8bf7\u5148\u6267\u884c\u8d44\u6e90\u5e93\u91cd\u5efa\u3002"
+            f"数据来源：works={works_count}，library_items={lib_count}，差值={diff}。"
+            "差值只表示下载记录与资源库索引尚未同步；当前先在资源库异常视图核对，"
+            "不要直接执行高风险迁移或清理。"
         )
 
         achievements_data = [
@@ -69,7 +70,10 @@ class DashboardView(ft.Container):
             )
             self.achievements_list.controls.append(Styles.glass_container(card, padding=10))
         if changed:
-            self.app_controller.config.save()
+            try:
+                self.app_controller.config.save()
+            except OSError as exc:
+                self.app_controller.show_snack(f"成就保存失败: {exc}")
         self.update()
 
     def _build_stat_card(self, title, value, icon, source="", width=170):

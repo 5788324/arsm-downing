@@ -2,7 +2,6 @@ import flet as ft
 from ui.theme import Styles, ACCENT_PRIMARY, SUCCESS, WARNING, ERROR
 import asyncio
 import os
-import time
 from pathlib import Path
 
 class ToolsView(ft.Container):
@@ -20,6 +19,17 @@ class ToolsView(ft.Container):
         self._backlog_source_val = "ignored"
         self._backlog_batch_val = "30"
         self.backlog_preview_text = ft.Text("", size=12, font_family="Consolas")
+
+        # External intake is intentionally read-only until the transactional
+        # execution service is implemented and accepted.
+        self.external_status = ft.Text(
+            "只读计划模式：请先在 config.json 设置 external_intake_root",
+            size=12,
+            color=WARNING,
+        )
+        self.external_report_text = ft.Text("", size=11, color="grey")
+        self.external_scan_running = False
+
         self.backlog_source = ft.Dropdown(
             width=120, value="ignored",
             options=[ft.dropdown.Option("ignored"), ft.dropdown.Option("stale"), ft.dropdown.Option("all")])
@@ -41,49 +51,75 @@ class ToolsView(ft.Container):
 
             ft.Text("\u8bca\u65ad", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
             ft.Row([
-                ft.ElevatedButton("\u8fd0\u884c\u4e00\u952e\u8bca\u65ad", icon=ft.icons.HEALTH_AND_SAFETY, on_click=self.run_diagnostic),
-                ft.ElevatedButton("\u6d4b\u8bd5\u7f51\u7edc", icon=ft.icons.NETWORK_CHECK, on_click=self.test_network),
+                ft.ElevatedButton("\u8fd0\u884c\u4e00\u952e\u8bca\u65ad", icon=ft.Icons.HEALTH_AND_SAFETY, on_click=self.run_diagnostic),
+                ft.ElevatedButton("\u6d4b\u8bd5\u7f51\u7edc", icon=ft.Icons.NETWORK_CHECK, on_click=self.test_network),
             ], spacing=12, wrap=True),
 
             ft.Text("\u4ed3\u5e93\u4e0e\u5143\u6570\u636e", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
             ft.Row([
-                ft.ElevatedButton("\u626b\u63cf\u4ed3\u5e93", icon=ft.icons.FOLDER_SPECIAL, on_click=self.scan_library,
+                ft.ElevatedButton("\u626b\u63cf\u4ed3\u5e93", icon=ft.Icons.FOLDER_SPECIAL, on_click=self.scan_library,
                     tooltip="\u626b\u63cf library_paths \u4e2d\u7684 RJ \u76ee\u5f55\u5e76\u66f4\u65b0 library_index"),
-                ft.ElevatedButton("\u8bca\u65ad\u5931\u8d25\u4efb\u52a1", icon=ft.icons.BUG_REPORT, on_click=self.diagnose_failed,
+                ft.ElevatedButton("\u8bca\u65ad\u5931\u8d25\u4efb\u52a1", icon=ft.Icons.BUG_REPORT, on_click=self.diagnose_failed,
                     tooltip="\u5206\u6790 downloads \u8868\u4e2d\u7684\u5931\u8d25\u72b6\u6001"),
             ], spacing=12, wrap=True),
 
             ft.Text("\u8fc1\u79fb", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
             ft.Row([
-                ft.ElevatedButton("\u8fc1\u79fb\u5df2\u5b8c\u6210\u4f5c\u54c1", icon=ft.icons.DRIVE_FILE_MOVE, on_click=self.migrate_dry_run,
-                    tooltip="\u626b\u63cf completed/verified \u4f5c\u54c1\u5e76\u8fc1\u79fb\u5230 output_dir"),
-                ft.ElevatedButton("\u9a8c\u8bc1\u8fc1\u79fb", icon=ft.icons.VERIFIED_USER, on_click=self.verify_migrated),
+                ft.ElevatedButton("预览迁移计划", icon=ft.Icons.DRIVE_FILE_MOVE, on_click=self.migrate_dry_run,
+                    tooltip="后台扫描 completed/verified 作品；仅生成计划，不移动文件、不修改数据库"),
+                ft.ElevatedButton("\u9a8c\u8bc1\u8fc1\u79fb", icon=ft.Icons.VERIFIED_USER, on_click=self.verify_migrated),
             ], spacing=12, wrap=True),
             ft.Row([self.keep_source_checkbox, self.delete_source_checkbox], spacing=12, wrap=True),
 
-            # ── 外部资源导入 ──
-            ft.Text("外部资源整理", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
-            ft.Row([
-                ft.ElevatedButton("扫描外部资源", icon=ft.icons.FOLDER_SPECIAL, on_click=self.external_scan,
-                    tooltip="扫描 E:\\arsm 顶层，检测文件树规范化需求"),
-                ft.ElevatedButton("整理 dry-run", icon=ft.icons.PREVIEW, on_click=self.external_dry_run,
-                    tooltip="预览规范化操作，不实际修改"),
-                ft.ElevatedButton("执行整理", icon=ft.icons.PLAY_ARROW, on_click=self.external_execute,
-                    tooltip="执行文件树规范化 + 更新 DB", bgcolor=WARNING),
-            ], spacing=12, wrap=True),
+            # ── 外部资源导入（只读计划） ──
+            ft.Container(
+                content=ft.Column([
+                    ft.Row([
+                        ft.Icon(ft.Icons.SECURITY, color=WARNING),
+                        ft.Text("外部资源整理", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
+                        ft.Container(expand=True),
+                        ft.Text("READ-ONLY", size=11, color=WARNING, weight=ft.FontWeight.BOLD),
+                    ]),
+                    self.external_status,
+                    ft.Row([
+                        ft.ElevatedButton(
+                            "扫描计划",
+                            icon=ft.Icons.FOLDER_SPECIAL,
+                            on_click=self.external_scan,
+                            tooltip="读取配置路径并分类，不移动文件、不修改数据库",
+                        ),
+                        ft.ElevatedButton(
+                            "生成完整 DRY-RUN 报告",
+                            icon=ft.Icons.DESCRIPTION,
+                            on_click=self.external_dry_run,
+                            tooltip="后台扫描并保存完整 JSON/文本报告，actions 不截断",
+                        ),
+                        ft.ElevatedButton(
+                            "真实执行已冻结",
+                            icon=ft.Icons.BLOCK,
+                            disabled=True,
+                            tooltip="等待事务、回滚和沙盒验收完成后才会重新开放",
+                        ),
+                    ], spacing=12, wrap=True),
+                    self.external_report_text,
+                ], spacing=8),
+                padding=12,
+                border=ft.border.all(1, "#3b3b4f"),
+                border_radius=10,
+            ),
 
             ft.Text("\u961f\u5217\u6e05\u7406", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
             ft.Row([
-                ft.ElevatedButton("\u6e05\u7406\u65e0\u6548\u961f\u5217", icon=ft.icons.CLEANING_SERVICES, on_click=self.clean_queue,
-                    tooltip="\u6e05\u7406 queue.json \u548c downloads \u4e2d\u7684\u65e0\u6548\u4efb\u52a1\u8bb0\u5f55"),
+                ft.ElevatedButton("预览队列清理", icon=ft.Icons.CLEANING_SERVICES, on_click=self.clean_queue,
+                    tooltip="只读统计终态记录；存在活动或可恢复任务时不允许删除"),
             ], spacing=12, wrap=True),
 
             ft.Text("\u7f13\u5b58\u4e0e\u6570\u636e\u5e93", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
             ft.Row([
-                ft.ElevatedButton("\u538b\u7f29\u6570\u636e\u5e93(VACUUM)", icon=ft.icons.STORAGE, on_click=self.repair_db,
-                    tooltip="\u6267\u884c SQLite VACUUM \u538b\u7f29\u6570\u636e\u5e93\u6587\u4ef6"),
-                ft.ElevatedButton("\u6e05\u7406\u5143\u6570\u636e\u7f13\u5b58", icon=ft.icons.DELETE_SWEEP, on_click=self.clear_cache,
-                    tooltip="\u6e05\u7406\u8fc7\u671f metadata_cache \u6761\u76ee"),
+                ft.ElevatedButton("检查并压缩数据库", icon=ft.Icons.STORAGE, on_click=self.repair_db,
+                    tooltip="后台检查；存在 queued/paused/downloading/failed 等任务时拒绝 VACUUM"),
+                ft.ElevatedButton("安全清理元数据缓存", icon=ft.Icons.DELETE_SWEEP, on_click=self.clear_cache,
+                    tooltip="仅删除过期且不属于活动、暂停、失败或恢复任务的缓存"),
             ], spacing=12, wrap=True),
 
             ft.Divider(height=10, color="transparent"),
@@ -92,8 +128,8 @@ class ToolsView(ft.Container):
             ft.Row([
                 self.backlog_source,
                 self.backlog_batch_size,
-                ft.ElevatedButton("\u9884\u89c8", icon=ft.icons.PREVIEW, on_click=self.backlog_preview),
-                ft.ElevatedButton("\u6062\u590d\u961f\u5217", icon=ft.icons.REFRESH, on_click=self.backlog_reenable, bgcolor=WARNING),
+                ft.ElevatedButton("\u9884\u89c8", icon=ft.Icons.PREVIEW, on_click=self.backlog_preview),
+                ft.ElevatedButton("\u6062\u590d\u961f\u5217", icon=ft.Icons.REFRESH, on_click=self.backlog_reenable, bgcolor=WARNING),
             ], spacing=10),
             ft.Container(self.backlog_preview_text, padding=10, border_radius=8, bgcolor="#1a1a2e"),
 
@@ -123,10 +159,10 @@ class ToolsView(ft.Container):
         self.delete_source_checkbox.update()
 
     def current_migration_mode(self) -> str:
-        return "copy_keep_source" if self.keep_source_mode else "move"
+        return "copy_keep_source" if getattr(self, "keep_source_mode", True) else "move"
 
     def require_delete_source_confirm(self) -> bool:
-        if self.keep_source_mode:
+        if getattr(self, "keep_source_mode", True):
             self.delete_source_confirm_pending = False
             return False
         if not self.delete_source_confirm_pending:
@@ -145,143 +181,191 @@ class ToolsView(ft.Container):
             SUCCESS if space_check['enough_space'] else WARNING,
         )
 
+    def _db_path(self) -> Path:
+        return Path(getattr(self.app_controller.db, "db_path", "history.db"))
+
     def scan_library(self, e):
-        cfg = self.app_controller.config
-        paths = getattr(cfg, 'library_paths', [])
+        """Build a filesystem snapshot and atomically refresh library indexes."""
+        del e
+        paths = list(getattr(self.app_controller.config, "library_paths", []) or [])
         if not paths:
-            self.log("⚠ library_paths 为空 — 请在 config.json 中添加路径", WARNING)
+            self.log("⚠ library_paths 为空 — 请先在设置中添加资源库路径", WARNING)
             return
-        self.log(f"> 扫描仓库路径 ({len(paths)} 个)...", "white")
-        result = self.app_controller.db.rebuild_library(paths)
-        self.log(f"  发现: {result['found']} 个作品", SUCCESS)
-        self.log(f"  新增索引: {result['indexed']} 个", ACCENT_PRIMARY)
-        if result['errors']:
-            self.log(f"  错误: {result['errors']}", ERROR)
-        # Trigger enrichment + verification in background
-        import asyncio
-        async def _enrich_and_verify():
-            orc = self.app_controller.orc
-            enriched = await orc.enrich_external_works(max_concurrent=2)
-            self.log(f"  已补全元数据: {enriched} 个", SUCCESS)
-            verified = await orc.verify_library_works()
-            partial_count = sum(1 for v in verified.values() if v == "partial")
-            if partial_count:
-                self.log(f"  部分完成: {partial_count} 个", WARNING)
-        asyncio.run_coroutine_threadsafe(
-            _enrich_and_verify(), self.app_controller.loop)
+        self.log(f"> 后台扫描资源库路径 ({len(paths)} 个)…", "white")
+
+        def _scan():
+            return self.app_controller.db.rebuild_library(paths)
+
+        def _render(result):
+            if not result.get("success"):
+                self.log(f"  扫描失败，旧索引已保留：{result.get('error', 'unknown')}", ERROR)
+                return
+            self.log(
+                f"  发现 {result['found']} 个 RJ / {result['entries']} 个目录",
+                SUCCESS,
+            )
+            self.log(
+                f"  新增 works={result['indexed']} | 更新={result['updated']} | "
+                f"陈旧索引清理={result['removed_index']} | 标记缺失={result['missing']}",
+                ACCENT_PRIMARY,
+            )
+            if result.get("warnings"):
+                self.log(f"  扫描警告: {result['warnings']} 项", WARNING)
+            self.log("  library_items 与 library_index 已由同一快照原子更新。", "grey")
+
+        self.app_controller.run_blocking(
+            _scan, _render, action_label="资源库扫描"
+        )
 
     def repair_db(self, e):
-        self.log("> 开始修复数据库...", "white")
-        try:
-            self.app_controller.db.conn.execute("VACUUM")
-            self.log("✓ 数据库修复/优化成功!", SUCCESS)
-        except Exception as ex:
-            self.log(f"✗ 数据库修复失败: {ex}", ERROR)
+        """VACUUM on a dedicated connection and fail closed for active queues."""
+        del e
+        from core.tools_maintenance import vacuum_database
+
+        self.log("> 检查数据库压缩条件…", "white")
+
+        def _render(result):
+            if not result.get("success"):
+                preview = result.get("preview", {})
+                active = preview.get("active_download_rows", 0)
+                self.log(
+                    f"  已阻止 VACUUM：存在 {active} 条活动/可恢复下载记录。",
+                    WARNING,
+                )
+                self.log("  请等待下载器完全空闲后再执行，当前数据库未修改。", "grey")
+                return
+            reclaimed = result.get("reclaimed_bytes", 0)
+            self.log(f"✓ 数据库压缩完成，回收约 {reclaimed / 1024 / 1024:.2f} MB", SUCCESS)
+
+        self.app_controller.run_blocking(
+            lambda: vacuum_database(self._db_path()),
+            _render,
+            action_label="数据库压缩",
+        )
 
     def clean_queue(self, e):
-        self.log("> 清理无效队列...", "white")
-        db = self.app_controller.db
-        statuses = ("metadata_failed", "completed", "registered")
-        for st in statuses:
-            db.conn.execute("DELETE FROM downloads WHERE status=?", (st,))
-        # Also clean from queue.json
-        from pathlib import Path
-        qf = Path("queue.json")
-        if qf.exists():
-            import json
-            try:
-                with open(qf) as f:
-                    q = json.load(f)
-                clean = {}
-                for k, v in q.items():
-                    if v.get("status") not in ("已完成", "metadata_failed",
-                        "Metadata failed", "Queued", "Downloading",
-                        "Prepared", "Paused", "queued", "downloading",
-                        "prepared", "paused"):
-                        pass  # keep
-                    elif v.get("status") in ("已完成", "metadata_failed",
-                            "Metadata failed"):
-                        continue  # remove
-                    clean[k] = v
-                with open(qf, "w") as f:
-                    json.dump(clean, f, ensure_ascii=False, indent=2)
-            except Exception:
-                pass
-        db.conn.commit()
-        self.log("✓ 队列已清理", SUCCESS)
-        self.log("> 开始修复数据库...", "white")
-        try:
-            self.app_controller.db.conn.execute("VACUUM")
-            self.log("✓ 数据库修复/优化成功!", SUCCESS)
-        except Exception as ex:
-            self.log(f"✗ 数据库修复失败: {ex}", ERROR)
+        """Preview queue cleanup only; never delete mixed live queue state."""
+        del e
+        from core.tools_maintenance import preview_queue_cleanup
+
+        self.log("> 只读预览队列清理…", "white")
+
+        def _render(preview):
+            self.log(
+                f"  终态 DB 记录={preview.terminal_db_rows} | "
+                f"queue.json 终态项={preview.terminal_queue_items}",
+                ACCENT_PRIMARY,
+            )
+            if preview.blocked:
+                self.log(
+                    f"  已阻止清理：存在 {preview.active_download_rows} 条活动/可恢复记录。",
+                    WARNING,
+                )
+            else:
+                self.log("  当前只提供预览；实际删除入口尚未开放。", WARNING)
+
+        self.app_controller.run_blocking(
+            lambda: preview_queue_cleanup(self._db_path(), Path("queue.json")),
+            _render,
+            action_label="队列清理预览",
+        )
 
     def clear_cache(self, e):
-        self.log("> 开始清理缓存...", "white")
-        # Just a simulated cache clearing for now as we don't have heavy temp files
-        time.sleep(0.5)
-        self.log("✓ 缓存清理成功!", SUCCESS)
+        """Delete only expired cache rows that no resumable task references."""
+        del e
+        from core.tools_maintenance import (
+            cleanup_metadata_cache,
+            preview_metadata_cache_cleanup,
+        )
+
+        self.log("> 后台检查元数据缓存…", "white")
+
+        def _work():
+            preview = preview_metadata_cache_cleanup(self._db_path())
+            return cleanup_metadata_cache(
+                self._db_path(), preview_token=preview.preview_token
+            )
+
+        def _render(result):
+            preview = result.get("preview", {})
+            if not result.get("success"):
+                self.log("  缓存预览期间数据库已变化，未执行删除。", WARNING)
+                return
+            self.log(
+                f"✓ 删除过期缓存 {result.get('deleted_rows', 0)} 条；"
+                f"保护中的过期缓存 {preview.get('protected_expired_rows', 0)} 条",
+                SUCCESS,
+            )
+            if preview.get("protected_expired_rows", 0):
+                self.log("  暂停/失败/恢复任务所需的旧缓存已保留。", ACCENT_PRIMARY)
+
+        self.app_controller.run_blocking(
+            _work, _render, action_label="元数据缓存清理"
+        )
 
     def test_network(self, e):
-        self.log("> 检查代理配置...", "white")
+        """Test metadata mirrors through the configured proxy without probing the proxy URL as a website."""
+        del e
         import aiohttp
         from core.config import HOSTNAME_MIRRORS
+
         cfg = self.app_controller.config
-
-        mp = cfg.metadata_proxy or cfg.proxy
-        self.log(f"  metadata_proxy: {mp or '(无/直连)'}", ACCENT_PRIMARY)
-        self.log(f"  download_proxy: {cfg.download_proxy or '(无/直连)'}", ACCENT_PRIMARY)
-        self.log(f"  cover_proxy: {cfg.cover_proxy or '(无/直连)'}", ACCENT_PRIMARY)
-
-        self.log("  ⚠ Clash Verge 诊断提示:", WARNING)
-        self.log("    如果 Clash Verge 开启了 TUN/系统代理/全局模式，", "white")
-        self.log("    即使 download_proxy=direct，系统层也可能劫持下载流量!", WARNING)
-        self.log("    推荐: 关闭 TUN 和系统代理，仅保留 mixed port 7897", SUCCESS)
-        self.log("    程序会显式使用 metadata_proxy 获取元数据", "white")
-        self.log("    下载 CDN 直连。或为 CDN 添加 DIRECT 规则:", "white")
-        self.log("    DOMAIN-SUFFIX,kiko-play-niptan.one,DIRECT", ACCENT_PRIMARY)
-        self.log("    DOMAIN-SUFFIX,dlsite.com,DIRECT", ACCENT_PRIMARY)
-        self.log("")
+        proxy = cfg.get_proxy_for("metadata")
+        mirrors = [cfg.mirror, *HOSTNAME_MIRRORS]
+        mirrors = list(dict.fromkeys(item for item in mirrors if item))
+        self.log(f"> 后台测试元数据网络；proxy={proxy or 'direct'}", "white")
 
         async def _test():
-            if mp:
-                try:
-                    async with aiohttp.ClientSession() as s:
-                        async with s.get(mp, timeout=5) as resp:
-                            self.log(f"✓ 代理 {mp} 可用 (HTTP {resp.status})",
-                                     SUCCESS)
-                except aiohttp.ClientConnectorError:
-                    self.log(
-                        f"✗ 代理 {mp} 拒绝连接 — 代理端口未开启或配置错误",
-                        ERROR)
-                except Exception as ex:
-                    self.log(f"✗ 代理 {mp} 不可用: {ex}", ERROR)
+            results = []
+            timeout = aiohttp.ClientTimeout(total=8)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                for mirror in mirrors:
+                    try:
+                        async with session.get(mirror, proxy=proxy) as response:
+                            results.append({
+                                "mirror": mirror,
+                                "ok": response.status in (200, 401, 403, 404),
+                                "status": response.status,
+                                "error": "",
+                            })
+                    except Exception as exc:
+                        results.append({
+                            "mirror": mirror,
+                            "ok": False,
+                            "status": None,
+                            "error": type(exc).__name__,
+                        })
+            return results
 
-            for mirror in HOSTNAME_MIRRORS:
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(mirror, timeout=5,
-                                               proxy=mp) as resp:
-                            if resp.status in (200, 403, 404):
-                                self.log(
-                                    f"✓ {mirror} 连接正常", SUCCESS)
-                            else:
-                                self.log(
-                                    f"⚠ {mirror} HTTP {resp.status}",
-                                    WARNING)
-                except aiohttp.ClientConnectorError:
+        def _render(results):
+            for result in results:
+                if result["ok"]:
                     self.log(
-                        f"✗ {mirror} 连接拒绝 — 检查 metadata_proxy", ERROR)
-                except Exception:
+                        f"✓ {result['mirror']} HTTP {result['status']}", SUCCESS
+                    )
+                else:
                     self.log(
-                        f"✗ {mirror} 无法连接 — 检查网络/代理", ERROR)
-        import asyncio
-        if hasattr(self, 'app_controller') and \
-           hasattr(self.app_controller, 'loop'):
-            asyncio.run_coroutine_threadsafe(
-                _test(), self.app_controller.loop)
-        else:
-            asyncio.create_task(_test())
+                        f"✗ {result['mirror']} {result['error'] or result['status']}",
+                        ERROR,
+                    )
+            if proxy:
+                self.log("  结果已通过 metadata_proxy 请求；未把代理地址当作目标网页。", ACCENT_PRIMARY)
+
+        future = asyncio.run_coroutine_threadsafe(_test(), self.app_controller.loop)
+
+        def _done(done_future):
+            try:
+                result = done_future.result()
+            except Exception as exc:
+                self.app_controller.ui_queue.put((
+                    "ui_callback",
+                    lambda value: self.log(f"✗ 网络测试失败: {value}", ERROR),
+                    str(exc),
+                ))
+                return
+            self.app_controller.ui_queue.put(("ui_callback", _render, result))
+
+        future.add_done_callback(_done)
 
     def resolve_migration_target(self):
         """Resolve migration target strictly from config.output_dir."""
@@ -316,57 +400,78 @@ class ToolsView(ft.Container):
         return roots
 
     def migrate_dry_run(self, e):
-        """RC8.4: Dry-run with fixed output_dir target + disk space check."""
+        """Build a migration plan off the Flet thread using a read-only DB."""
+        del e
+        from core.database import LibraryVault
         from core.migration import MigrationEngine
-        db = self.app_controller.db
-        engine = MigrationEngine(db)
 
         target_base = self.resolve_migration_target()
         if not target_base:
             return
-
-        self.log(f"> \u8fc1\u79fb\u5019\u9009 dry-run target={target_base}", "white")
+        self.log(f"> 迁移计划 dry-run target={target_base}", "white")
         self.log(
             f"  migration_mode={self.current_migration_mode()} "
-            f"source_will_be_preserved={'yes' if self.keep_source_mode else 'no'}",
+            f"source_will_be_preserved={'yes' if getattr(self, 'keep_source_mode', True) else 'no'}",
             ACCENT_PRIMARY,
         )
-        dry = engine.dry_run(str(target_base))
-        self.log(
-            f"  MIGRATION_DRY_RUN candidate_count={dry['candidate_count']} "
-            f"total_size={dry['total_size_mb']}MB",
-            ACCENT_PRIMARY,
-        )
-        self.log(
-            f"  skipped_already_on_target={dry['skipped_already_on_target']} "
-            f"skipped_target_exists={dry['skipped_target_exists']} "
-            f"skipped_pending={dry['skipped_pending']} "
-            f"skipped_part_file={dry['skipped_part_file']}",
-            "grey",
-        )
-        self.log_space_check(dry['space_check'])
 
-        if dry["candidate_count"] == 0:
-            self.log("  \u6ca1\u6709\u53ef\u8fc1\u79fb\u5019\u9009\u3002", WARNING)
-            return
+        def _work():
+            db_path = self._db_path()
+            if db_path.is_file():
+                with LibraryVault.open_read_only(db_path) as readonly_db:
+                    return MigrationEngine(readonly_db).dry_run(str(target_base))
+            # Compatibility path for isolated tests backed by an in-memory DB.
+            return MigrationEngine(self.app_controller.db).dry_run(str(target_base))
 
-        self.log("")
-        for item in dry["candidates"][:20]:
+        def _render(dry):
             self.log(
-                f"  {item['rj_id']} [{item['status']}] {item['size_mb']}MB",
-                "white",
+                f"  MIGRATION_DRY_RUN candidate_count={dry['candidate_count']} "
+                f"total_size={dry['total_size_mb']}MB",
+                ACCENT_PRIMARY,
             )
-            self.log(f"    source: {item['source']}", "grey")
-            self.log(f"    target: {item['target']}", ACCENT_PRIMARY)
-        if dry["candidate_count"] > 20:
-            self.log(f"  ... \u8fd8\u6709 {dry['candidate_count'] - 20} \u4e2a\u5019\u9009", "grey")
+            self.log(
+                f"  skipped_already_on_target={dry['skipped_already_on_target']} "
+                f"skipped_target_exists={dry['skipped_target_exists']} "
+                f"skipped_pending={dry['skipped_pending']} "
+                f"skipped_part_file={dry['skipped_part_file']} "
+                f"skipped_unsafe={dry.get('skipped_symlink_or_unreadable', 0)}",
+                "grey",
+            )
+            if dry.get("db_size_mismatch_count"):
+                self.log(
+                    f"  WARNING: {dry['db_size_mismatch_count']} 个作品的 DB size 与磁盘实测不一致；"
+                    "空间估算已使用磁盘实测值。",
+                    WARNING,
+                )
+            self.log_space_check(dry["space_check"])
+            if dry["candidate_count"] == 0:
+                self.log("  没有可迁移候选。", WARNING)
+                return
+            self.log("")
+            for item in dry["candidates"][:20]:
+                self.log(
+                    f"  {item['rj_id']} [{item['status']}] {item['size_mb']}MB "
+                    f"files={item.get('file_count', 0)}",
+                    "white",
+                )
+                self.log(f"    source: {item['source']}", "grey")
+                self.log(f"    target: {item['target']}", ACCENT_PRIMARY)
+                self.log(f"    plan: {item.get('manifest_token', '')[:16]}", "grey")
+            if dry["candidate_count"] > 20:
+                self.log(f"  ... 还有 {dry['candidate_count'] - 20} 个候选", "grey")
+            self.log("")
+            self.log(
+                f"> mode={self.current_migration_mode()} / source preserved="
+                f"{getattr(self, 'keep_source_mode', True)}",
+                ACCENT_PRIMARY,
+            )
+            self.log("  dry-run 不会修改 history.db 或文件。", WARNING)
 
-        self.log("")
-        self.log(
-            f"> mode={self.current_migration_mode()} / copy_keep_source mode source will be preserved={self.keep_source_mode}",
-            ACCENT_PRIMARY,
-        )
-        self.log("  \u63d0\u793a\uff1adry-run \u4e0d\u4f1a\u4fee\u6539 history.db \u6216\u6587\u4ef6\u3002", WARNING)
+        runner = getattr(self.app_controller, "run_blocking", None)
+        if callable(runner):
+            runner(_work, _render, action_label="迁移 dry-run")
+        else:
+            _render(_work())
 
     def migrate_execute(self, e, batch_limit: int):
         """RC8.4: Real migration using config.output_dir with keep-source default."""
@@ -383,6 +488,9 @@ class ToolsView(ft.Container):
 
         dry = engine.dry_run(str(target_base))
         self.log_space_check(dry['space_check'])
+        if not dry['space_check']['enough_space']:
+            self.log('  MIGRATION_REJECT reason=insufficient_space', WARNING)
+            return
         candidates = dry['candidates']
         orc = self.app_controller.orc
         active_or_queued = orc.queued_rj_ids | set(orc.active_tasks.keys())
@@ -392,6 +500,7 @@ class ToolsView(ft.Container):
             validation = engine.validate_migration_request(
                 item["rj_id"], item["source"], item["target"], str(target_base),
                 active_or_queued=active_or_queued,
+                expected_manifest_token=item.get('manifest_token', ''),
             )
             if not validation["success"]:
                 self.log(
@@ -409,13 +518,13 @@ class ToolsView(ft.Container):
 
         self.log(f"> \u6267\u884c\u8fc1\u79fb {len(batch)} \u4e2a\u4f5c\u54c1...", ACCENT_PRIMARY)
         self.log(
-            f"  mode={self.current_migration_mode()} copy_keep_source mode source will be preserved={'yes' if self.keep_source_mode else 'no'}",
+            f"  mode={self.current_migration_mode()} copy_keep_source mode source will be preserved={'yes' if getattr(self, 'keep_source_mode', True) else 'no'}",
             ACCENT_PRIMARY,
         )
         self.log("  \u6ce8\u610f\uff1a\u8fd9\u662f\u5b9e\u9645\u8fc1\u79fb\uff0c\u4f1a\u66f4\u65b0 history.db\u3002", WARNING)
 
         ok, fail = 0, 0
-        delete_source = not self.keep_source_mode
+        delete_source = not getattr(self, 'keep_source_mode', True)
         for item in batch:
             rj_id = item["rj_id"]
             self.log(f"  MIGRATION_START rj={rj_id}", "white")
@@ -423,6 +532,7 @@ class ToolsView(ft.Container):
                 rj_id, item["source"], item["target"],
                 delete_source=delete_source,
                 target_base=str(target_base), active_or_queued=active_or_queued,
+                expected_manifest_token=item.get('manifest_token', ''),
             )
             if res["success"]:
                 self.log(f"  MIGRATION_COPY_DONE rj={rj_id}", SUCCESS)
@@ -438,7 +548,9 @@ class ToolsView(ft.Container):
                 if res.get("error") in {
                     "active_or_queued", "pending_downloads", "source_missing",
                     "source_under_target_base", "target_not_under_target_base",
-                    "source_equals_target", "part_file_present", "target_exists_nonempty",
+                    "source_equals_target", "source_target_overlap", "part_file_present",
+                    "target_exists", "target_exists_nonempty", "unsafe_source_tree",
+                    "source_plan_changed",
                 }:
                     self.log(
                         f"  MIGRATION_REJECT rj={rj_id} reason={res['error']}",
@@ -454,244 +566,291 @@ class ToolsView(ft.Container):
         self.log(f"  \u8fc1\u79fb\u5b8c\u6210: {ok} \u4e2a\u6210\u529f, {fail} \u4e2a\u5931\u8d25", ACCENT_PRIMARY)
 
     def verify_migrated(self, e):
-        """RC8.4: Verify migrated works against output_dir and keep-source plan."""
+        """Verify migrated works in a worker thread using a read-only DB."""
+        del e
+        from core.database import LibraryVault
         from core.migration import MigrationEngine
 
-        db = self.app_controller.db
-        engine = MigrationEngine(db)
         target_base = self.resolve_migration_target()
         if not target_base:
             return
-
         source_roots = self.list_migration_source_roots(target_base)
-        self.log("> \u9a8c\u8bc1\u5df2\u8fc1\u79fb\u4f5c\u54c1...", "white")
-        rows = db.conn.execute(
-            "SELECT rj_id, local_path, status FROM works "
-            "WHERE status IN ('completed','verified') ORDER BY rj_id"
-        ).fetchall()
+        self.log("> 后台验证已迁移作品…", "white")
 
-        verified_rows = []
-        for row in rows:
-            local_path = row["local_path"] or ""
-            if local_path and str(local_path).lower().startswith(str(target_base).lower()):
-                verified_rows.append(row)
+        def _work():
+            db_path = self._db_path()
+            with LibraryVault.open_read_only(db_path) as readonly_db:
+                engine = MigrationEngine(readonly_db)
+                rows = readonly_db.conn.execute(
+                    "SELECT rj_id, local_path, status FROM works "
+                    "WHERE status IN ('completed','verified') ORDER BY rj_id"
+                ).fetchall()
+                selected = [
+                    dict(row)
+                    for row in rows
+                    if row["local_path"]
+                    and engine._is_same_or_under(row["local_path"], target_base)
+                ]
+                return [
+                    (row, engine.verify_migrated_work(
+                        row["rj_id"], str(target_base), source_roots=source_roots
+                    ))
+                    for row in selected[:20]
+                ], len(selected)
 
-        if not verified_rows:
-            self.log("  \u6ca1\u6709\u4f4d\u4e8e\u76ee\u6807\u76d8\u7684 completed/verified \u4f5c\u54c1\u3002", "grey")
-            return
+        def _render(payload):
+            results, total = payload
+            if not results:
+                self.log("  没有位于目标盘的 completed/verified 作品。", "grey")
+                return
+            ok = 0
+            issues = 0
+            for row, result in results:
+                if result["success"]:
+                    mode_note = "source_preserved" if result["source_preserved"] else "source_deleted"
+                    self.log(f"  OK {row['rj_id']} [{row['status']}] {mode_note}", SUCCESS)
+                    ok += 1
+                else:
+                    self.log(
+                        f"  ERR {row['rj_id']}: work_exists={result['work_exists']} "
+                        f"missing_downloads={len(result['missing_downloads'])} "
+                        f"source_ok={result['source_removed_or_empty']} "
+                        f"library_items_on_target={result.get('library_items_on_target')} "
+                        f"library_index_on_target={result['library_on_target']} "
+                        f"part_files={result['part_files_present']} "
+                        f"manifest_error={result.get('target_manifest_error', '')}",
+                        ERROR,
+                    )
+                    issues += 1
+            if total > len(results):
+                self.log(f"  仅显示前 {len(results)} / {total} 个作品。", WARNING)
+            self.log(f"  验证完成: {ok} 个通过, {issues} 个异常", ACCENT_PRIMARY)
 
-        ok, issues = 0, 0
-        for row in verified_rows[:20]:
-            result = engine.verify_migrated_work(
-                row["rj_id"], str(target_base), source_roots=source_roots)
-            if result["success"]:
-                mode_note = 'source_preserved' if result['source_preserved'] else 'source_deleted'
-                self.log(f"  OK {row['rj_id']} [{row['status']}] verified {mode_note}", SUCCESS)
-                ok += 1
-            else:
-                self.log(
-                    f"  ERR {row['rj_id']}: work_exists={result['work_exists']} "
-                    f"work_on_target={result['work_on_target']} "
-                    f"missing_downloads={len(result['missing_downloads'])} "
-                    f"downloads_not_on_target={len(result['downloads_not_on_target'])} "
-                    f"source_removed_or_empty={result['source_removed_or_empty']} "
-                    f"source_preserved={result['source_preserved']} "
-                    f"cleanup_plan_present={result['cleanup_plan_present']} "
-                    f"preserved_source_ok={result['preserved_source_ok']} "
-                    f"library_on_target={result['library_on_target']} "
-                    f"part_files_present={result['part_files_present']}",
-                    ERROR,
-                )
-                issues += 1
-
-        self.log(f"  \u9a8c\u8bc1\u5b8c\u6210: {ok} \u4e2a\u901a\u8fc7, {issues} \u4e2a\u5f02\u5e38", ACCENT_PRIMARY)
+        runner = getattr(self.app_controller, "run_blocking", None)
+        if callable(runner):
+            runner(_work, _render, action_label="验证迁移")
+        else:
+            # Legacy isolated tests normally do not call this path.
+            _render(_work())
 
     def diagnose_failed(self, e):
-        """RC7.10: Diagnose failed downloads — categories + write report."""
-        self.log("> 诊断失败下载任务...", "white")
-        db = self.app_controller.db
-        d = db.diagnose_failed_downloads()
+        """Diagnose failed downloads off the Flet thread using a read-only connection."""
+        del e
+        import json
+        from datetime import datetime
+        from core.tools_maintenance import diagnose_download_failures
 
-        self.log(f"  failed_total: {d['failed_total']}", ERROR)
-        self.log(f"  failed_resumable_partial_file: {d['failed_resumable_partial_file']}", WARNING)
-        self.log(f"  failed_retry_from_zero: {d['failed_retry_from_zero']}", ACCENT_PRIMARY)
-        self.log(f"  failed_missing_file: {d['failed_missing_file']}", "grey")
-        self.log(f"  failed_missing_url_or_metadata: {d['failed_missing_url_or_metadata']}", "grey")
-        self.log(f"  failed_complete_but_db_failed: {d['failed_complete_but_db_failed']}", WARNING)
-        self.log(f"  paused_resumable: {d['paused_resumable']}", SUCCESS)
-        self.log(f"  paused_missing_file: {d['paused_missing_file']}", "grey")
-        self.log(f"  registered_count: {d['registered_count']}", ACCENT_PRIMARY)
-        self.log(f"  stale_count: {d.get('stale_count', 0)}", 'grey')
-        self.log(f"  ignored_count: {d.get('ignored_count', 0)}", 'grey')
+        self.log("> 后台诊断失败下载任务…", "white")
 
-        if d["per_error_prefix"]:
-            self.log("  错误前缀分布:", "white")
-            for prefix, cnt in sorted(d["per_error_prefix"].items(), key=lambda x: -x[1])[:10]:
-                self.log(f"    {prefix[:50]}: {cnt}", "grey")
+        def _work():
+            result = diagnose_download_failures(self._db_path())
+            report_dir = Path("logs")
+            report_dir.mkdir(parents=True, exist_ok=True)
+            report_path = report_dir / (
+                "failed_diagnosis_" + datetime.now().strftime("%Y%m%d_%H%M%S") + ".json"
+            )
+            payload = dict(result)
+            payload["generated_at"] = datetime.now().isoformat(timespec="seconds")
+            report_path.write_text(
+                json.dumps(payload, indent=2, ensure_ascii=False, default=str),
+                encoding="utf-8",
+            )
+            return result, str(report_path)
 
-        # Write report
-        try:
-            import os, json, datetime
-            os.makedirs("logs", exist_ok=True)
-            report = dict(d)
-            report["generated_at"] = datetime.datetime.now().isoformat()
-            report["per_error_prefix"] = dict(sorted(
-                d["per_error_prefix"].items(), key=lambda x: -x[1]))
-            with open("logs/failed_diagnosis.txt", "w", encoding="utf-8") as f:
-                json.dump(report, f, indent=2, ensure_ascii=False, default=str)
-            self.log("  ✓ 报告已写入 logs/failed_diagnosis.txt", SUCCESS)
-        except Exception as ex:
-            self.log(f"  ✗ 写入报告失败: {ex}", ERROR)
+        def _render(payload):
+            result, report_path = payload
+            self.log(f"  failed_total: {result['failed_total']}", ERROR)
+            self.log(
+                f"  failed_resumable_partial_file: {result['failed_resumable_partial_file']}",
+                WARNING,
+            )
+            self.log(f"  failed_retry_from_zero: {result['failed_retry_from_zero']}", ACCENT_PRIMARY)
+            self.log(f"  failed_missing_file: {result['failed_missing_file']}", "grey")
+            self.log(
+                f"  failed_missing_url_or_metadata: {result['failed_missing_url_or_metadata']}",
+                "grey",
+            )
+            self.log(
+                f"  failed_complete_but_db_failed: {result['failed_complete_but_db_failed']}",
+                WARNING,
+            )
+            self.log(f"  paused_resumable: {result['paused_resumable']}", SUCCESS)
+            self.log(f"  paused_missing_file: {result['paused_missing_file']}", "grey")
+            self.log(f"  registered_count: {result['registered_count']}", ACCENT_PRIMARY)
+            self.log(f"  stale_count: {result['stale_count']}", "grey")
+            self.log(f"  ignored_count: {result['ignored_count']}", "grey")
+            if result["per_error_prefix"]:
+                self.log("  错误前缀分布:", "white")
+                for prefix, count in sorted(
+                    result["per_error_prefix"].items(), key=lambda item: -item[1]
+                )[:10]:
+                    self.log(f"    {prefix[:50]}: {count}", "grey")
+            self.log(f"  ✓ 报告已写入 {report_path}", SUCCESS)
+
+        self.app_controller.run_blocking(
+            _work, _render, action_label="失败任务诊断"
+        )
 
     def run_diagnostic(self, e):
+        """Read-only diagnostics; never create output directories as a side effect."""
+        del e
+        from core.tools_maintenance import build_system_diagnostic
+
         self.log_area.controls.clear()
-        self.log("=== 系统诊断开始 ===", ACCENT_PRIMARY)
-        
-        config = self.app_controller.config
-        
-        self.log(f"检查配置文件: {'✓' if True else '✗'}", SUCCESS)
-        self.log(f"检查数据库: {'✓' if os.path.exists('history.db') else '✗'}", SUCCESS if os.path.exists('history.db') else ERROR)
-        
-        try:
-            os.makedirs(config.output_dir, exist_ok=True)
-            self.log(f"输出目录权限: {'✓' if os.access(config.output_dir, os.W_OK) else '✗'}", SUCCESS if os.access(config.output_dir, os.W_OK) else ERROR)
-        except Exception:
-            self.log(f"输出目录权限: ✗", ERROR)
-        
-        try:
-            import mutagen
-            self.log("音频标签模块 (mutagen): ✓", SUCCESS)
-        except ImportError:
-            self.log("音频标签模块 (mutagen): ✗ (未安装)", ERROR)
-            
-        try:
-            import aiohttp
-            self.log("网络模块 (aiohttp): ✓", SUCCESS)
-        except ImportError:
-            self.log("网络模块 (aiohttp): ✗ (未安装)", ERROR)
-            
-        self.log("=== 诊断完成 ===", ACCENT_PRIMARY)
+        self.log("=== 系统诊断开始（只读）===", ACCENT_PRIMARY)
+        output_dir = self.app_controller.config.output_dir
+
+        def _work():
+            result = build_system_diagnostic(self._db_path(), output_dir)
+            try:
+                import mutagen  # noqa: F401
+                result["mutagen"] = True
+            except ImportError:
+                result["mutagen"] = False
+            try:
+                import aiohttp  # noqa: F401
+                result["aiohttp"] = True
+            except ImportError:
+                result["aiohttp"] = False
+            return result
+
+        def _render(result):
+            self.log(
+                f"数据库: {'✓' if result['db_exists'] else '✗'} {result['db_path']}",
+                SUCCESS if result["db_exists"] else ERROR,
+            )
+            self.log(
+                f"完整性: {result['integrity']}",
+                SUCCESS if result["integrity"] == "ok" else WARNING,
+            )
+            self.log(
+                f"输出目录存在/可写: {result['output_exists']}/{result['output_writable']} "
+                f"{result['output_dir']}",
+                SUCCESS if result["output_writable"] else WARNING,
+            )
+            self.log(f"mutagen: {'✓' if result['mutagen'] else '✗'}", SUCCESS if result["mutagen"] else ERROR)
+            self.log(f"aiohttp: {'✓' if result['aiohttp'] else '✗'}", SUCCESS if result["aiohttp"] else ERROR)
+            counts = result.get("download_status_counts", {})
+            if counts:
+                self.log(f"下载状态: {counts}", ACCENT_PRIMARY)
+            self.log("=== 诊断完成；未创建目录、未修改数据库 ===", ACCENT_PRIMARY)
+
+        self.app_controller.run_blocking(
+            _work, _render, action_label="系统诊断"
+        )
 
     # ══════════════════════════════════════════════
     #  Backlog: History recovery task manager
     # ══════════════════════════════════════════════
-    def _backlog_stats(self):
-        """Return current backlog summary from DB."""
-        db = self.app_controller.db
-        try:
-            stale_rjs = db.conn.execute(
-                "SELECT COUNT(DISTINCT rj_id) FROM downloads WHERE status='stale'").fetchone()[0]
-            stale_rows = db.conn.execute(
-                "SELECT COUNT(*) FROM downloads WHERE status='stale'").fetchone()[0]
-            ignored_rjs = db.conn.execute(
-                "SELECT COUNT(DISTINCT rj_id) FROM downloads WHERE status='ignored'").fetchone()[0]
-            ignored_rows = db.conn.execute(
-                "SELECT COUNT(*) FROM downloads WHERE status='ignored'").fetchone()[0]
-            queued_rows = db.conn.execute(
-                "SELECT COUNT(*) FROM downloads WHERE status='queued'").fetchone()[0]
-            paused_rows = db.conn.execute(
-                "SELECT COUNT(*) FROM downloads WHERE status='paused'").fetchone()[0]
-            return {"stale_rjs": stale_rjs, "stale_rows": stale_rows,
-                    "ignored_rjs": ignored_rjs, "ignored_rows": ignored_rows,
-                    "queued_rows": queued_rows, "paused_rows": paused_rows}
-        except Exception:
-            return {}
-
     def refresh_backlog(self, e=None):
-        stats = self._backlog_stats()
-        self.backlog_summary.value = (
-            f"可恢复: {stats.get('stale_rjs',0)+stats.get('ignored_rjs',0)} 个作品 "
-            f"({stats.get('stale_rows',0)+stats.get('ignored_rows',0)} 条记录) | "
-            f"当前队列: {stats.get('queued_rows',0)} | 暂停: {stats.get('paused_rows',0)}"
+        """Refresh backlog counts off the UI thread."""
+        del e
+        from core.tools_maintenance import get_backlog_summary
+
+        def _render(stats):
+            self.backlog_summary.value = (
+                f"可恢复: {stats.get('stale_rjs', 0) + stats.get('ignored_rjs', 0)} 个作品 "
+                f"({stats.get('stale_rows', 0) + stats.get('ignored_rows', 0)} 条记录) | "
+                f"排队: {stats.get('queued_rows', 0)} | 暂停: {stats.get('paused_rows', 0)} | "
+                f"失败: {stats.get('failed_rows', 0)} | 运行: {stats.get('running_rows', 0)}"
+            )
+            self.backlog_summary.update()
+
+        self.app_controller.run_blocking(
+            lambda: get_backlog_summary(self._db_path()),
+            _render,
+            action_label="历史任务统计",
         )
-        self.backlog_summary.update()
 
     def backlog_preview(self, e):
-        """Dry-run: show what a batch would re-enable. NO DB write."""
-        source = self.backlog_source.value
+        """Build a read-only stale/ignored preview on a worker thread."""
+        del e
+        from core.tools_maintenance import preview_backlog_candidates
+
+        source = self.backlog_source.value or "ignored"
         try:
             limit = int(self.backlog_batch_size.value or "30")
         except ValueError:
             limit = 30
 
-        db = self.app_controller.db
-        # Find candidate RJs by the selected source filter
-        where = "WHERE d.status IN ('stale','ignored') AND d.rj_id != 'RJ01510133'"
-        if source == "ignored":
-            where += " AND d.status = 'ignored'"
-        elif source == "stale":
-            where += " AND d.status = 'stale'"
+        def _render(result):
+            preview = (
+                f"Preview ({result['source']}, limit={result['limit']}): "
+                f"{result['candidate_count']} RJs\n"
+                f"  selected rows: {result['source_rows']} | "
+                f"actual stale+ignored: {result['actual_total']}\n"
+            )
+            for row in result["actual_rows"][:8]:
+                preview += f"  {row['rj_id']}: {row['count']} rows\n"
+            if len(result["actual_rows"]) > 8:
+                preview += f"  ... and {len(result['actual_rows']) - 8} more\n"
+            preview += "\nNo DB write performed."
+            self.backlog_preview_text.value = preview
+            self._backlog_candidate_ids = result["rj_ids"]
+            self.backlog_preview_text.update()
 
-        candidate_rows = db.conn.execute(f"""
-            SELECT d.rj_id, COUNT(*) as cnt FROM downloads d
-            {where} GROUP BY d.rj_id ORDER BY cnt ASC LIMIT ?
-        """, (limit,)).fetchall()
-
-        rj_ids = [r[0] for r in candidate_rows]
-
-        # Re-count ALL stale+ignored for these RJs (not just the filtered type)
-        # because re-enable updates both stale AND ignored together
-        if rj_ids:
-            placeholders = ",".join("?" * len(rj_ids))
-            actual_rows = db.conn.execute(f"""
-                SELECT rj_id, COUNT(*) as cnt FROM downloads
-                WHERE rj_id IN ({placeholders}) AND status IN ('stale','ignored')
-                GROUP BY rj_id
-            """, rj_ids).fetchall()
-            actual_total = sum(r[1] for r in actual_rows)
-        else:
-            actual_total = 0
-            actual_rows = []
-
-        source_total = sum(r[1] for r in candidate_rows)
-        if actual_total != source_total:
-            preview = f"Preview ({source}, limit={limit}): {len(rj_ids)} RJs\n"
-            preview += f"  {source} rows: {source_total} | actual stale+ignored: {actual_total}\n"
-        else:
-            preview = f"Preview ({source}, limit={limit}): {len(rj_ids)} RJs, {actual_total} rows\n"
-        for r in actual_rows[:8]:
-            preview += f"  {r[0]}: {r[1]} rows\n"
-        if len(actual_rows) > 8:
-            preview += f"  ... and {len(actual_rows)-8} more\n"
-        preview += "\nNo DB write performed."
-        self.backlog_preview_text.value = preview
-        self._backlog_candidate_ids = rj_ids
-        self.backlog_preview_text.update()
+        self.app_controller.run_blocking(
+            lambda: preview_backlog_candidates(
+                self._db_path(), source=source, limit=limit
+            ),
+            _render,
+            action_label="历史任务恢复预览",
+        )
 
     def backlog_reenable(self, e):
-        """Execute re-enable via the auditable CLI tool (backup + preimage + rollback)."""
-        rj_ids = getattr(self, "_backlog_candidate_ids", [])
+        """Re-enable only after preview and only while the runtime queue is idle."""
+        del e
+        rj_ids = list(getattr(self, "_backlog_candidate_ids", []))
         if not rj_ids:
-            self.app_controller.show_snack("Run Preview first to select candidates.")
+            self.app_controller.show_snack("请先运行预览选择候选任务")
             return
 
-        def do_execute():
-            import sys
-            from pathlib import Path as P
-            sys.path.insert(0, str(P(__file__).parent.parent.parent))
+        runtime_active = set(getattr(self.app_controller.orc, "queued_rj_ids", set()))
+        runtime_active.update(getattr(self.app_controller.orc, "active_tasks", {}).keys())
+        if runtime_active:
+            self.app_controller.show_snack(
+                f"下载器仍有 {len(runtime_active)} 个运行时任务，恢复操作已阻止"
+            )
+            self.log("  历史任务恢复已阻止：请等待当前下载队列完全空闲。", WARNING)
+            return
+
+        def _execute():
             from tools.backlog_reenable import execute
 
-            result = execute(rj_ids, mode="retry-from-zero")
+            return execute(
+                rj_ids,
+                mode="continue",
+                db_path=self._db_path(),
+            )
+
+        def _render(result):
             integrity = result.get("integrity_after", "?")
             updated = result.get("updated_rows", 0)
             backup = result.get("backup_dir", "?")
-            completed_ok = result.get("completed_unchanged", False)
-
-            msg = f"Re-enabled {len(rj_ids)} RJs ({updated} rows). integrity={integrity}. Backup: {backup}"
-            self.backlog_preview_text.value = msg
+            message = (
+                f"恢复 {len(rj_ids)} 个 RJ（{updated} 条记录）；"
+                f"integrity={integrity}；backup={backup}"
+            )
+            self.backlog_preview_text.value = message
             self.backlog_preview_text.update()
             self.refresh_backlog()
-            if not completed_ok:
-                self.app_controller.show_snack("WARN: completed count changed!")
-            self.app_controller.show_snack(msg[:80])
+            self.app_controller.show_snack(message[:100])
+
+        def _confirmed(_event):
+            self._close_dialog()
+            self.app_controller.run_blocking(
+                _execute, _render, action_label="历史任务恢复"
+            )
 
         self.app_controller.page.dialog = ft.AlertDialog(
-            title=ft.Text(f"Re-enable {len(rj_ids)} RJs?"),
-            content=ft.Text(f"Will update stale/ignored -> queued for {len(rj_ids)} RJs.\n"
-                           "Backup + preimage + rollback will be created.\nNo files deleted."),
+            title=ft.Text(f"恢复 {len(rj_ids)} 个 RJ？"),
+            content=ft.Text(
+                "仅把 stale/ignored 改为 queued，保留现有断点字节。\n"
+                "执行前会创建 SQLite 在线备份和 preimage。"
+            ),
             actions=[
-                ft.TextButton("Cancel", on_click=lambda e: self._close_dialog()),
-                ft.TextButton("Execute", on_click=lambda e: [self._close_dialog(), do_execute()]),
+                ft.TextButton("取消", on_click=lambda _event: self._close_dialog()),
+                ft.TextButton("执行", on_click=_confirmed),
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
@@ -702,58 +861,132 @@ class ToolsView(ft.Container):
         self.app_controller.page.dialog.open = False
         self.app_controller.page.update()
 
-    # ── External intake ──
-    def external_scan(self, e):
-        import sys
-        from pathlib import Path as P
-        sys.path.insert(0, str(P(__file__).parent.parent.parent))
-        from tools.external_intake import scan_structure
-        plan = scan_structure()
-        self.log(f"扫描 {plan['scanned_top_dirs']} 目录, {plan['unique_rj']} 唯一RJ", ACCENT_PRIMARY)
-        self.log(f"  已规范: {plan['already_normalized']} | 需改名: {plan['needs_rename_top_level']} | 需加Title层: {plan['needs_title_layer']}", SUCCESS)
-        if plan['duplicate_rj']: self.log(f"  重复: {plan['duplicate_rj']}", WARNING)
-        if plan['quarantine_required']: self.log(f"  需隔离: {plan['quarantine_required']}", ERROR)
+    # ── External intake (read-only planner) ──
+    def _external_paths(self):
+        config = self.app_controller.config
+        return (
+            getattr(config, "external_intake_root", None),
+            getattr(config, "external_quarantine_root", None),
+        )
 
-    def external_dry_run(self, e):
-        import sys
-        from pathlib import Path as P
-        sys.path.insert(0, str(P(__file__).parent.parent.parent))
-        from tools.external_intake import scan_structure
-        plan = scan_structure()
-        self.log(f"DRY-RUN: 将规范 {plan['needs_rename_top_level']} 个目录 + {plan['needs_title_layer']} 个加层 + {plan['quarantine_required']} 个隔离", ACCENT_PRIMARY)
-        for a in plan["actions"][:15]:
-            self.log(f"  [{a['action']}] {a.get('name', a.get('dir',''))[:60]}", "white")
+    def _set_external_busy(self, message: str) -> None:
+        self.external_status.value = message
+        self.external_status.color = ACCENT_PRIMARY
+        self.external_status.update()
 
-    def external_execute(self, e):
-        import sys; from pathlib import Path as P
-        sys.path.insert(0, str(P(__file__).parent.parent.parent))
-        from tools.external_intake import scan_top_dirs, execute_normalize
-        dirs_info, plan = scan_top_dirs()
+    def _render_external_plan(self, plan: dict, report_dir=None) -> None:
+        counts = plan["counts"]
+        fatal_count = len(plan["fatal_blockers"])
+        review_count = len(plan["review_required"])
+        quarantine_count = len(plan["quarantine_actions"])
 
-        if plan.get("blockers", 0) > 0 or not plan.get("can_execute", False):
-            bl = plan.get("blocker_list", [])
-            self.log(f"STOP: {plan.get('blockers', len(bl))} blockers exist", ERROR)
-            for b in bl[:3]: self.log(f"  {b}", WARNING)
-            self.app_controller.show_snack("\u5b58\u5728\u963b\u585e\u9879，\u65e0\u6cd5\u6267\u884c")
+        if fatal_count:
+            status = f"不可执行：{fatal_count} 个致命问题"
+            status_color = ERROR
+        elif review_count:
+            status = f"需要人工复核：{review_count} 项"
+            status_color = WARNING
+        else:
+            status = "只读计划完成；真实执行仍保持冻结"
+            status_color = SUCCESS
+
+        self.external_status.value = status
+        self.external_status.color = status_color
+        self.external_status.update()
+
+        root_label = plan["root"] or "未配置"
+        self.log(f"> 外部资源只读扫描: {root_label}", ACCENT_PRIMARY)
+        self.log(
+            f"  目录={plan['scanned_top_dirs']} | RJ={plan['unique_rj']} | "
+            f"fatal={fatal_count} | 复核={review_count} | 隔离候选={quarantine_count}",
+            ERROR if fatal_count else WARNING if review_count else SUCCESS,
+        )
+        self.log(
+            "  已规范={already} | 需加Title层={layer} | 需改顶层名={rename} | 重复RJ={duplicate}".format(
+                already=counts["already_normalized"],
+                layer=counts["needs_title_layer"],
+                rename=counts["needs_rename_top_level"],
+                duplicate=counts["duplicate_review"],
+            ),
+            "white",
+        )
+
+        for notice in plan["fatal_blockers"][:5]:
+            self.log(f"  [FATAL] {notice['message']}", ERROR)
+        for notice in plan["review_required"][:5]:
+            self.log(f"  [REVIEW] {notice['message']}", WARNING)
+        for warning in plan["warnings"][:3]:
+            self.log(f"  [WARN] {warning['message']}", WARNING)
+
+        for action in plan["actions"][:15]:
+            source_name = action["source_name"] or action["source"]
+            self.log(
+                f"  [{action['classification']}] {source_name[:72]} — {action['reason']}",
+                "white",
+            )
+        if len(plan["actions"]) > 15:
+            self.log(f"  …另有 {len(plan['actions']) - 15} 项，完整内容见报告", "grey")
+
+        if report_dir is not None:
+            self.external_report_text.value = f"完整报告：{report_dir}"
+            self.external_report_text.update()
+            self.log(f"  完整报告: {report_dir}", SUCCESS)
+        else:
+            self.external_report_text.value = "扫描预览只显示前 15 项；使用“生成完整 DRY-RUN 报告”保存全部 actions。"
+            self.external_report_text.update()
+
+    async def _run_external_plan(self, write_report: bool) -> None:
+        from tools.external_intake import (
+            annotate_plan_with_database,
+            scan_structure,
+            write_plan_report,
+        )
+
+        if self.external_scan_running:
+            self.app_controller.show_snack("外部资源扫描正在进行，请勿重复启动")
             return
 
-        n_move = plan.get("needs_rename_top_level", 0) + plan.get("needs_title_layer", 0)
-        n_q = plan.get("quarantine_required", 0)
+        self.external_scan_running = True
+        root, quarantine_root = self._external_paths()
+        self._set_external_busy("正在后台扫描，只读操作不会修改文件或数据库…")
+        try:
+            plan = await asyncio.to_thread(scan_structure, root, quarantine_root)
+            plan = await asyncio.to_thread(
+                annotate_plan_with_database, plan, self.app_controller.db
+            )
+            report_dir = None
+            if write_report:
+                report_dir = await asyncio.to_thread(write_plan_report, plan)
+            self._render_external_plan(plan, report_dir)
+        except Exception as exc:
+            self.external_status.value = "扫描失败；未执行任何文件或数据库修改"
+            self.external_status.color = ERROR
+            self.external_status.update()
+            self.log(f"  [ERROR] 外部资源扫描失败: {exc}", ERROR)
+            self.app_controller.show_snack("外部资源扫描失败，详情见操作日志")
+        finally:
+            self.external_scan_running = False
 
-        def _do():
-            d2, p2 = scan_top_dirs()
-            stats, bkp = execute_normalize(d2)
-            self.log(f"移动 {stats['moved']} | 隔离 {stats['quarantined']} | DB {stats['db_updated']}", SUCCESS)
-            self.log(f"备份: {bkp}")
+    async def _external_scan_async(self) -> None:
+        await self._run_external_plan(write_report=False)
 
-        self.app_controller.page.dialog = ft.AlertDialog(
-            title=ft.Text(f"整理 {n_move} 目录?"),
-            content=ft.Text(f"移动: {n_move} | 隔离: {n_q} | DB备份 | 可回滚"),
-            actions=[ft.TextButton("Cancel", on_click=lambda e: self._close_dialog()),
-                     ft.TextButton("Execute", on_click=lambda e: [self._close_dialog(), _do()])],
-            actions_alignment=ft.MainAxisAlignment.END,
-        )
-        self.app_controller.page.dialog.open = True
-        self.app_controller.page.update()
+    async def _external_dry_run_async(self) -> None:
+        await self._run_external_plan(write_report=True)
+
+    def external_scan(self, e):
+        del e
+        self.app_controller.page.run_task(self._external_scan_async)
+
+    def external_dry_run(self, e):
+        del e
+        self.app_controller.page.run_task(self._external_dry_run_async)
+
+    def external_execute(self, e):
+        """Defensive STOP for stale callbacks or programmatic invocation."""
+        del e
+        from tools.external_intake import EXECUTION_STOP_MESSAGE
+
+        self.log(EXECUTION_STOP_MESSAGE, ERROR)
+        self.app_controller.show_snack("外部资源真实整理已冻结，仅允许扫描和 DRY-RUN")
 
     # end backlog

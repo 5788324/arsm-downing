@@ -1,352 +1,147 @@
 # AI_WORKFLOW.md
 
-# arsm-downing / arsm-suite 简化 AI 工作流
+# arsm-downing / arsm-suite AI 协作与交付工作流
 
-## 0. 当前结论
+> 更新：2026-07-20
+> 适用范围：当前项目的开发、测试、Git、文档、Windows 验收和发布
 
-本项目后续采用最简协作模式：
-
-```text
-用户 + ChatGPT + DeepSeek/OpenCode 为主
-Codex 作为本机关键节点工具和最终保险
-```
-
-不采用复杂多层代理链路：
+## 1. 当前分工
 
 ```text
-ChatGPT → Codex → DeepSeek → Codex → 用户
+ChatGPT：主要开发者和项目负责人
+Codex：Windows/Flet/真实目录/真实数据库/打包验收
+用户：需求与最终范围决策，不承担日常开发、测试、Git 或发布
+DeepSeek/OpenCode：仅在 ChatGPT 明确分配时承担低风险批量工作
 ```
 
-采用：
+### ChatGPT 负责
+
+- 架构、任务拆分和风险边界
+- 本地批量修改代码
+- 当前环境可完成的测试和代码审查
+- README、CURRENT_STATE、WORKLOG、路线图和交接文档
+- 分支、提交、PR、Issue 和合并前检查
+- 根据 Codex 的实机报告完成必要修复
+
+### Codex 只负责
+
+- Windows 真实运行环境
+- Flet GUI 行为与显示
+- 用户真实 `E:\arsm` 的只读观察，以及通过在线备份生成的 `history.db` 快照验收
+- 当前环境无法覆盖的网络、文件锁、路径和打包问题
+- 最终便携包/安装包验证
+
+Codex 不负责日常项目管理，不承担可在当前环境完成的普通编码任务。
+
+## 2. Git 工作流
 
 ```text
-ChatGPT：规划、拆任务、验收标准
-DeepSeek/OpenCode：日常执行、写代码、跑脚本、生成报告
-Codex：本机关键节点、最终审查、Git、危险操作前把关
-用户：复制一轮任务、运行工具、把结果贴回 ChatGPT
+一个任务包 = 一个分支 + 一个 PR
+本地批量修改后统一提交
+通常只推送一次
+只有真实 CI 或实机验收失败时，最多追加一次修复推送
+禁止通过 GitHub 内容接口逐文件形成大量零碎提交
+main 只接收通过测试和审查的 PR
 ```
 
-补充当前事实：
+当前接手任务使用：
 
 ```text
-RC8.7 P0 final audit 已由 Codex 在本机完成。
-后续 DeepSeek/OpenCode 不需要重做 RC8 迁移，只需从 P1 / P2 / P3 往后推进。
+分支：chatgpt/takeover-20260718
+PR：#1
 ```
 
----
+接手分支在最终推送前应整理为清晰、可审查的提交历史。
 
-## 1. 角色定位
+## 3. Google Drive 的定位
 
-### 1.1 用户
-
-用户是最终决策人，但不需要看懂所有代码。
-
-用户只做：
+Google Drive 是网络受限环境下的代码运输和验收材料通道，不替代 GitHub：
 
 ```text
-1. 把 ChatGPT 给出的任务复制给 DeepSeek/OpenCode 或 Codex
-2. 运行工具
-3. 把 DeepSeek/OpenCode/Codex 的结果贴回 ChatGPT
-4. 根据 ChatGPT 的 PASS / NEEDS_FIX / STOP 继续下一步
+Google Drive：Git Bundle、完整快照、Windows 验收日志、截图、发布包
+GitHub：正式仓库、Issue、PR、代码审查、CI、合并和版本历史
 ```
 
-### 1.2 ChatGPT
+建议只传输 `git bundle`，不要在 Google Drive 同步目录中长期直接运行 `.git` 工作区。
 
-ChatGPT 是项目经理，负责：
+## 4. 开发顺序
+
+每轮任务按以下顺序执行：
 
 ```text
-1. 定阶段
-2. 拆任务
-3. 写可直接执行的任务
-4. 写禁止事项
-5. 写验收标准
-6. 看执行结果
-7. 判断 PASS / NEEDS_FIX / STOP
-8. 决定什么时候需要 Codex
+1. 核对当前分支、任务边界和禁止事项
+2. 本地批量开发
+3. 使用临时目录、临时 SQLite 和模拟网络运行自动测试
+4. 更新核心文档
+5. 检查 git diff、敏感路径和真实数据副作用
+6. 形成一个正式提交
+7. 需要时推送并更新 PR
+8. 仅把必须依赖 Windows 的验收交给 Codex
 ```
 
-### 1.3 DeepSeek / OpenCode
+## 5. 数据与文件安全边界
 
-DeepSeek/OpenCode 是主力执行工人。
+项目仅供个人使用，不采用企业级繁琐流程，但以下操作必须保持 fail-closed：
 
-优先交给它们的任务：
+- 文件移动、隔离、覆盖或删除
+- 真实 `history.db` 写入、迁移和批量状态修改
+- 下载断点文件 `.part` 的重置或删除
+- 资源库批量重建
+
+默认规则：
 
 ```text
-1. 只读审计
-2. grep / 搜索
-3. 写诊断脚本
-4. 写 scanner
-5. 生成 JSON 报告
-6. 写 summary
-7. 更新 WORKLOG
-8. 低风险代码实现
+dry-run 优先
+测试不使用真实 E:\arsm
+测试不连接真实 history.db
+活跃下载存在时，不升级生产依赖、不运行维护命令、不手工复制 DB/WAL/SHM
+真实状态核验只能使用在线只读 snapshot + manifest
+失败不得报告成功
+数据库与文件系统更新必须具有可核验恢复路径
 ```
 
-禁止：
+## 6. 每轮交付记录
+
+每轮至少记录：
+
+- 完成范围
+- 修改文件
+- 测试命令与结果
+- 是否访问真实数据库
+- 是否移动或删除真实文件
+- 已知限制
+- 下一轮任务
+- Git 状态和提交
+
+以上内容同步到 `WORKLOG.md`；当前事实同步到 `CURRENT_STATE.md`；后续任务同步到 `NEXT_TASK_ROADMAP.md`。
+
+## 7. 当前任务顺序
 
 ```text
-1. 未经确认删除文件
-2. 未经确认修改 DB
-3. 绕过 LibraryVault
-4. 自己 sqlite3.connect
-5. 把 P3 JSON 当 UI 数据源
-6. 把 P4 和 P5 合并执行
-7. 顺手重构下载核心
-8. 顺手改 database.py 写入核心
-9. 顺手改 migration cleanup
+1. external intake 真实执行硬冻结（已完成）
+2. external intake 计划模型与纯扫描收口（已完成）
+3. external intake LibraryVault 快照与路径事务（已完成）
+4. external intake 逐作品文件执行与自动恢复（沙盒已完成）
+5. 统一测试、CI、在线 DB snapshot（已完成）
+6. 下载核心 416 / Range / .part / 取消恢复与隔离 UI smoke（代码级已完成）
+7. T6 复制资源库沙盒执行与故障恢复（已完成）
+8. Tools 缓存/VACUUM/队列预览和 backlog 安全闭环（已完成）
+9. Windows 在线快照、真实 ASMR.one 小样本与 Flet 视觉验收（并行待 Codex）
+10. 迁移、数据库 Schema 和资源库 rebuild 一致性（已完成）
+11. 100+ 混合任务清空后进行 T7 Windows 小批量验收
+12. 0.9.0-rc.1 构建和交接（代码级已完成，待 GitHub/Windows 证据）
 ```
 
-每轮完成后必须输出：
 
-```text
-1. 完成了什么
-2. 修改了哪些文件
-3. 是否改 DB
-4. 是否删除文件
-5. 是否改下载核心
-6. 生成了哪些报告
-7. 测试/核验结果
-8. git status
-9. git diff summary
-10. WORKLOG 更新位置
-11. 下一步建议
+## Windows 实机验收入口
+
+必须使用独立证据目录，不在正式程序目录安装依赖或运行测试：
+
+```powershell
+.\scripts\run_windows_acceptance.ps1 `
+  -EvidenceDir "D:\ARSM-Acceptance" `
+  -ActiveDb "<正式程序目录>\history.db" `
+  -LaunchUi
 ```
 
-### 1.4 Codex
-
-Codex 不再作为日常执行者。
-
-Codex 的定位：
-
-```text
-本机关键节点工具
-最终保险
-Git 守门员
-高风险操作前审查员
-```
-
-Codex 只在这些情况使用：
-
-```text
-1. 需要直接控制本机文件，而 ChatGPT 无法操作时
-2. 要 commit / merge / push 前
-3. 要执行 DB 写入前
-4. 要执行文件删除前
-5. 要修改下载核心前
-6. 要修改 database.py 写入核心前
-7. DeepSeek/OpenCode 改动较大，需要本机二次审查时
-8. Git 状态复杂、冲突、误提交风险时
-```
-
-Codex 输出必须明确：
-
-```text
-PASS
-NEEDS_FIX
-STOP
-```
-
----
-
-## 2. 为什么 Codex 仍然需要保留
-
-ChatGPT 不能控制你的电脑，所以以下场景仍然需要 Codex：
-
-```text
-1. 看真实 git diff
-2. 检查本地文件实际状态
-3. 检查项目目录是否干净
-4. 确认是否误删/误改
-5. 执行 commit / push
-6. 做危险操作前最后确认
-```
-
----
-
-## 3. 当前推荐流程
-
-### 3.1 日常低风险任务
-
-适用：
-
-```text
-只读诊断
-grep
-生成报告
-scanner
-普通文档更新
-低风险代码
-```
-
-流程：
-
-```text
-1. ChatGPT 写一轮 DeepSeek/OpenCode 任务
-2. 用户复制给 DeepSeek/OpenCode
-3. DeepSeek/OpenCode 执行
-4. 用户把结果贴回 ChatGPT
-5. ChatGPT 判断 PASS / NEEDS_FIX / STOP
-6. 只有必要时再叫 Codex
-```
-
-### 3.2 高风险任务
-
-适用：
-
-```text
-DB 写入
-删除文件
-修改下载核心
-修改 database.py 写入核心
-migration cleanup
-commit / push
-```
-
-流程：
-
-```text
-1. ChatGPT 写任务和风险边界
-2. DeepSeek/OpenCode 先生成 dry-run / plan
-3. 用户贴回 ChatGPT
-4. ChatGPT 判断是否需要 Codex
-5. Codex 做本机最终审查
-6. 用户确认后才执行
-```
-
----
-
-## 4. 当前最小文件体系
-
-正式保留：
-
-```text
-PROJECT_ROADMAP.md
-WORKLOG.md
-AI_WORKFLOW.md
-```
-
-不强制新增：
-
-```text
-AGENTS.md
-.local_tasks/
-复杂任务模板
-多代理配置
-MCP
-自动调用 OpenCode 的脚本
-```
-
----
-
-## 5. 当前下一步建议
-
-推荐顺序：
-
-```text
-1. DeepSeek/OpenCode：执行 P1 LibraryVault 单例确认
-2. DeepSeek/OpenCode：执行 P2 RC9 下载状态只读诊断
-3. 用户把报告贴回 ChatGPT
-4. ChatGPT 判断是否需要 Codex 审查
-5. 如 P1/P2 通过，再进入 P3/P4.5
-```
-
-Codex 是否必须再次执行 P0？
-
-```text
-不必须。
-```
-
-只有在以下情况下才需要重开 P0：
-
-```text
-1. 有人怀疑 RC8.7 审计结果不真实
-2. 本机文件/DB 状态在 P0 之后又发生变化
-3. 出现 missing_completed_download_paths > 0
-4. 出现 allowlist target 漂移
-```
-
----
-
-## 6. 当前本机摘要
-
-```text
-RC8.7 final audit report:
-.local_backups/rc8_7_final_audit_20260627_101934/RC8_7_FINAL_MIGRATION_CLOSEOUT_REPORT.txt
-
-关键结果：
-- integrity_check = ok
-- missing_completed_download_paths = 0
-- resource_scan_errors = 0
-- allowlist_not_on_e_count = 0
-- RC8 migration phase closeout = yes
-
-已知残留交给 RC9：
-- works_completed_verified_not_on_E = 17
-- downloads_completed_not_on_E_grouped_count = 2
-- missing_work_paths_count = 3
-- 重点 RJ：RJ01588893 / RJ01534605 / RJ00323125 / RJ323125
-```
-
----
-
-## 7. 给 DeepSeek/OpenCode 的通用复制指令
-
-```text
-请先读取 PROJECT_ROADMAP.md、WORKLOG.md、AI_WORKFLOW.md。
-
-本轮执行：<写当前阶段任务，例如 P1：LibraryVault 单例确认 或 P2：RC9 下载状态只读诊断>。
-
-严格遵守：
-1. 不扩大范围
-2. 不删除文件
-3. 未经确认不修改 DB
-4. 不绕过 LibraryVault
-5. 不改下载核心
-6. 完成后更新 WORKLOG.md
-
-完成后输出：
-1. 修改文件列表
-2. 是否改 DB
-3. 是否删除文件
-4. 是否改下载核心
-5. 生成报告路径
-6. 测试/核验结果
-7. git status
-8. git diff summary
-9. 下一步建议
-```
-
----
-
-## 8. 给 Codex 的通用复制指令
-
-```text
-请先读取 PROJECT_ROADMAP.md、WORKLOG.md、AI_WORKFLOW.md。
-
-你现在是本机审查员，不要实现新功能。
-
-请检查当前 git diff、输出报告和工作目录状态，判断本轮是否安全。
-
-重点检查：
-1. 是否违反阶段边界
-2. 是否误改 DB
-3. 是否删除文件
-4. 是否绕过 LibraryVault
-5. 是否直接 sqlite3.connect
-6. 是否改下载核心
-7. 是否改 database.py 写入核心
-8. 是否把 P3 JSON 当 UI 数据源
-9. 是否把 P4 和 P5 合并执行
-10. WORKLOG 是否更新
-
-最后只给明确结论：
-PASS / NEEDS_FIX / STOP
-```
-
----
-
-## 9. 一句话总结
-
-```text
-日常由 ChatGPT 指挥 DeepSeek/OpenCode 干活；Codex 不再日常参与，只在需要本机控制、最终审查、commit、DB 写入、删除文件、修改核心模块时作为保险使用。当前 P0 已完成，后续从 P1 / P2 开始推进即可。
-```
+Codex 负责执行和填写 `ui-observation.json`；ChatGPT 负责分析结果、修复代码和维护 Git/文档。
