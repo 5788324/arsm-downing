@@ -1,0 +1,231 @@
+name: windows-ui-self-test-reporter
+
+on:
+  push:
+    branches:
+      - chatgpt/ui-self-test-20260721
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  acceptance:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      PR_NUMBER: "4"
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install test dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements-dev.txt
+          python -m pip install --disable-pip-version-check playwright==1.55.0
+          python -m playwright install chromium
+
+      - name: Download verified Windows artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: ARSM-Suite-Windows
+          path: ${{ runner.temp }}/windows-artifact
+          github-token: ${{ github.token }}
+          run-id: 29834355321
+
+      - name: Launch portable EXE in isolated path
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $evidence = Join-Path $env:RUNNER_TEMP "ARSM-UI-Reporter-Evidence"
+          $app = Join-Path $env:RUNNER_TEMP "ARSM Portable 中文 空格"
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          New-Item -ItemType Directory -Path $app -Force | Out-Null
+          $zip = Get-ChildItem "$env:RUNNER_TEMP/windows-artifact" -Filter "*.zip" -File | Select-Object -First 1
+          $sha = Get-ChildItem "$env:RUNNER_TEMP/windows-artifact" -Filter "*.sha256" -File | Select-Object -First 1
+          if (-not $zip -or -not $sha) { throw "artifact files missing" }
+          $expected = ((Get-Content $sha.FullName -Raw).Trim() -split "\s+")[0].ToLowerInvariant()
+          $actual = (Get-FileHash $zip.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($expected -ne $actual) { throw "artifact SHA-256 mismatch" }
+          Expand-Archive $zip.FullName -DestinationPath $app -Force
+          $exe = Join-Path $app "ARSM-Suite.exe"
+          $proc = Start-Process $exe -WorkingDirectory $app -PassThru
+          Start-Sleep -Seconds 15
+          $proc.Refresh()
+          if ($proc.HasExited) { throw "ARSM-Suite.exe exited during startup: $($proc.ExitCode)" }
+          @{
+            passed = $true
+            pid = $proc.Id
+            exe = $exe
+            sha256 = $actual
+            alive_after_seconds = 15
+            config_exists = Test-Path (Join-Path $app "config.json")
+            database_exists = Test-Path (Join-Path $app "history.db")
+          } | ConvertTo-Json | Set-Content -Encoding utf8NoBOM (Join-Path $evidence "portable-exe.json")
+          $proc.CloseMainWindow() | Out-Null
+          Start-Sleep -Seconds 5
+          if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          "EVIDENCE=$evidence" | Out-File $env:GITHUB_ENV -Append
+
+      - name: Start isolated fake service and Flet Web UI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $sandbox = Join-Path $env:RUNNER_TEMP "ARSM Web UI 中文 空格"
+          if (Test-Path $sandbox) { Remove-Item $sandbox -Recurse -Force }
+          $server = Start-Process python -ArgumentList @("scripts/fake_asmr_server.py", "--port", "8765") -RedirectStandardOutput (Join-Path $env:EVIDENCE "server.out.log") -RedirectStandardError (Join-Path $env:EVIDENCE "server.err.log") -PassThru
+          $env:FLET_WEB_RENDERER = "html"
+          $ui = Start-Process python -ArgumentList @("scripts/run_ui_smoke.py", "--sandbox", $sandbox, "--rj", "RJ99999999", "--mirror", "http://127.0.0.1:8765", "--view", "web", "--host", "127.0.0.1", "--port", "8550") -RedirectStandardOutput (Join-Path $env:EVIDENCE "ui.out.log") -RedirectStandardError (Join-Path $env:EVIDENCE "ui.err.log") -PassThru
+          "SERVER_PID=$($server.Id)" | Out-File $env:GITHUB_ENV -Append
+          "UI_PID=$($ui.Id)" | Out-File $env:GITHUB_ENV -Append
+          "SANDBOX=$sandbox" | Out-File $env:GITHUB_ENV -Append
+          $deadline = (Get-Date).AddMinutes(3)
+          do {
+            try {
+              $r = Invoke-WebRequest "http://127.0.0.1:8550" -UseBasicParsing -TimeoutSec 3
+              if ($r.StatusCode -eq 200) { exit 0 }
+            } catch {}
+            Start-Sleep 2
+          } while ((Get-Date) -lt $deadline)
+          throw "Flet Web UI did not become ready"
+
+      - name: Click UI, download sample, and capture all pages
+        shell: pwsh
+        run: |
+          @'
+          import json
+          import os
+          import sqlite3
+          import time
+          from pathlib import Path
+          from playwright.sync_api import sync_playwright
+
+          sandbox = Path(os.environ["SANDBOX"])
+          evidence = Path(os.environ["EVIDENCE"])
+
+          def click_text(page, text):
+              for locator in (
+                  page.get_by_role("button", name=text, exact=True),
+                  page.get_by_text(text, exact=True),
+                  page.locator(f"text={text}"),
+              ):
+                  try:
+                      if locator.count() and locator.first.is_visible():
+                          locator.first.click(timeout=5000)
+                          return
+                  except Exception:
+                      pass
+              raise AssertionError(f"cannot click {text}")
+
+          def wait_complete(timeout=90):
+              deadline = time.time() + timeout
+              last = None
+              while time.time() < deadline:
+                  db = sandbox / "history.db"
+                  if db.exists():
+                      try:
+                          with sqlite3.connect(db) as conn:
+                              row = conn.execute("SELECT status FROM works WHERE rj_id='RJ99999999'").fetchone()
+                              last = row[0] if row else None
+                          if last in {"completed", "registered", "verified"}:
+                              return last
+                      except sqlite3.Error:
+                          pass
+                  time.sleep(0.5)
+              raise AssertionError(f"download did not complete; last={last}")
+
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True)
+              page = browser.new_page(viewport={"width": 1600, "height": 1000})
+              page.goto("http://127.0.0.1:8550", wait_until="networkidle", timeout=120000)
+              page.wait_for_timeout(4000)
+              page.keyboard.press("Tab")
+              text = page.locator("body").inner_text()
+              for label in ["下载中心", "资源库", "统计与成就", "系统工具", "设置", "全部暂停", "全部开始"]:
+                  assert label in text, label
+              page.screenshot(path=str(evidence / "01-download-center.png"), full_page=True)
+              click_text(page, "下载")
+              page.get_by_text("RJ99999999", exact=True).first.wait_for(timeout=30000)
+              page.screenshot(path=str(evidence / "02-download-started.png"), full_page=True)
+              status = wait_complete()
+              page.wait_for_timeout(3500)
+              page.screenshot(path=str(evidence / "03-download-completed.png"), full_page=True)
+              for index, label in enumerate(["资源库", "统计与成就", "系统工具", "设置"], start=4):
+                  click_text(page, label)
+                  page.wait_for_timeout(1200)
+                  page.screenshot(path=str(evidence / f"{index:02d}-{label}.png"), full_page=True)
+              (evidence / "body.txt").write_text(page.locator("body").inner_text(), encoding="utf-8")
+              (evidence / "dom.html").write_text(page.content(), encoding="utf-8")
+              browser.close()
+
+          files = [p for p in (sandbox / "Downloads").rglob("*") if p.is_file() and not p.name.endswith(".part")]
+          assert files, "no final file"
+          largest = max(files, key=lambda p: p.stat().st_size)
+          assert largest.stat().st_size == 1024 * 1024
+          assert not list(sandbox.rglob("*.part"))
+          with sqlite3.connect(sandbox / "history.db") as conn:
+              work = conn.execute("SELECT rj_id,status,local_path FROM works WHERE rj_id='RJ99999999'").fetchone()
+              downloads = conn.execute("SELECT status,downloaded_bytes,total_bytes,local_path FROM downloads WHERE rj_id='RJ99999999'").fetchall()
+          assert work and len(downloads) == 1
+          assert downloads[0][1] == downloads[0][2] == 1024 * 1024
+          result = {
+              "passed": True,
+              "status": status,
+              "work": work,
+              "downloads": downloads,
+              "file": str(largest),
+              "file_size": largest.stat().st_size,
+              "screenshots": sorted(p.name for p in evidence.glob("*.png")),
+          }
+          (evidence / "ui-result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+          print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+          '@ | Set-Content -Encoding utf8NoBOM "$env:RUNNER_TEMP/ui_reporter.py"
+          python "$env:RUNNER_TEMP/ui_reporter.py"
+
+      - name: Confirm runtime isolation
+        shell: pwsh
+        run: |
+          foreach ($path in @("history.db", "config.json", "queue.json")) {
+            if (Test-Path $path) { throw "runtime file leaked into repository: $path" }
+          }
+
+      - name: Stop background processes
+        if: always()
+        shell: pwsh
+        run: |
+          foreach ($name in @("UI_PID", "SERVER_PID")) {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            if ($value) { Stop-Process -Id ([int]$value) -Force -ErrorAction SilentlyContinue }
+          }
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: ARSM-Windows-UI-Reporter-Evidence
+          path: ${{ runner.temp }}/ARSM-UI-Reporter-Evidence
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Report result to temporary PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $resultFile = Join-Path $env:EVIDENCE "ui-result.json"
+          if (Test-Path $resultFile) {
+            $result = Get-Content $resultFile -Raw
+            $body = "## Windows UI 自动验收：PASS`n`n- Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID`n- Portable EXE：启动 15 秒未退出，ZIP SHA-256 已校验`n- Flet Web UI：实际点击下载及 5 个页面`n- 隔离样本：1 MiB 下载完成，无残留 .part`n- SQLite：works/downloads 状态和字节数一致`n- Evidence Artifact：ARSM-Windows-UI-Reporter-Evidence`n`n````json`n$result`n````"
+          } else {
+            $body = "## Windows UI 自动验收：FAIL`n`nRun: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID`n`n请查看 Job 日志和 ARSM-Windows-UI-Reporter-Evidence。"
+          }
+          gh pr comment $env:PR_NUMBER --repo $env:GITHUB_REPOSITORY --body $body
