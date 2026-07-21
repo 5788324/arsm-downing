@@ -207,7 +207,7 @@ class ExternalIntakeFilesystemTests(unittest.TestCase):
         mapped_track = target / "Mapped Title" / "audio" / "track01.mp3"
         self.assertTrue(mapped_track.exists())
         self.assertFalse((target / "audio" / "track01.mp3").exists())
-        self.assertEqual(self._db_paths(rj_id)["downloads"], [str(mapped_track.resolve())])
+        self.assertEqual(self._db_paths(rj_id)["downloads"], [str(mapped_track)])
 
     def test_successful_transaction_moves_files_and_updates_all_path_tables(self) -> None:
         rj_id = "RJ01000001"
@@ -225,10 +225,10 @@ class ExternalIntakeFilesystemTests(unittest.TestCase):
         self.assertTrue((target / "audio" / "track01.mp3").exists())
         self.assertFalse(Path(journal.rollback_path).exists())
         paths = self._db_paths(rj_id)
-        self.assertEqual(paths["work"], str(target.resolve()))
-        self.assertEqual(paths["items"], [str(target.resolve())])
-        self.assertEqual(paths["index"], [str(target.resolve())])
-        self.assertEqual(paths["downloads"], [str(target.resolve() / "audio" / "track01.mp3")])
+        self.assertEqual(paths["work"], str(target))
+        self.assertEqual(paths["items"], [str(target)])
+        self.assertEqual(paths["index"], [str(target)])
+        self.assertEqual(paths["downloads"], [str(target / "audio" / "track01.mp3")])
         persisted = load_journal(self.journal_dir / f"{request.transaction_id}.json")
         self.assertEqual(persisted.state, "completed")
 
@@ -413,7 +413,7 @@ class ExternalIntakeFilesystemTests(unittest.TestCase):
         self.assertEqual(interrupted.state, "db_updated")
         self.assertTrue(target.exists())
         self.assertTrue(Path(interrupted.rollback_path).exists())
-        self.assertEqual(self._db_paths(rj_id)["work"], str(target.resolve()))
+        self.assertEqual(self._db_paths(rj_id)["work"], str(target))
 
         recovered = ExternalIntakeSandboxExecutor(
             self.vault, self.journal_dir
