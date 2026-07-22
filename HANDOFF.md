@@ -1,45 +1,74 @@
-# ARSM Suite 交接说明
+# ARSM Suite 当前交接
 
 ## 当前版本
 
 ```text
-0.9.0-rc.1
-分支：chatgpt/takeover-20260718
+正式版本：v0.9.0-rc.1
+main：9f292e7947804f2e4d53290039501f79c6d1805d
+当前分支：chatgpt/optimize-o1-20260722
+当前阶段：O1 下载队列与调度优化
 ```
 
 ## 当前事实
 
-- 代码级接手、下载核心、资源库、迁移、External Intake 沙盒、Tools 维护和发布候选收口已完成。
-- portable tests：204 项。
-- 用户正式环境仍有 100+ completed/failed/paused/queued/downloading 混合任务。
-- 正式 `history.db`、下载目录和队列从未在开发环境中修改。
-- 真实目录迁移、External Intake execute 和 backlog 批量恢复仍等待维护窗口。
+- 主要功能开发已完成；
+- 正式 Windows Pre-release 已发布；
+- portable CI：Ubuntu / Windows 205/205 PASS；
+- 本地和远端旧分支已清理，只保留 `main` 后重新创建当前 O1 分支；
+- 正式 `history.db`、`E:\arsm` 和现有 100+ 任务未被开发环境修改；
+- Codex 正在补齐 Windows Desktop 和真实网络现场证据；
+- 优化总台账：GitHub Issue #5。
 
-## 下一位 AI/Codex 必做
+## 本轮 O1
 
-1. 从最新 Bundle/GitHub 分支创建全新 Windows checkout。
-2. 运行 `python scripts/release_check.py`。
-3. 运行 `.\scripts\build_windows.ps1`。
-4. 在全新目录解压 ZIP，不覆盖当前运行程序。
-5. 运行 `scripts/run_windows_acceptance.ps1`，生成证据目录。
-6. 使用小作品完成真实 ASMR.one 下载。
-7. 检查启动、关闭、暂停、恢复、打开目录、资源库搜索和 Tools 只读操作。
-8. 提交截图、日志、snapshot manifest、下载 SHA-256 和 UI 观察表。
+当前已开始：
 
-## 禁止直接执行
+- 下载队列任务级 Read Model；
+- 一次 SQL 聚合任务和文件状态；
+- 队列分页和状态过滤基础；
+- 批量 RJ 输入预览、去重和分类；
+- 单元测试。
+
+后续：
+
+- 接入 DownloadView；
+- 增加独立元数据并发池；
+- 审计实时进度 SQLite 写入频率；
+- Windows 实机验收；
+- 发布 `0.9.0-rc.2`。
+
+## Codex 当前任务
+
+按以下文档完成正式 Release 实机验收：
+
+[`docs/CODEX_WINDOWS_ACCEPTANCE_RC1.md`](docs/CODEX_WINDOWS_ACCEPTANCE_RC1.md)
+
+Codex只提交：
+
+- 报告；
+- 日志；
+- 截图；
+- 现场结论。
+
+不要在验收中直接修改代码。
+
+## 禁止事项
 
 ```text
-python tools/external_intake.py --execute --confirm-bulk
+External Intake 正式 Execute
 正式资源库批量迁移
-正式数据库 VACUUM
+正式 VACUUM
 正式 backlog execute
-覆盖当前仍在下载的程序目录
+T7 目录整理
+覆盖现有程序目录
+修改现有 100+ 任务路径或状态
 ```
 
-## 最终发布门槛
+## 下一位 AI 的入口
 
-- GitHub Linux/Windows CI 通过。
-- Windows release artifact 构建通过。
-- Windows/Codex 真实下载与 UI 验收通过。
-- 当前 100+ 混合任务自然清空或进入明确维护窗口。
-- 再决定是否开放 T7 小批量目录整理。
+1. 阅读 `CURRENT_STATE.md`；
+2. 阅读 `NEXT_TASK_ROADMAP.md`；
+3. 查看 Issue #5；
+4. 核对当前 PR 和 CI；
+5. 继续 O1，不扩大到托盘和设置热更新；
+6. Windows 专属行为交给 Codex。
