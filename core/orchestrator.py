@@ -39,6 +39,10 @@ class Orchestrator:
         self._global_inflight = 0
         self._global_inflight_lock = asyncio.Lock()
         self._per_rj_inflight: Dict[str, int] = {}
+        metadata_concurrency = max(
+            1, min(int(getattr(config, "metadata_concurrency", 2)), 8)
+        )
+        self._metadata_slots = asyncio.Semaphore(metadata_concurrency)
         self.download_queue: asyncio.Queue = asyncio.Queue()
         self._queued_work_data: Dict[str, dict] = {}  # RC7.7: rj_id→{meta,targets,root_path}
         self.queued_rj_ids: set = set()
@@ -199,6 +203,7 @@ class Orchestrator:
         logger.info(
             f"CONCURRENCY_STATE [{label}] "
             f"work_concurrency={self.config.work_concurrency} "
+            f"metadata_concurrency={getattr(self.config, 'metadata_concurrency', 2)} "
             f"file_concurrency={self.config.file_concurrency} "
             f"queued_rj_ids={len(self.queued_rj_ids)} "
             f"active_tasks={len(self.active_tasks)} "
@@ -300,7 +305,8 @@ class Orchestrator:
                         cached.get("title", rj_id), cached.get("circle", ""))
                     return
                 rj_num = self._numeric_rj_id(rj_id)
-                meta = await self.kernel.fetch(f"/api/workInfo/{rj_num}")
+                async with self._metadata_slots:
+                    meta = await self.kernel.fetch(f"/api/workInfo/{rj_num}")
                 if meta:
                     title = meta.get("title", rj_id)
                     circle = meta.get("circle", {}).get("name", "")
@@ -857,19 +863,26 @@ class Orchestrator:
     #  P1-1: Metadata cache integration
     # ══════════════════════════════════════════════
     async def _fetch_metadata_live(self, rj_id: str, rj_numeric: str):
-        meta_raw = await self.kernel.fetch(f"/api/workInfo/{rj_numeric}")
-        if not meta_raw:
-            return None, None
-        tracks_raw = await self.kernel.fetch(f"/api/tracks/{rj_numeric}?v=2")
-        if not tracks_raw:
-            return meta_raw, None
-        circle_name = meta_raw.get('circle', {}).get('name', 'Unknown')
-        self.db.set_metadata_cache(
-            rj_id=rj_id, title=meta_raw.get('title', ''),
-            circle=circle_name,
-            cover_url=meta_raw.get('mainCoverUrl', ''),
-            metadata_raw=meta_raw, tracks_raw=tracks_raw)
-        return meta_raw, tracks_raw
+        """Fetch one work's metadata through the independent metadata pool."""
+        async with self._metadata_slots:
+            logger.info(
+                "METADATA_SLOT_ACQUIRE rj=%s limit=%s",
+                rj_id,
+                getattr(self.config, "metadata_concurrency", 2),
+            )
+            meta_raw = await self.kernel.fetch(f"/api/workInfo/{rj_numeric}")
+            if not meta_raw:
+                return None, None
+            tracks_raw = await self.kernel.fetch(f"/api/tracks/{rj_numeric}?v=2")
+            if not tracks_raw:
+                return meta_raw, None
+            circle_name = meta_raw.get('circle', {}).get('name', 'Unknown')
+            self.db.set_metadata_cache(
+                rj_id=rj_id, title=meta_raw.get('title', ''),
+                circle=circle_name,
+                cover_url=meta_raw.get('mainCoverUrl', ''),
+                metadata_raw=meta_raw, tracks_raw=tracks_raw)
+            return meta_raw, tracks_raw
 
     # ══════════════════════════════════════════════
     #  P3.2: prepare_work — separate metadata from download

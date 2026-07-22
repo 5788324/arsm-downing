@@ -164,3 +164,28 @@ def test_cancel_records_actual_part_size(tmp_path: Path) -> None:
     assert row["status"] == "paused"
     assert row["downloaded_bytes"] == 3
     db.close()
+
+
+def test_chunk_progress_does_not_write_sqlite_per_chunk(tmp_path: Path) -> None:
+    response = FakeResponse(200, chunks=[b"a", b"b", b"c", b"d"])
+    orc, db = make_orchestrator(tmp_path, [response])
+    final = tmp_path / "track.mp3"
+    original = db.upsert_download
+    statuses = []
+
+    def recording_upsert(*args, **kwargs):
+        if len(args) >= 5:
+            statuses.append(args[4])
+        else:
+            statuses.append(kwargs.get("status"))
+        return original(*args, **kwargs)
+
+    db.upsert_download = recording_upsert
+    result = asyncio.run(orc.download_file(
+        make_track(final, 4), make_meta(), None, asyncio.Semaphore(1)))
+
+    assert result is True
+    assert statuses.count("downloading") == 1
+    assert statuses.count("completed") == 1
+    assert len(statuses) == 2
+    db.close()

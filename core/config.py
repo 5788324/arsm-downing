@@ -42,6 +42,7 @@ class ConfigManager:
 
         # ── Download concurrency (P2) ──
         self.work_concurrency: int = 1
+        self.metadata_concurrency: int = 2
         self.file_concurrency: int = 4
         self.auto_resume_on_start: bool = False  # RC7.9: default OFF
         self.chunk_size: int = 1048576  # 1 MB
@@ -119,6 +120,8 @@ class ConfigManager:
                     data.get('max_concurrent', 3))
                 config.work_concurrency = int(
                     data.get('work_concurrency', 1))
+                config.metadata_concurrency = int(
+                    data.get('metadata_concurrency', 2))
                 config.file_concurrency = int(
                     data.get('file_concurrency', 4))
                 config.chunk_size = int(
@@ -171,6 +174,7 @@ class ConfigManager:
             "external_quarantine_root": self.external_quarantine_root,
             "max_concurrent": self.max_concurrent,
             "work_concurrency": self.work_concurrency,
+            "metadata_concurrency": self.metadata_concurrency,
             "file_concurrency": self.file_concurrency,
             "chunk_size": self.chunk_size,
             "retry_count": self.retry_count,

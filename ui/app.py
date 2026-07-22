@@ -343,7 +343,9 @@ class AppController:
             self.views_container.content = self.views[idx]
             self.views_container.update()
 
-            if idx == 1:
+            if idx == 0:
+                self.views[0].refresh_queue_async()
+            elif idx == 1:
                 self.views[1].load_library()
             elif idx == 2:
                 self.views[2].load_data()

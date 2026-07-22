@@ -48,15 +48,11 @@ arsm-downing
 ### 当前主线
 
 ```text
-P1：UI 侧 LibraryVault 单例确认
-P2：RC9 下载状态只读诊断
-P3：资源库只读扫描 MVP
-P4：RC9 安全修复第一轮
-P4.5：library_items schema 决策
-P5：资源库索引入库
-P6：资源库管理 UI MVP
-P7：播放器 MVP
-P8：媒体库体验打磨
+正式版本：v0.9.0-rc.1
+当前阶段：0.9.0-rc.2 优化
+当前任务：O1 下载队列与调度优化（PR #6）
+后续：O2 系统托盘、O3 设置热更新、O4 资源库详情、O5 状态策略
+播放器：继续延期
 ```
 
 ### 当前技术栈
@@ -2761,4 +2757,55 @@ GitHub Linux/Windows CI
 Windows release artifact
 Codex Windows EXE、Flet Desktop 和真实 ASMR.one 小样本证据
 T7 继续等待维护窗口
+```
+
+
+---
+
+## 2026-07-22 O1 下载队列与调度优化
+
+### 执行者
+
+ChatGPT
+
+### 阶段
+
+```text
+0.9.0-rc.1 发布后优化
+PR #6 / O1
+```
+
+### 完成
+
+```text
+1. 下载队列 Read Model、聚合查询、独占状态、分页和过滤。
+2. DownloadView 接入 Snapshot，默认隐藏 completed。
+3. 批量 RJ 预览、去重、查重和确认后入队。
+4. metadata_concurrency 独立 Semaphore 和设置项。
+5. 实时 chunk 进度内存化，SQLite 保留生命周期检查点。
+6. 更新 README、CURRENT_STATE、路线图、HANDOFF、AI_WORKFLOW 和独立优化日志。
+```
+
+### 测试
+
+```text
+compileall：PASS
+本地隔离 pytest：220 passed
+PR #6 Ubuntu / Windows CI：待本轮提交后验证
+```
+
+### 正式环境影响
+
+```text
+正式 DB：未访问
+E:\arsm：未访问
+现有 100+ 任务：未访问
+数据库 schema：未改变
+旧 local_path / .part：未改变
+```
+
+### 下一步
+
+```text
+PR CI -> O1 Windows Artifact -> Codex 实机验收 -> 合并 -> v0.9.0-rc.2
 ```

@@ -19,6 +19,7 @@
     "dns": "1.1.1.1",
     "achievements": [],
     "work_concurrency": 1,
+    "metadata_concurrency": 2,
     "file_concurrency": 4,
     "chunk_size": 1048576,
     "retry_count": 5,

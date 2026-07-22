@@ -3,7 +3,6 @@ import logging
 import os
 import platform
 import subprocess
-import re
 import json
 import time
 from typing import Dict, Any, Optional
@@ -12,9 +11,15 @@ from pathlib import Path
 from ui.theme import Styles, ACCENT_PRIMARY, ACCENT_SECONDARY, SUCCESS, WARNING, ERROR, BG_SURFACE_LIGHT
 from core.status import WorkStatus
 from core.orchestrator import Orchestrator
+from core.download_queue import (
+    BatchRjPreview,
+    DownloadQueuePage,
+    DownloadQueueQueryService,
+    DownloadTaskSnapshot,
+)
+from core.paths import app_path
 
-RJ_PATTERN = re.compile(r"(?<!\d)(?:RJ)?(\d{6,8})(?!\d)", re.IGNORECASE)
-QUEUE_FILE = Path("queue.json")
+QUEUE_FILE = app_path("queue.json")
 
 
 class DownloadView(ft.Container):
@@ -29,88 +34,162 @@ class DownloadView(ft.Container):
         self.expand = True
         self.padding = 10
 
+        self.queue_query = DownloadQueueQueryService(self.app_controller.db)
+        self.queue_filter = "working"
+        self.queue_page = 1
+        self.queue_page_size = 24
+        self.queue_model: Optional[DownloadQueuePage] = None
+        self._visible_rj_ids: set[str] = set()
+        self._transient_rj_ids: list[str] = []
+        self._queue_refreshing = False
+        self.active_downloads: Dict[str, Dict[str, Any]] = {}
+
         self.rj_input = ft.TextField(
-            label="\u8f93\u5165 RJ \u53f7 (\u4f8b\u5982: RJ01603020)",
-            hint_text="\u7c98\u8d34\u5355\u4e2a\u6216\u591a\u4e2aRJ\u53f7\uff08\u7a7a\u683c\u5206\u9694\uff09\u5e76\u6309\u56de\u8f66...",
+            label="输入 RJ 号（例如 RJ01603020）",
+            hint_text="粘贴一个或多个 RJ 号；支持空格、换行、逗号和分号",
             border_color=ACCENT_PRIMARY,
             focused_border_color=SUCCESS,
             border_radius=10,
             expand=True,
-            on_submit=self.on_download_submit
+            on_submit=self.on_download_submit,
         )
-
         self.download_btn = ft.ElevatedButton(
-            "\u4e0b\u8f7d",
+            "预览并添加",
             icon=ft.Icons.DOWNLOAD,
             style=ft.ButtonStyle(
-                bgcolor=ACCENT_PRIMARY, color="white",
+                bgcolor=ACCENT_PRIMARY,
+                color="white",
                 shape=ft.RoundedRectangleBorder(radius=10),
-                padding=ft.padding.all(20)
+                padding=ft.padding.all(20),
             ),
-            on_click=self.on_download_submit
+            on_click=self.on_download_submit,
         )
-
         self.file_picker = ft.FilePicker(on_result=self.on_file_selected)
         self.batch_btn = ft.ElevatedButton(
-            "\u6279\u91cf\u5bfc\u5165\u6587\u4ef6", icon=ft.Icons.FOLDER_OPEN,
+            "批量导入文件",
+            icon=ft.Icons.FOLDER_OPEN,
             style=ft.ButtonStyle(
-                bgcolor=BG_SURFACE_LIGHT, color="white",
+                bgcolor=BG_SURFACE_LIGHT,
+                color="white",
                 shape=ft.RoundedRectangleBorder(radius=10),
-                padding=ft.padding.all(20)
+                padding=ft.padding.all(20),
             ),
             on_click=lambda _: self.file_picker.pick_files(
-                allowed_extensions=["txt"])
+                allowed_extensions=["txt"]
+            ),
         )
-
         self.btn_pause_all = ft.ElevatedButton(
-            "\u5168\u90e8\u6682\u505c", icon=ft.Icons.PAUSE_CIRCLE,
+            "全部暂停",
+            icon=ft.Icons.PAUSE_CIRCLE,
             style=ft.ButtonStyle(
-                bgcolor=WARNING, color="white",
-                shape=ft.RoundedRectangleBorder(radius=10)),
-            on_click=lambda e: self._batch_pause()
+                bgcolor=WARNING,
+                color="white",
+                shape=ft.RoundedRectangleBorder(radius=10),
+            ),
+            on_click=lambda _e: self._batch_pause(),
         )
         self.btn_resume_all = ft.ElevatedButton(
-            "\u5168\u90e8\u5f00\u59cb", icon=ft.Icons.PLAY_CIRCLE,
+            "全部开始",
+            icon=ft.Icons.PLAY_CIRCLE,
             style=ft.ButtonStyle(
-                bgcolor=SUCCESS, color="white",
-                shape=ft.RoundedRectangleBorder(radius=10)),
-            on_click=lambda e: self._batch_resume()
+                bgcolor=SUCCESS,
+                color="white",
+                shape=ft.RoundedRectangleBorder(radius=10),
+            ),
+            on_click=lambda _e: self._batch_resume(),
         )
 
+        self.queue_filter_dropdown = ft.Dropdown(
+            width=150,
+            value="working",
+            options=[
+                ft.dropdown.Option(key="working", text="活动任务"),
+                ft.dropdown.Option(key="active", text="下载中"),
+                ft.dropdown.Option(key="queued", text="等待中"),
+                ft.dropdown.Option(key="paused", text="已暂停"),
+                ft.dropdown.Option(key="failed", text="失败"),
+                ft.dropdown.Option(key="completed", text="已完成"),
+                ft.dropdown.Option(key="all", text="全部"),
+            ],
+            on_change=self._on_filter_change,
+        )
         self.queue_summary = ft.Text("", size=12, color="grey")
+        self.queue_page_label = ft.Text("第 1 / 1 页", size=12, color="grey")
+        self.queue_prev_btn = ft.IconButton(
+            icon=ft.Icons.CHEVRON_LEFT,
+            tooltip="上一页",
+            on_click=self._previous_page,
+        )
+        self.queue_next_btn = ft.IconButton(
+            icon=ft.Icons.CHEVRON_RIGHT,
+            tooltip="下一页",
+            on_click=self._next_page,
+        )
+        self.queue_refresh_btn = ft.IconButton(
+            icon=ft.Icons.REFRESH,
+            tooltip="刷新队列",
+            on_click=lambda _e: self.refresh_queue_async(),
+        )
         self.queue_list = ft.ListView(
             expand=True,
             spacing=8,
             auto_scroll=False,
         )
-        self.active_downloads: Dict[str, Dict[str, Any]] = {}
 
-        controls_row = ft.Row([
-            self.btn_pause_all,
-            self.btn_resume_all,
-        ], spacing=12)
-
-        self.content = ft.Column([
-            self.file_picker,
-            ft.Text("\u4e0b\u8f7d\u4e2d\u5fc3", size=32, weight=ft.FontWeight.BOLD),
-            ft.Row([self.rj_input, self.download_btn, self.batch_btn],
-                   alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            controls_row,
-            ft.Divider(height=6, color="transparent"),
-            ft.Row([
-                ft.Text("\u5f53\u524d\u4e0b\u8f7d\u961f\u5217", size=18, weight=ft.FontWeight.W_500,
-                        color=ACCENT_PRIMARY),
+        controls_row = ft.Row(
+            [
+                self.btn_pause_all,
+                self.btn_resume_all,
                 ft.Container(expand=True),
-                self.queue_summary,
-            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            self.queue_list,
-        ], expand=True, spacing=6)
+                ft.Text("筛选", size=12, color="grey"),
+                self.queue_filter_dropdown,
+                self.queue_refresh_btn,
+            ],
+            spacing=12,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+        pagination_row = ft.Row(
+            [
+                self.queue_prev_btn,
+                self.queue_page_label,
+                self.queue_next_btn,
+            ],
+            alignment=ft.MainAxisAlignment.CENTER,
+            spacing=4,
+        )
+
+        self.content = ft.Column(
+            [
+                self.file_picker,
+                ft.Text("下载中心", size=32, weight=ft.FontWeight.BOLD),
+                ft.Row(
+                    [self.rj_input, self.download_btn, self.batch_btn],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                ),
+                controls_row,
+                ft.Divider(height=6, color="transparent"),
+                ft.Row(
+                    [
+                        ft.Text(
+                            "下载队列",
+                            size=18,
+                            weight=ft.FontWeight.W_500,
+                            color=ACCENT_PRIMARY,
+                        ),
+                        ft.Container(expand=True),
+                        self.queue_summary,
+                    ],
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                self.queue_list,
+                pagination_row,
+            ],
+            expand=True,
+            spacing=6,
+        )
 
         self.load_queue()
 
-    # ══════════════════════════════════════════════
-    #  Queue persistence
-    # ══════════════════════════════════════════════
     def save_queue(self):
         try:
             dump_data = {}
@@ -125,61 +204,188 @@ class DownloadView(ft.Container):
             pass
 
     def load_queue(self):
-        """Restore download queue from DB-derived state.
-
-        Reads active RJs from DB, derives card state. Old queue.json track
-        progress is discarded to prevent fake progress bars on queued/paused tasks.
-        """
+        """Load one paged SQLite read model without per-card DB queries."""
         try:
-            db = self.app_controller.db
-            pending_rjs = db.get_pending_rj_ids()
-            loaded = 0
+            model = self.queue_query.fetch_page(
+                status_filter=self.queue_filter,
+                page=self.queue_page,
+                page_size=self.queue_page_size,
+            )
+            self._apply_queue_page(model)
+        except Exception as exc:
+            logging.error("load_queue failed: %s", exc, exc_info=True)
+            self.app_controller.show_snack(f"队列读取失败: {exc}")
 
-            for rj_id in sorted(pending_rjs):
-                derived = self.derive_download_card_state(rj_id)
-                if not derived["visible"]:
-                    continue
+    def refresh_queue_async(self, *, reset_page: bool = False):
+        if reset_page:
+            self.queue_page = 1
+        if self._queue_refreshing:
+            return
+        self._queue_refreshing = True
+        self.queue_refresh_btn.disabled = True
+        try:
+            if self.queue_refresh_btn.page:
+                self.queue_refresh_btn.update()
+        except Exception:
+            pass
 
-                # Restore per-file progress from SQLite first. queue.json is only a
-                # cosmetic fallback for very old databases.
-                tracks = {}
-                try:
-                    for row in db.get_downloads_by_rj(rj_id):
-                        tracks[row["track_title"]] = {
-                            "downloaded": row["downloaded_bytes"] or 0,
-                            "total": row["total_bytes"] or 0,
-                            "status": row["status"],
-                        }
-                except Exception:
-                    tracks = {}
+        status_filter = self.queue_filter
+        page = self.queue_page
+        page_size = self.queue_page_size
 
-                if not tracks and derived["enum"] in (WorkStatus.PAUSED, WorkStatus.FAILED):
-                    if QUEUE_FILE.exists():
-                        try:
-                            with open(QUEUE_FILE, "r", encoding="utf-8") as f:
-                                saved = json.load(f)
-                            for key, data in saved.items():
-                                norm = f"RJ{key}" if not key.upper().startswith("RJ") else key
-                                if norm == rj_id:
-                                    tracks = data.get("tracks", {})
-                                    break
-                        except Exception:
-                            pass
+        def _query():
+            try:
+                return (
+                    True,
+                    self.queue_query.fetch_page(
+                        status_filter=status_filter,
+                        page=page,
+                        page_size=page_size,
+                    ),
+                )
+            except Exception as exc:
+                logging.error(
+                    "refresh_queue_async failed: %s", exc, exc_info=True
+                )
+                return False, exc
 
-                self.active_downloads[rj_id] = {
-                    "status": derived["status"],
-                    "tracks": tracks,
-                    "control": None, "last_time": time.time(),
-                    "last_bytes": 0, "cache_hit": False,
-                    "_derived_enum": derived["enum"],
-                }
-                loaded += 1
+        def _render(result):
+            self._queue_refreshing = False
+            self.queue_refresh_btn.disabled = False
+            ok, payload = result
+            if ok:
+                self._apply_queue_page(payload)
+            else:
+                self.app_controller.show_snack(f"队列读取失败: {payload}")
+            try:
+                if self.queue_refresh_btn.page:
+                    self.queue_refresh_btn.update()
+            except Exception:
+                pass
 
-            self._refresh_queue()
-            logging.info(
-                f"load_queue: loaded={loaded} total_pending={len(pending_rjs)}")
-        except Exception as e:
-            logging.error(f"load_queue failed: {e}")
+        self.app_controller.run_blocking(
+            _query,
+            _render,
+            action_label="刷新下载队列",
+        )
+
+    def _apply_queue_page(self, model: DownloadQueuePage):
+        self.queue_model = model
+        self.queue_page = model.page
+        model_ids = {item.rj_id for item in model.items}
+        self._transient_rj_ids = [
+            rj_id for rj_id in self._transient_rj_ids
+            if rj_id not in model_ids
+        ]
+
+        visible_ids = [item.rj_id for item in model.items]
+        if self.queue_filter == "working" and model.page == 1:
+            remaining = max(0, model.page_size - len(visible_ids))
+            visible_ids.extend(self._transient_rj_ids[:remaining])
+        self._visible_rj_ids = set(visible_ids)
+        for rj_id, data in self.active_downloads.items():
+            if rj_id not in self._visible_rj_ids:
+                for key in (
+                    "control", "title_text", "status_text",
+                    "speed_text", "prog_bar",
+                ):
+                    data.pop(key, None)
+
+        snapshots = {item.rj_id: item for item in model.items}
+        for rj_id in visible_ids:
+            data = self.active_downloads.setdefault(
+                rj_id,
+                {
+                    "status": "队列中",
+                    "tracks": {},
+                    "control": None,
+                    "last_time": time.time(),
+                    "last_bytes": 0,
+                    "cache_hit": False,
+                },
+            )
+            snapshot = snapshots.get(rj_id)
+            if snapshot is not None:
+                data["snapshot"] = snapshot
+                data["status"] = snapshot.ui_status
+                data["_derived_enum"] = {
+                    "active": WorkStatus.DOWNLOADING,
+                    "queued": WorkStatus.QUEUED,
+                    "paused": WorkStatus.PAUSED,
+                    "failed": WorkStatus.FAILED,
+                    "completed": WorkStatus.COMPLETED,
+                }.get(snapshot.queue_state, WorkStatus.normalize(snapshot.work_status))
+
+        self._render_visible_queue()
+
+    def _render_visible_queue(self):
+        self.queue_list.controls.clear()
+        ordered_ids = []
+        if self.queue_model is not None:
+            ordered_ids.extend(
+                item.rj_id for item in self.queue_model.items
+                if item.rj_id in self._visible_rj_ids
+            )
+        ordered_ids.extend(
+            rj_id for rj_id in self._transient_rj_ids
+            if rj_id in self._visible_rj_ids and rj_id not in ordered_ids
+        )
+        for rj_id in ordered_ids:
+            if rj_id in self.active_downloads:
+                self.build_queue_item(rj_id, update_list=False)
+        if not ordered_ids:
+            self.queue_list.controls.append(
+                ft.Container(
+                    content=ft.Text(
+                        "当前筛选没有任务",
+                        color="grey",
+                        text_align=ft.TextAlign.CENTER,
+                    ),
+                    alignment=ft.alignment.center,
+                    padding=30,
+                )
+            )
+        self._update_queue_summary()
+        self._update_pagination_controls()
+        try:
+            if self.queue_list.page:
+                self.queue_list.update()
+        except Exception:
+            pass
+
+    def _on_filter_change(self, event):
+        value = getattr(event.control, "value", None) or "working"
+        self.queue_filter = value
+        self.refresh_queue_async(reset_page=True)
+
+    def _previous_page(self, _event):
+        if self.queue_page <= 1:
+            return
+        self.queue_page -= 1
+        self.refresh_queue_async()
+
+    def _next_page(self, _event):
+        page_count = self.queue_model.page_count if self.queue_model else 1
+        if self.queue_page >= page_count:
+            return
+        self.queue_page += 1
+        self.refresh_queue_async()
+
+    def _update_pagination_controls(self):
+        page_count = self.queue_model.page_count if self.queue_model else 1
+        self.queue_page_label.value = f"第 {self.queue_page} / {page_count} 页"
+        self.queue_prev_btn.disabled = self.queue_page <= 1
+        self.queue_next_btn.disabled = self.queue_page >= page_count
+        for control in (
+            self.queue_page_label,
+            self.queue_prev_btn,
+            self.queue_next_btn,
+        ):
+            try:
+                if control.page:
+                    control.update()
+            except Exception:
+                pass
 
     def _batch_pause(self):
         self.app_controller.pause_all_downloads()
@@ -188,33 +394,125 @@ class DownloadView(ft.Container):
         self.app_controller.resume_all_downloads()
 
     def process_input(self, text: str):
-        codes = []
-        for match in RJ_PATTERN.finditer(text):
-            code = match.group(1)
-            if code and code not in codes:
-                codes.append(code)
+        """Preview pasted IDs before any queue or filesystem side effect."""
+        active_ids = set(self.active_downloads)
+        try:
+            active_ids.update(self.app_controller.db.get_pending_rj_ids())
+        except Exception:
+            pass
+        orchestrator = getattr(self.app_controller, "orc", None)
+        if orchestrator is not None:
+            active_ids.update(getattr(orchestrator, "active_tasks", {}).keys())
+            active_ids.update(getattr(orchestrator, "queued_rj_ids", set()))
 
-        for rj_num in codes:
-            rj_id = f"RJ{rj_num}"
+        try:
+            preview = self.queue_query.preview_input(
+                text,
+                active_rj_ids=active_ids,
+            )
+        except Exception as exc:
+            logging.error("RJ preview failed: %s", exc, exc_info=True)
+            self.app_controller.show_snack(f"RJ 预览失败: {exc}")
+            return
 
-            # Check if work already has active/downloaded content
-            ws = self.app_controller.db.get_works_status(rj_id)
-            if ws and ws not in ("prepared", "metadata_failed"):
-                # completed, verified, external, partial, indexed — has content or is in progress
-                self.app_controller.show_snack(f"{rj_id} 已存在 (状态: {ws})")
-                continue
+        if not preview.ready and not preview.requires_confirmation:
+            self.app_controller.show_snack("没有识别到有效 RJ 号")
+            return
+        if not preview.requires_confirmation and len(preview.ready) == 1:
+            self._enqueue_preview(preview)
+            return
+        self._show_batch_preview(preview)
 
-            if rj_id not in self.active_downloads or \
-               self.active_downloads[rj_id]["status"] == "已完成":
-                self.active_downloads[rj_id] = {
-                    "status": "队列中",
-                    "tracks": {}, "control": None,
-                    "last_time": time.time(), "last_bytes": 0,
-                    "cache_hit": False
-                }
-                self.build_queue_item(rj_id)
-                self.app_controller.start_download(rj_id)
+    @staticmethod
+    def _preview_group(label: str, values, limit: int = 12) -> str:
+        values = list(values)
+        if not values:
+            return f"{label}：0"
+        shown = "、".join(values[:limit])
+        suffix = f"，另有 {len(values) - limit} 项" if len(values) > limit else ""
+        return f"{label}：{len(values)}\n{shown}{suffix}"
+
+    def _show_batch_preview(self, preview: BatchRjPreview):
+        content = "\n\n".join(
+            [
+                self._preview_group("可添加", preview.ready),
+                self._preview_group("输入内重复", preview.duplicate_input),
+                self._preview_group("格式无效", preview.invalid_tokens),
+                self._preview_group("已在活动队列", preview.already_active),
+                self._preview_group("资源库或历史中已存在", preview.already_known),
+            ]
+        )
+        actions = [
+            ft.TextButton("取消", on_click=lambda _e: self._close_batch_preview()),
+        ]
+        if preview.ready:
+            actions.append(
+                ft.TextButton(
+                    f"添加 {len(preview.ready)} 项",
+                    on_click=lambda _e, p=preview: self._confirm_batch_preview(p),
+                )
+            )
+        page = self.app_controller.page
+        page.dialog = ft.AlertDialog(
+            title=ft.Text("批量 RJ 预览"),
+            content=ft.Container(
+                content=ft.Text(content, selectable=True),
+                width=620,
+            ),
+            actions=actions,
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        page.dialog.open = True
+        page.update()
+
+    def _close_batch_preview(self):
+        page = self.app_controller.page
+        if page.dialog:
+            page.dialog.open = False
+            page.update()
+
+    def _confirm_batch_preview(self, preview: BatchRjPreview):
+        self._close_batch_preview()
+        self._enqueue_preview(preview)
+
+    def _enqueue_preview(self, preview: BatchRjPreview):
+        rj_ids = list(preview.ready)
+        if not rj_ids:
+            self.app_controller.show_snack("没有可添加的任务")
+            return
+
+        self.queue_filter = "working"
+        self.queue_page = 1
+        self.queue_filter_dropdown.value = "working"
+        self._transient_rj_ids = list(dict.fromkeys(
+            [*rj_ids, *self._transient_rj_ids]
+        ))
+        for rj_id in rj_ids:
+            self.active_downloads[rj_id] = {
+                "status": "准备中...",
+                "tracks": {},
+                "control": None,
+                "last_time": time.time(),
+                "last_bytes": 0,
+                "cache_hit": False,
+            }
+            self.app_controller.start_download(rj_id)
+
+        base_ids = []
+        if self.queue_model is not None:
+            base_ids = [item.rj_id for item in self.queue_model.items]
+        remaining = max(0, self.queue_page_size - len(base_ids))
+        self._visible_rj_ids = set(
+            [*base_ids, *self._transient_rj_ids[:remaining]]
+        )
+        self._render_visible_queue()
         self.save_queue()
+        try:
+            if self.queue_filter_dropdown.page:
+                self.queue_filter_dropdown.update()
+        except Exception:
+            pass
+        self.app_controller.show_snack(f"已提交 {len(rj_ids)} 个任务")
 
     def on_download_submit(self, e):
         val = self.rj_input.value.strip()
@@ -232,7 +530,6 @@ class DownloadView(ft.Container):
             with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
             self.process_input(content)
-            self.app_controller.show_snack("成功从文件导入任务！")
         except Exception as err:
             self.app_controller.show_snack(f"读取文件失败: {err}")
 
@@ -363,46 +660,8 @@ class DownloadView(ft.Container):
         return result
 
     def _refresh_queue(self):
-        """Rebuild queue list from DB-derived state. Reads only — no DB writes."""
-        now = time.time()
-        # Remove items that completed > 3 seconds ago (Flet-thread-safe)
-        to_remove = []
-        for rj_id, data in self.active_downloads.items():
-            if data.get("_completed_at") and now - data["_completed_at"] > 3:
-                to_remove.append(rj_id)
-        for rj_id in to_remove:
-            data = self.active_downloads.pop(rj_id, None)
-            if data and data.get("control") and data["control"] in self.queue_list.controls:
-                self.queue_list.controls.remove(data["control"])
-
-        visible_items = []
-        self.queue_list.controls.clear()
-        for rj_id in list(self.active_downloads.keys()):
-            try:
-                derived = self.derive_download_card_state(rj_id)
-
-                data = self.active_downloads.get(rj_id)
-                if data:
-                    data["status"] = derived["status"]
-                    data["_derived_enum"] = derived["enum"]
-
-                if not derived["visible"]:
-                    self.active_downloads.pop(rj_id, None)
-                    continue
-
-                visible_items.append(rj_id)
-            except Exception as e:
-                logging.warning(f"_refresh_queue skip {rj_id}: {e}")
-
-        for rj_id in sorted(visible_items, key=self._queue_sort_key):
-            self.build_queue_item(rj_id, update_list=False)
-
-        self._update_queue_summary(visible_items)
-        try:
-            if self.queue_list.page:
-                self.queue_list.update()
-        except Exception:
-            pass
+        """Compatibility wrapper for tests and legacy callers."""
+        self.load_queue()
 
     def _queue_sort_key(self, rj_id: str):
         data = self.active_downloads.get(rj_id, {})
@@ -422,19 +681,23 @@ class DownloadView(ft.Container):
         current_track = 0 if data.get("current_track") else 1
         return (priority, current_track, -progress, rj_id)
 
-    def _update_queue_summary(self, visible_items):
-        counts = {"downloading": 0, "queued": 0, "paused": 0, "failed": 0}
-        for rj_id in visible_items:
-            ns = self.normalize_status(self.active_downloads.get(rj_id, {}).get("status", ""))
-            if ns in counts:
-                counts[ns] += 1
-        self.queue_summary.value = (
-            f"\u663e\u793a {len(visible_items)} \u9879"
-            f"  \u4e0b\u8f7d\u4e2d {counts['downloading']}"
-            f"  \u6392\u961f {counts['queued']}"
-            f"  \u6682\u505c {counts['paused']}"
-            f"  \u5931\u8d25 {counts['failed']}"
-        )
+    def _update_queue_summary(self):
+        model = self.queue_model
+        transient_count = len(self._transient_rj_ids)
+        if model is None:
+            self.queue_summary.value = f"显示 {len(self._visible_rj_ids)} 项"
+        else:
+            summary = model.summary
+            visible_total = model.total_items + transient_count
+            all_total = summary.total_tasks + transient_count
+            self.queue_summary.value = (
+                f"当前筛选 {visible_total} / 全部 {all_total}"
+                f"  下载中 {summary.active_tasks}"
+                f"  排队 {summary.queued_tasks + transient_count}"
+                f"  暂停 {summary.paused_tasks}"
+                f"  失败 {summary.failed_tasks}"
+                f"  完成 {summary.completed_tasks}"
+            )
         try:
             if self.queue_summary.page:
                 self.queue_summary.update()
@@ -445,23 +708,39 @@ class DownloadView(ft.Container):
         tracks = item_data.get("tracks", {})
         total = sum(t.get("total", 0) for t in tracks.values())
         downloaded = sum(t.get("downloaded", 0) for t in tracks.values())
-        if total <= 0:
-            return 0.0
-        return max(0.0, min(1.0, downloaded / total))
+        if total > 0:
+            return max(0.0, min(1.0, downloaded / total))
+        snapshot = item_data.get("snapshot")
+        if isinstance(snapshot, DownloadTaskSnapshot):
+            return snapshot.percent / 100.0
+        return 0.0
 
     def _find_work_dir(self, rj_id: str) -> Optional[Path]:
+        data = self.active_downloads.get(rj_id, {})
+        snapshot = data.get("snapshot")
+        if isinstance(snapshot, DownloadTaskSnapshot) and snapshot.local_path:
+            return Path(snapshot.local_path)
         try:
-            rows = self.app_controller.db.search(rj_id, limit=10)
-            for row in rows:
-                if row["rj_id"] == rj_id and row["local_path"]:
-                    return Path(row["local_path"])
+            work = self.app_controller.db.get_work(rj_id)
+            if work and work["local_path"]:
+                return Path(work["local_path"])
         except Exception:
             pass
         return None
 
-    def _resolve_cover_source(self, rj_id: str) -> Optional[str]:
-        # 1. Local disk scan (best quality, no proxy)
-        work_dir = self._find_work_dir(rj_id)
+    def _resolve_cover_source(
+        self,
+        rj_id: str,
+        item_data: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        data = item_data or self.active_downloads.get(rj_id, {})
+        snapshot = data.get("snapshot")
+        work_dir = None
+        if isinstance(snapshot, DownloadTaskSnapshot) and snapshot.local_path:
+            work_dir = Path(snapshot.local_path)
+        else:
+            work_dir = self._find_work_dir(rj_id)
+
         if work_dir and work_dir.exists():
             for name in self.COVER_CANDIDATES:
                 candidate = work_dir / name
@@ -469,24 +748,39 @@ class DownloadView(ft.Container):
                     return str(candidate)
             try:
                 for child in work_dir.iterdir():
-                    if child.is_file() and child.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}:
+                    if child.is_file() and child.suffix.lower() in {
+                        ".jpg", ".jpeg", ".png", ".webp"
+                    }:
                         lower_name = child.name.lower()
-                        if "cover" in lower_name or "package" in lower_name or "main" in lower_name:
+                        if any(key in lower_name for key in (
+                            "cover", "package", "main"
+                        )):
                             return str(child)
             except Exception:
                 pass
 
-        # 2. Metadata cache (works for new downloads with no local files yet)
+        if isinstance(snapshot, DownloadTaskSnapshot) and snapshot.cover_url:
+            return snapshot.cover_url
         try:
-            cached = self.app_controller.db.get_metadata_cache(rj_id, allow_stale=True)
+            cached = self.app_controller.db.get_metadata_cache(
+                rj_id,
+                allow_stale=True,
+            )
             if cached and cached.get("cover_url"):
                 return cached["cover_url"]
         except Exception:
             pass
         return None
 
-    def _build_cover(self, rj_id: str, width: int = 72, height: int = 72):
-        src = self._resolve_cover_source(rj_id)
+    def _build_cover(
+        self,
+        rj_id: str,
+        *,
+        item_data: Optional[Dict[str, Any]] = None,
+        width: int = 72,
+        height: int = 72,
+    ):
+        src = self._resolve_cover_source(rj_id, item_data=item_data)
         if src:
             return ft.Container(
                 width=width,
@@ -508,15 +802,43 @@ class DownloadView(ft.Container):
             border_radius=12,
             bgcolor=ft.Colors.with_opacity(0.55, BG_SURFACE_LIGHT),
             alignment=ft.alignment.center,
-            content=ft.Icon(ft.Icons.ALBUM, color=ACCENT_PRIMARY, size=min(width, height) // 2),
+            content=ft.Icon(
+                ft.Icons.ALBUM,
+                color=ACCENT_PRIMARY,
+                size=min(width, height) // 2,
+            ),
         )
 
     def build_queue_item(self, rj_id: str, update_list: bool = True):
         item_data = self.active_downloads[rj_id]
         status = item_data["status"]
         ns = self.normalize_status(status)
+        snapshot = item_data.get("snapshot")
 
-        title_text = ft.Text(rj_id, weight=ft.FontWeight.BOLD, size=20, selectable=True)
+        display_title = rj_id
+        circle = ""
+        if isinstance(snapshot, DownloadTaskSnapshot):
+            display_title = snapshot.title or rj_id
+            circle = snapshot.circle or ""
+        title_text = ft.Text(
+            display_title,
+            weight=ft.FontWeight.BOLD,
+            size=18,
+            selectable=True,
+            max_lines=1,
+            overflow=ft.TextOverflow.ELLIPSIS,
+        )
+        identity_parts = [rj_id]
+        if circle:
+            identity_parts.append(circle)
+        identity_text = ft.Text(
+            " · ".join(identity_parts),
+            size=11,
+            color="grey",
+            selectable=True,
+            max_lines=1,
+            overflow=ft.TextOverflow.ELLIPSIS,
+        )
 
         cur_track = item_data.get("current_track", "")
         cur_title = ft.Text(
@@ -545,6 +867,8 @@ class DownloadView(ft.Container):
 
         prog = self._get_progress_value(item_data)
         total = sum(t.get("total", 0) for t in item_data.get("tracks", {}).values())
+        if total <= 0 and isinstance(snapshot, DownloadTaskSnapshot):
+            total = snapshot.total_bytes
         if self._is_terminal(status):
             prog = 1.0
         elif ns in ("queued", "resuming") and total <= 0:
@@ -554,7 +878,7 @@ class DownloadView(ft.Container):
             color=SUCCESS if (prog or 0) >= 1.0 else ACCENT_PRIMARY)
 
         actions = []
-        if ns == "metadata_failed" or ns == "no_pending":
+        if ns in ("metadata_failed", "no_pending", "prepared"):
             btn_retry = ft.IconButton(
                 icon=ft.Icons.REFRESH, icon_color=ACCENT_PRIMARY,
                 tooltip="\u91cd\u65b0\u51c6\u5907",
@@ -669,13 +993,20 @@ class DownloadView(ft.Container):
 
         main_info = ft.Column([
             title_text,
+            identity_text,
+            cur_title,
             *track_items,
         ], spacing=2, expand=True)
 
         tile = ft.Container(
             on_click=lambda e, r=rj_id: self.show_detailed_progress(r),
             content=ft.Row([
-                self._build_cover(rj_id, width=52, height=52),
+                self._build_cover(
+                    rj_id,
+                    item_data=item_data,
+                    width=52,
+                    height=52,
+                ),
                 ft.Container(content=main_info, expand=True, padding=ft.padding.only(left=10, right=10)),
                 actions_row,
             ], vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=6),
@@ -708,6 +1039,9 @@ class DownloadView(ft.Container):
     #  Status updates
     # ══════════════════════════════════════════════
     def update_work_status(self, rj_id: str, status: str):
+        if "already_queued" in status.lower() or "already_running" in status.lower():
+            return
+
         status_map = {
             "Preparing": "准备中...",
             "Prepared": "已就绪",
@@ -717,121 +1051,70 @@ class DownloadView(ft.Container):
             "Fetching track list...": "获取文件列表...",
             "Failed to fetch tracks": "获取文件列表失败",
             "No tracks found": "未找到文件",
-            "Queued": "队列排队中",
-            "Queued (cached)": "队列排队中 [缓存]",
+            "Queued": "队列中",
+            "Queued (cached)": "队列中 [缓存]",
             "Downloading": "下载中",
             "Completed": "已完成",
             "Resuming...": "恢复中...",
             "No pending tracks": "无可恢复文件",
         }
-
-        # RC4: metadata_failed detection
-        is_meta_fail = (status.startswith("Metadata failed") or
-                        "metadata_failed" in status.lower())
-
-        # RC7.3: already_queued / already_running must never display as status
-        if "already_queued" in status.lower():
-            return  # silently ignore, toast is handled by caller
-        if "already_running" in status.lower():
-            return  # silently ignore
-
-        # RC7.4-bis: resuming must be transient; always re-derive from DB after
-        if "resuming" in status.lower() or status == "恢复中...":
-            # Accept the transient status but schedule a DB re-derive
-            pass
-
-        # Handle partial / error statuses
-        if status.startswith("Partially completed"):
-            cn_status = "部分完成" + status[20:]  # e.g. "部分完成 (2/3)"
+        is_metadata_failure = (
+            status.startswith("Metadata failed")
+            or "metadata_failed" in status.lower()
+        )
+        if is_metadata_failure:
+            cn_status = "元数据失败"
+        elif status.startswith("Partially completed"):
+            cn_status = "部分完成" + status[20:]
         elif status.startswith("Error:"):
             cn_status = "错误: " + status[6:]
         elif status.startswith("Paused"):
             cn_status = "已暂停"
-        elif status in status_map:
-            cn_status = status_map[status]
         else:
-            cn_status = status
+            cn_status = status_map.get(status, status)
 
-        if rj_id in self.active_downloads:
-            data = self.active_downloads[rj_id]
-            data["status"] = cn_status
-            ns = self.normalize_status(status)
+        data = self.active_downloads.setdefault(
+            rj_id,
+            {
+                "status": cn_status,
+                "tracks": {},
+                "control": None,
+                "last_time": time.time(),
+                "last_bytes": 0,
+                "cache_hit": False,
+            },
+        )
+        data["status"] = cn_status
+        if "cached" in status.lower():
+            data["cache_hit"] = True
 
-            # Cache hit detection
-            if "cached" in status.lower():
-                data["cache_hit"] = True
+        state = WorkStatus.normalize(status)
+        durable_states = {
+            WorkStatus.QUEUED,
+            WorkStatus.DOWNLOADING,
+            WorkStatus.PAUSED,
+            WorkStatus.FAILED,
+            WorkStatus.COMPLETED,
+            WorkStatus.PARTIAL,
+        }
+        if state in durable_states:
+            self._transient_rj_ids = [
+                item for item in self._transient_rj_ids if item != rj_id
+            ]
 
-            if "status_text" in data:
-                data["status_text"].value = cn_status
+        if rj_id in self._visible_rj_ids:
+            self.build_queue_item(rj_id)
 
-                if ns == "metadata_failed":
-                    data["status_text"].color = ERROR
-                    data["prog_bar"].value = None
-                    data["prog_bar"].color = "grey"
-                    data["speed_text"].value = ""
-                elif ns == "no_pending":
-                    data["status_text"].color = WARNING
-                    # RC7.4: no progress animation for no_pending
-                    data["prog_bar"].value = 0.0
-                    data["prog_bar"].color = "grey"
-                    data["speed_text"].value = ""
-                elif status == "Completed":
-                    data["status_text"].color = SUCCESS
-                    data["prog_bar"].value = 1.0
-                    data["prog_bar"].color = SUCCESS
-                    data["speed_text"].value = ""
-                    self.app_controller.check_achievements()
-                    data["_completed_at"] = time.time()
-                elif status.startswith("Failed") or status.startswith("Error"):
-                    data["status_text"].color = ERROR
-                    data["prog_bar"].color = ERROR
-                    data["speed_text"].value = ""
-                elif status == "Paused (partial)" or \
-                     status.startswith("Paused"):
-                    data["status_text"].color = WARNING
-                    data["speed_text"].value = ""
-                    # RC7.3: keep progress bar static at current value
-                    try:
-                        data["speed_text"].update()
-                    except Exception:
-                        pass
-                elif status.startswith("Partially completed"):
-                    data["status_text"].color = WARNING
-                    data["speed_text"].value = ""
+        if state is WorkStatus.COMPLETED:
+            try:
+                self.app_controller.check_achievements()
+            except Exception:
+                pass
 
-                # Rebuild card + re-sort if status priority changed
-                old_priority = None
-                for i, c in enumerate(self.queue_list.controls):
-                    if getattr(c, 'data', None) == rj_id:
-                        old_priority = i
-                        break
-                self.build_queue_item(rj_id)
-                # If priority likely changed, do lightweight re-sort
-                if ns in ("downloading", "queued", "paused"):
-                    # Move card to correct sorted position
-                    cards = self.queue_list.controls
-                    new_idx = 0
-                    for c in cards:
-                        c_rj = getattr(c, 'data', None)
-                        if c_rj and c_rj == rj_id:
-                            break
-                        new_idx += 1
-                    if new_idx < len(cards) and new_idx != old_priority and old_priority is not None:
-                        card = cards.pop(new_idx)
-                        # Find insertion point
-                        insert_at = 0
-                        for i, c in enumerate(cards):
-                            c_rj = getattr(c, 'data', None)
-                            if c_rj and self._queue_sort_key(rj_id) < self._queue_sort_key(c_rj):
-                                break
-                            insert_at = i + 1
-                        cards.insert(insert_at, card)
-                        try:
-                            if self.queue_list.page:
-                                self.queue_list.update()
-                        except Exception:
-                            pass
-                self.save_queue()
+        if state in durable_states or is_metadata_failure or state is WorkStatus.NO_PENDING:
+            self.save_queue()
+        if state in durable_states:
+            self.refresh_queue_async()
 
     def toggle_pause(self, rj_id: str):
         data = self.active_downloads.get(rj_id)
@@ -885,16 +1168,21 @@ class DownloadView(ft.Container):
         self.app_controller.show_snack(f"{rj_id} 重新准备元数据中...")
 
     def _open_work_dir(self, rj_id: str):
-        """Open the canonical directory recorded by the works table."""
-        work = self.app_controller.db.get_work(rj_id)
-        path = Path(work["local_path"]) if work and work["local_path"] else None
-
+        """Open the canonical directory recorded by the queue snapshot/works row."""
+        path = self._find_work_dir(rj_id)
         if path is None:
-            cached = self.app_controller.db.get_metadata_cache(rj_id, allow_stale=True)
+            cached = self.app_controller.db.get_metadata_cache(
+                rj_id,
+                allow_stale=True,
+            )
             if cached:
                 title = Orchestrator.sanitize(cached.get("title", ""))
                 folder = self.app_controller.config.dir_template.format(
-                    rj_id=rj_id, title=title, circle="", year="")
+                    rj_id=rj_id,
+                    title=title,
+                    circle="",
+                    year="",
+                )
                 path = self.app_controller.config.output_dir / folder
             else:
                 path = self.app_controller.config.output_dir
@@ -920,80 +1208,60 @@ class DownloadView(ft.Container):
         if not self._is_terminal(data["status"]):
             self.app_controller.cancel_download(rj_id)
             self.app_controller.show_snack(
-                f"{rj_id} 已暂停并从本次列表隐藏；重启后仍可恢复")
-        if data.get("control") and data["control"] in self.queue_list.controls:
-            self.queue_list.controls.remove(data["control"])
+                f"{rj_id} 已暂停并从本次列表隐藏；重启后仍可恢复"
+            )
+        self._transient_rj_ids = [
+            item for item in self._transient_rj_ids if item != rj_id
+        ]
+        self._visible_rj_ids.discard(rj_id)
         self.active_downloads.pop(rj_id, None)
-        try:
-            if self.queue_list.page: self.queue_list.update()
-        except Exception:
-            pass
+        self._render_visible_queue()
         self.save_queue()
 
-    # ══════════════════════════════════════════════
-    #  Track progress (P3: store speed/eta)
-    # ══════════════════════════════════════════════
     def update_track_progress(self, event):
-        """Accept ProgressEvent — throttled UI updates to prevent freeze."""
+        """Keep live speed/progress in memory; SQLite owns durable checkpoints."""
         rj_id = event.rj_id
-        track_title = event.track_title
-        downloaded = event.downloaded_bytes
-        total = event.total_bytes
-
-        if rj_id not in self.active_downloads:
-            return
-
-        data = self.active_downloads[rj_id]
+        data = self.active_downloads.setdefault(
+            rj_id,
+            {
+                "status": "下载中",
+                "tracks": {},
+                "control": None,
+                "last_time": time.time(),
+                "last_bytes": 0,
+                "cache_hit": False,
+            },
+        )
         now = time.time()
-
-        if "tracks" not in data:
-            data["tracks"] = {}
-
-        data["tracks"][track_title] = {
-            "downloaded": downloaded,
-            "total": total,
-            "status": event.status
+        data.setdefault("tracks", {})[event.track_title] = {
+            "downloaded": event.downloaded_bytes,
+            "total": event.total_bytes,
+            "status": event.status,
         }
-
         data["current_track"] = event.track_title
         data["last_speed_bps"] = event.global_speed_bps
         data["last_track_speed"] = event.track_speed_bps
         data["last_eta"] = event.eta_seconds
 
-        # Throttle: rebuild card at most every 0.3s
+        # The event stream can be much faster than Flet rendering.  Do not write
+        # queue.json or SQLite here; persist only lifecycle checkpoints in core.
         last_ui = data.get("_last_ui_update", 0)
         if now - last_ui < 0.3:
             return
         data["_last_ui_update"] = now
 
-        # Periodic cleanup of completed items
-        to_remove = []
-        for rid, rd in list(self.active_downloads.items()):
-            if rd.get("_completed_at") and now - rd["_completed_at"] > 3:
-                to_remove.append(rid)
-        for rid in to_remove:
-            rd = self.active_downloads.pop(rid, None)
-            if rd and rd.get("control") and rd["control"] in self.queue_list.controls:
-                self.queue_list.controls.remove(rd["control"])
+        if rj_id in self._visible_rj_ids:
+            try:
+                self.build_queue_item(rj_id)
+            except Exception:
+                logging.debug("progress card update failed", exc_info=True)
 
-        # Rebuild card to refresh per-file progress bars
-        try:
-            self.build_queue_item(rj_id)
-        except Exception:
-            pass
+        if getattr(self, "current_dialog_rj", None) == rj_id and hasattr(
+            self,
+            "dialog_list",
+        ):
+            self.refresh_dialog_list(rj_id)
 
-        if hasattr(self, "current_dialog_rj") and \
-           self.current_dialog_rj == rj_id:
-            if hasattr(self, "dialog_list"):
-                self.refresh_dialog_list(rj_id)
-
-        if time.time() - getattr(self, "last_save", 0) > 5:
-            self.save_queue()
-            self.last_save = time.time()
-
-    # ══════════════════════════════════════════════
-    #  Detail dialog (unchanged)
-    # ══════════════════════════════════════════════
     def show_detailed_progress(self, rj_id: str):
         data = self.active_downloads.get(rj_id)
         if not data:
