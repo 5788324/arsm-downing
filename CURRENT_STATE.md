@@ -1,211 +1,147 @@
 # ARSM Suite 当前状态
 
 > 更新时间：2026-07-23  
-> 当前版本：`0.9.0-rc.1`  
-> 当前分支基线：`main@9f292e7947804f2e4d53290039501f79c6d1805d`  
-> 当前阶段：Post-RC 稳定化与大队列优化规划
+> 已发布候选：`0.9.0-rc.1`  
+> 当前开发候选：`0.9.0-rc.2`  
+> 当前阶段：下载页现场缺陷修复，随后进入 TAKEOVER-T10
 
-## 1. 项目定位
+## 1. 当前产品状态
 
-ARSM Suite 是一个仅供个人本地使用的 Windows ASMR/RJ 桌面工具，继续保持为单体 Flet 应用。
+ARSM Suite 继续作为一个单体 Windows Flet 应用，当前主页面为：
 
-当前能力包括：
+```text
+下载中心
+资源库
+系统工具
+设置
+```
 
-- ASMR.one 下载、断点续传、暂停、恢复和失败重试；
-- SQLite 下载状态与资源库数据管理；
-- 资源库搜索、分页、异常识别和快照式索引重建；
-- External Intake 计划、文件事务、Journal、回滚和恢复；
-- 目录迁移 dry-run、manifest、四表同步和失败回滚；
-- 队列、缓存、VACUUM、backlog 和诊断工具；
-- Windows PyInstaller one-folder 构建。
+“统计与成就”页面已从 `0.9.0-rc.2` 删除。历史配置中的 `achievements` 字段暂时保留兼容读取，不再展示或写入新成就。
 
-播放器仍属于后续产品阶段，不进入当前稳定化任务。
-
-## 2. 必须保持的架构约束
+## 2. 架构约束
 
 ```text
 history.db / SQLite = 唯一业务真源
 LibraryVault = 唯一正式数据库访问入口
 UI 不直接 sqlite3.connect()
-queue.json 不作为历史下载状态真源
-扫描 JSON / manifest 不作为 UI 主数据源
-文件移动、隔离和删除必须先 dry-run，并保留可验证回滚信息
+queue.json 不作为历史状态真源
+文件移动/隔离/删除必须 dry-run 且可恢复
 ```
 
 ## 3. 已完成阶段
 
-```text
-TAKEOVER-T0~T4   External Intake 冻结、计划模型、事务层和统一 CI
-TAKEOVER-T5A     下载核心、HTTP 200/206/416、断点与隔离网络 smoke
-TAKEOVER-T5C     资源库 UI、搜索、分页、异常诊断和后台加载
-TAKEOVER-T6/T6B 复制资源库沙盒验收、Tools 与 backlog 安全收口
-TAKEOVER-T8A     迁移 manifest、递归 part/symlink、四表同步和回滚
-TAKEOVER-T8B     资源库快照重建、原子索引替换和陈旧索引清理
-TAKEOVER-T9      版本、运行目录、关闭流程、音频标签和发布构建链
-```
+| 阶段 | 状态 | 结果 |
+|---|---|---|
+| T0~T4 | PASS | External Intake 冻结、事务层、统一测试和 CI |
+| T5A | PASS | 200/206/416、`.part`、暂停恢复和镜像切换 |
+| T5C | PASS | 资源库搜索、分页、异常视图和后台加载 |
+| T6/T6B | PASS | 复制资源库沙盒、Tools 与 backlog 安全收口 |
+| T8A | PASS | 迁移 manifest、四表同步和回滚 |
+| T8B | PASS | 快照 rebuild 与原子索引替换 |
+| T9 | PASS_WITH_NOTES | 0.9.0-rc.1、构建链和 Windows Artifact |
+| T9.1 | CODE_COMPLETE | 下载页现场缺陷修复与成就页删除 |
 
-上述代码已通过 PR #1 合并到 `main`。
-
-## 4. GitHub 与发布状态
-
-PR #1：`release: prepare ARSM Suite 0.9.0-rc.1`
+## 4. 0.9.0-rc.1 发布与 CI
 
 ```text
-状态：MERGED
-合并时间：2026-07-21
-main merge commit：9f292e7947804f2e4d53290039501f79c6d1805d
-```
-
-正式 portable CI：
-
-```text
+PR #1：MERGED
+main 合并提交：9f292e7947804f2e4d53290039501f79c6d1805d
+portable pytest：205/205 PASS
 Ubuntu / Python 3.10：PASS
 Windows / Python 3.12：PASS
+Windows one-folder Artifact：PASS
+```
+
+## 5. Windows 11 真实验收
+
+Codex 隔离验收记录：
+
+```text
+Windows 11 Pro 10.0.26200 x64
+main/tag SHA：9f292e7947804f2e4d53290039501f79c6d1805d
+结论：PASS_WITH_NOTES
+```
+
+已经实际验证：
+
+- 连续三次启动并通过标题栏正常关闭；
+- 下载中心、资源库、统计与成就、系统工具、设置均能打开（成就页现已决定删除）；
+- 隔离配置原子保存并在重启后保留；
+- 真实元数据和文件列表写入；
+- 9 个不同 RJ、475 条下载记录；
+- 暂停后 466 条 paused，非空 `.part` 保留；
+- 正常关闭、重启后暂停状态保持；
+- “全部开始”能够恢复下载；
+- `.part` 数量和字节数继续增长；
+- 存在 14,017,924 字节的最终 MP3；
+- 未触碰正式 DB、正式目录和正式任务。
+
+确认的缺陷：
+
+```text
+批量恢复后，底部汇总仍显示旧的“下载中 0、排队 0、暂停 9”。
+```
+
+## 6. T9.1 修复内容
+
+`0.9.0-rc.2` 已完成代码级修复：
+
+1. 批量暂停/继续完成后发送一次 UI 刷新消息；
+2. 下载页从 SQLite 重新构建活动队列；
+3. 汇总文本与按钮状态同步刷新；
+4. 汇总显示实时全局总速度；
+5. 每张卡使用 `work_speed_bps`，不再把全局速度复制到每张卡；
+6. 工作完成后立即从活动队列移除；
+7. “全部开始”改名为“全部继续”；
+8. 没有可暂停/继续任务时按钮自动禁用；
+9. 删除 Dashboard/统计与成就页面；
+10. 删除下载完成后的成就检查调用。
+
+本地验证：
+
+```text
 compileall：PASS
-Flet import smoke：PASS
-portable pytest：205/205 PASS
+portable tests：211/211 PASS
 ```
 
-Windows release workflow：
+待 GitHub 使用真实 Flet 0.27.6 运行 Linux/Windows CI。
 
-```text
-Run：29834355321
-结论：PASS
-```
+## 7. 批量按钮结论
 
-发布产物：
+两个按钮都有实际核心作用：
 
-```text
-ARSM-Suite-0.9.0-rc.1-windows-x64.zip
-SHA-256：b60125d5fddebd056d292a8dccb485d512d52eb65865db9534e1a874de20f2cb
-```
+- **全部暂停**：把 queued/downloading 文件写为 paused、冻结速度、清空内存队列并取消活动任务；
+- **全部继续**：清除 global pause，扫描可恢复任务，重新准备目标并入队。
 
-## 5. Windows 自动验收
+此前“像没用”的主要原因是 UI 汇总不刷新，不是核心动作没有执行。
 
-GitHub `windows-latest` 隔离环境已验证：
+## 8. 尚待确认
 
-- Artifact 解压：PASS；
-- SHA-256 复核：PASS；
-- 含中文和空格的路径启动：PASS；
-- EXE 持续存活：PASS；
-- `config.json` 和 `history.db` 仅生成在隔离 App 目录：PASS；
-- 仓库和正式目录无状态文件泄漏：PASS。
+Windows 验收提交了 10 个任务，但 SQLite 中是 9 个不同 RJ。当前没有证据证明数据丢失；可能是输入重复、已存在任务或无效项被去重。该问题进入 T10 的批量预览功能：提交前明确显示可添加、重复、已存在和无效数量。
 
-自动结论：
+## 9. 正式环境边界
 
-```text
-PASS_WITH_NOTES
-```
+本轮开发和测试均未：
 
-仍缺少的现场证据：
-
-1. 用户桌面上的 Flet Desktop 肉眼布局和实际鼠标操作；
-2. 真实 ASMR.one 网络小样本；
-3. Windows Defender、长路径和第三方文件占用观察。
-
-DeepSeek 提交的旧验收包只证明程序曾打开首页，不能证明三次正常关闭、五页视觉、真实下载或文件系统边界，因此不作为最终桌面证据。
-
-## 6. 正式环境状态
-
-开发、CI、构建和自动验收均未：
-
-- 连接或修改用户正式 `history.db`；
+- 连接或修改正式 `history.db`；
 - 读取、移动或删除真实 `E:\arsm`；
-- 修改正式 `config.json` 或 `queue.json`；
-- 改动现有 100+ completed/failed/paused/queued/downloading 混合任务；
-- 覆盖当前运行中的正式程序目录。
+- 修改正式配置或队列；
+- 改动现有 100+ 混合状态任务；
+- 修改 200/206/416 下载核心或 `.part` 语义。
 
-历史数据库统计只代表旧快照，不能当作当前现场实时状态。
-
-## 7. 当前冻结操作
+## 10. 当前冻结
 
 ```text
-python tools/external_intake.py --execute --confirm-bulk
-External Intake 正式 execute
-正式资源库批量迁移、移动、隔离或删除
-正式 history.db VACUUM
+External Intake execute
+正式资源库迁移、移动、隔离和删除
+正式 VACUUM
 正式 backlog execute
-T7 真实 1~3 个作品目录整理
+T7 正式目录整理
 ```
 
-解除冻结的前提：
+## 11. 下一步
 
-- 当前混合任务自然清空或进入明确维护窗口；
-- 生成在线只读 SQLite snapshot 与 manifest；
-- 先在复制资源库和临时数据库中验收；
-- 正式环境只开放小批量、可回滚执行。
-
-## 8. ARSM Library v2 分支结论
-
-`ARSM-Library-v2-source-20260722` 已放弃，不再作为独立分支继续开发，也不替代当前主线。
-
-原因：
-
-- 不继承旧数据库、旧队列和旧 `.part`；
-- 正式库只读边界与代码行为冲突；
-- 416、Content-Range 和最终大小校验弱于当前下载核心；
-- 暂存目录重复检测存在缺陷；
-- 真实 API 认证和真实下载未完成；
-- 没有当前主线的构建、迁移和正式任务兼容能力。
-
-允许吸收的仅是设计思想：
-
-- UI → Service → LibraryVault 的只读门面；
-- 批量队列快照；
-- 元数据与音频下载并发池分离；
-- 批量添加预览；
-- 显式状态迁移；
-- 页面激活生命周期；
-- 资源库详情侧栏；
-- 后续可选托盘模式。
-
-明确不吸收：
-
-```text
-新的 library.db
-新的 download_tasks/download_files 表
-v2 下载引擎
-v2 设置保存实现
-正式库直入开关
-整套 v2 Flet 页面代码
-```
-
-## 9. 当前下一步
-
-当前最高优先级为 `TAKEOVER-T10`：
-
-```text
-Queue Service 与 100+ 任务性能优化
-```
-
-范围：
-
-1. 新增下载只读模型和轻量 Service 门面；
-2. 增加批量队列快照，消除 UI N+1 查询；
-3. 将下载状态推导移出 Flet View；
-4. 增加批量 RJ 预览、查重和统一确认；
-5. 分离 metadata queue 与 download queue；
-6. 增加页面 active/inactive 生命周期；
-7. 增加状态迁移规则与测试。
-
-边界：
-
-```text
-不改现有数据库表结构
-不替换下载核心
-不改现有 .part 语义
-不访问正式数据库或真实 E:\arsm
-不加入托盘
-不开发播放器
-```
-
-详细任务见 `NEXT_TASK_ROADMAP.md` 与 `docs/POST_RC_OPTIMIZATION_BACKLOG.md`。
-
-## 10. 当前结论
-
-```text
-ARSM Suite 0.9.0-rc.1 已合并到 main。
-代码、Linux/Windows CI、Windows Artifact 和隔离 EXE 启动均已通过。
-当前不再处于“等待 RC 合并”阶段，而是 Post-RC 稳定化阶段。
-下一轮先做低风险的大队列性能和 UI 状态分层，不触碰生产数据与下载核心。
-```
+1. 推送 T9.1 单独分支和 PR；
+2. GitHub Linux/Windows CI 使用真实 Flet 运行；
+3. CI 通过后合并 `0.9.0-rc.2` 修复；
+4. 开始 `TAKEOVER-T10：Queue Service 与大队列性能优化`。
