@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_release_version_is_visible() -> None:
-    assert APP_VERSION == "0.9.0-rc.1"
+    assert APP_VERSION == "0.9.0-rc.2"
     assert APP_VERSION in display_title()
 
 

@@ -40,3 +40,11 @@ def test_flet_legacy_api_surface_is_available() -> None:
 
     assert hasattr(ft, "icons")
     assert hasattr(ft, "colors")
+
+
+def test_achievement_page_is_removed() -> None:
+    from pathlib import Path
+
+    app_source = Path("ui/app.py").read_text(encoding="utf-8")
+    assert "统计与成就" not in app_source
+    assert "destinations.pop(2)" in app_source

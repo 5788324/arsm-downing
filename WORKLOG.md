@@ -1,111 +1,115 @@
-# WORKLOG.md
-
 # ARSM Suite 当前阶段工作日志
 
-> 本文件从 2026-07-23 起记录 Post-RC 阶段。  
-> 2026-06-27 至 2026-07-21 的完整历史日志已原样归档到：  
+> 2026-06-27 至 2026-07-21 的完整历史见：  
 > [`docs/archive/WORKLOG_20260627_20260721.md`](docs/archive/WORKLOG_20260627_20260721.md)
 
-## 0. 记录规则
-
-每轮工作至少记录：
+## 当前快照
 
 ```text
-日期
-执行者
-任务/阶段
-目标
-实际完成
-修改文件
-是否改代码
-是否改数据库
-是否访问正式目录
-测试结果
-Git 状态
-剩余问题
-下一步
+已发布候选：0.9.0-rc.1
+当前开发候选：0.9.0-rc.2
+当前任务：T9.1 下载页现场缺陷修复
+下一任务：T10 Queue Service 与大队列性能
+本地测试：211/211 PASS
+正式数据：零访问、零修改
 ```
 
-基本原则：
+## 2026-07-21：0.9.0-rc.1 合并
+
+- PR #1 合并到 `main`；
+- 合并提交 `9f292e7947804f2e4d53290039501f79c6d1805d`；
+- Ubuntu/Windows CI 和 205 tests 通过；
+- Windows one-folder Artifact 通过；
+- 自动结论 `PASS_WITH_NOTES`。
+
+## 2026-07-22：v2 审计与放弃
+
+- `ARSM-Library-v2-source-20260722` 不作为替代版本；
+- 不合并其数据库、下载引擎和 UI；
+- Service/read model、批量快照、metadata queue、批量预览、状态迁移和页面生命周期纳入 T10。
+
+## 2026-07-23：Post-RC 文档重整
+
+- PR #7 合并；
+- README、CURRENT_STATE、路线图、交接、决策和工作流与 RC 合并后的事实对齐；
+- 旧 2700+ 行 WORKLOG 完整归档。
+
+## 2026-07-23：Windows 真实下载验收复核
+
+### 输入
+
+`CODEX_WINDOWS_ACCEPTANCE.md`
+
+### 已确认
+
+- Windows 11 三次启动和标题栏正常关闭；
+- 隔离配置保存并重启保留；
+- 9 个不同 RJ 和 475 条下载记录；
+- 暂停后 466 paused，4 个非空 `.part` 合计约 30.3 MB；
+- 重启后暂停状态保持；
+- 全部开始后恢复 downloading/queued；
+- `.part` 增长到约 54.0 MB；
+- 最终 MP3 14,017,924 字节；
+- 正式环境未触碰。
+
+### 发现
+
+批量恢复后下载页汇总仍显示旧状态：
 
 ```text
-文档跟随代码、测试和仓库事实。
-报告不能代替实际测试。
-没有证据不得标记 PASS。
+下载中 0、排队 0、暂停 9
 ```
 
----
+### 判定
 
-## 1. 当前状态快照
+核心批量动作有效；缺陷位于 UI 刷新和汇总层。
 
-```text
-项目：arsm-downing / ARSM Suite
-版本：0.9.0-rc.1
-主分支：main
-main commit：9f292e7947804f2e4d53290039501f79c6d1805d
-当前阶段：Post-RC 稳定化与大队列优化
-portable tests：205/205 PASS
-Windows Artifact：PASS
-自动 Windows 验收：PASS_WITH_NOTES
-正式数据：开发环境零访问/零修改
-```
-
-当前最高优先级：
-
-```text
-TAKEOVER-T10：Queue Service 与 100+ 任务性能优化
-```
-
-当前冻结：
-
-```text
-External Intake execute
-正式资源库迁移/移动/隔离/删除
-正式 VACUUM
-正式 backlog execute
-T7 正式目录整理
-```
-
----
-
-## 2. 2026-07-21：0.9.0-rc.1 合并完成
+## 2026-07-23：T9.1 下载页现场缺陷修复
 
 ### 执行者
 
 ```text
-ChatGPT + GitHub Actions
+ChatGPT
 ```
 
-### 阶段
+### 目标
 
-```text
-TAKEOVER-T9 / Release Candidate closeout
-```
+在开始 T10 前修复现场验收发现的问题，并删除无用成就页。
 
 ### 实际完成
 
-- PR #1 合并到 `main`；
-- 合并提交：`9f292e7947804f2e4d53290039501f79c6d1805d`；
-- Ubuntu/Python 3.10 portable CI 通过；
-- Windows/Python 3.12 portable CI 通过；
-- 205/205 tests 通过；
-- Windows PyInstaller one-folder 构建通过；
-- ZIP 和 SHA-256 生成并上传 Artifact；
-- Windows 隔离路径 EXE 启动和状态文件边界通过；
-- 自动结论：`PASS_WITH_NOTES`。
+1. 新增 `reload_queue_from_database()`；
+2. 全部暂停/继续结束后通过 UI queue 触发一次 DB 重载；
+3. 汇总按活动作品重新计算；
+4. 增加实时总网速；
+5. 卡片改用 `work_speed_bps`；
+6. 完成作品立即移出活动队列；
+7. 批量按钮改为“全部暂停/全部继续”，并按状态禁用；
+8. 从运行时导航移除 Dashboard/“统计与成就”，成就检查改为兼容 no-op；
+9. RC1 界面实现保留为 `app_base.py` / `download_view_base.py`，RC2 通过小型兼容层覆盖，待 T10 再合并整理；
+10. 旧 achievements 配置字段暂留兼容；
+11. 版本改为 `0.9.0-rc.2`；
+12. 新增 6 项回归测试。
 
-### 发布产物
+### 修改文件
 
 ```text
-ARSM-Suite-0.9.0-rc.1-windows-x64.zip
-SHA-256：b60125d5fddebd056d292a8dccb485d512d52eb65865db9534e1a874de20f2cb
+core/version.py
+ui/app.py
+ui/app_base.py（RC1 兼容基线）
+ui/views/download_view.py
+ui/views/download_view_base.py（RC1 兼容基线）
+tests/test_download_ui_semantics.py
+tests/test_app_background.py
+tests/test_import_smoke.py
+tests/test_release_packaging.py
+README.md
+CURRENT_STATE.md
+NEXT_TASK_ROADMAP.md
+HANDOFF.md
+WORKLOG.md
+DECISIONS.md
 ```
-
-### 未覆盖
-
-- 用户桌面 Flet Desktop 视觉；
-- 真实 ASMR.one 小样本；
-- Defender、长路径和文件占用。
 
 ### 数据影响
 
@@ -113,170 +117,21 @@ SHA-256：b60125d5fddebd056d292a8dccb485d512d52eb65865db9534e1a874de20f2cb
 正式 DB：未访问
 真实 E:\arsm：未访问
 正式任务：未修改
-文件删除：无
-```
-
----
-
-## 3. 2026-07-22：Windows 人工验收证据复核
-
-### 执行者
-
-```text
-DeepSeek 运行
-ChatGPT 复核
-```
-
-### 结果
-
-DeepSeek 提交的验收包不能作为最终桌面验收证据。
-
-主要问题：
-
-- 使用 `Kill()` 后无残留，不能证明正常关闭；
-- 两张启动截图全黑且内容相同；
-- 其他页面没有实际切换证据；
-- API 401 被错误写成“预计正常”；
-- 文件系统测试只证明 NTFS 能建目录，没有证明应用能使用；
-- 报告声称存在的日志未完整提交。
-
-### 结论
-
-```text
-INSUFFICIENT_EVIDENCE
-```
-
-该结果不推翻 GitHub Windows 构建和隔离启动 PASS，但 Desktop 视觉仍保留为 `PASS_WITH_NOTES` 的未完成项。
-
-### 后续调整
-
-- DeepSeek 不再负责视觉判断；
-- 机器结论与视觉结论分开；
-- 用户只做最少截图操作；
-- 截图由 ChatGPT 直接审查。
-
----
-
-## 4. 2026-07-22：ARSM Library v2 源码审计
-
-### 输入
-
-```text
-ARSM-Library-v2-source-20260722.zip
-```
-
-### 验证
-
-```text
-ZIP 安全解压：PASS
-compileall：PASS
-核心测试：50/50 PASS
-临时 Flet/pystray 接口桩：64/64 PASS
-真实 Flet Desktop：未验证
-真实网络下载：未验证
-```
-
-### 优点
-
-- UI → Service → Repository 分层清晰；
-- 下载只读模型；
-- 批量队列快照；
-- metadata 与 audio 并发池分离；
-- 批量添加预览；
-- 显式状态迁移；
-- 页面生命周期；
-- 资源库详情结构。
-
-### 阻塞问题
-
-- 不继承旧数据库、旧队列和旧 `.part`；
-- 正式库只读与直入写入逻辑冲突；
-- 416 处理可能删除 `.part`；
-- 未严格验证 Content-Range 和最终大小；
-- `RJ号 标题` 目录重复检测失效；
-- API 认证缺失；
-- 封面代理无实际调用；
-- 缺少正式构建和 Windows 证据。
-
-### 结论
-
-```text
-作为当前版本替代：NO-GO
-作为独立 v2 继续：用户决定放弃
-设计思想选择性吸收：GO
-```
-
----
-
-## 5. 2026-07-23：放弃 v2，建立 Post-RC 优化路线
-
-### 执行者
-
-```text
-用户 + ChatGPT
-```
-
-### 决策
-
-- 放弃 ARSM Library v2 独立项目线；
-- 不合并其代码、数据库、下载引擎和 UI；
-- 将可取设计加入当前主线后续优化；
-- 当前 `main` 和 `history.db/LibraryVault` 继续作为唯一正式主线。
-
-### 纳入后续的内容
-
-```text
-T10：Service/read model + 批量快照 + metadata queue + 批量预览
-T11：Windows Desktop 视觉与交互证据
-T12：真实 ASMR.one 认证和隔离小样本
-T13：资源库分类、排序和详情侧栏
-T14：可选托盘模式
-T7：维护窗口开放后单独执行正式小批量整理
-播放器：继续延后
-```
-
-### 文档更新
-
-本轮更新：
-
-- `README.md`；
-- `CURRENT_STATE.md`；
-- `NEXT_TASK_ROADMAP.md`；
-- `PROJECT_ROADMAP.md`；
-- `HANDOFF.md`；
-- `WORKLOG.md`；
-- `AI_WORKFLOW.md`；
-- `DECISIONS.md`；
-- `docs/POST_RC_OPTIMIZATION_BACKLOG.md`；
-- 旧 WORKLOG 原样归档。
-
-### 是否改代码
-
-```text
-否，仅文档
-```
-
-### 是否改数据库
-
-```text
-否
-```
-
-### 是否访问正式目录
-
-```text
-否
+下载核心：未修改
+文件删除：无；“统计与成就”已从运行时导航移除
 ```
 
 ### 测试
 
 ```text
-文档一致性和链接检查
-无需触发产品代码 CI
+python -m compileall -q core ui tools tests scripts main.py：PASS
+python -m pytest：211/211 PASS
 ```
 
-### 下一步
+本地容器无真实 Flet，UI 测试通过临时接口桩运行；GitHub CI 必须使用真实锁定依赖复核。
 
-```text
-创建 TAKEOVER-T10 独立分支与 PR，实施 Queue Service 与大队列性能优化。
-```
+### 剩余
+
+- GitHub Linux/Windows CI；
+- 10 个输入/9 distinct 原因由 T10 批量预览明确呈现；
+- 合并后开始 T10。

@@ -149,3 +149,70 @@ def test_settings_edit_real_concurrency_fields(tmp_path: Path) -> None:
     assert controller.config.work_concurrency == 3
     assert controller.config.file_concurrency == 9
     assert controller.config.max_concurrent == 9
+
+
+def test_queue_summary_shows_counts_speed_and_button_availability(
+        monkeypatch, tmp_path: Path) -> None:
+    view, _controller = make_view(monkeypatch, tmp_path)
+    view.active_downloads["RJ00000002"] = {
+        "status": "下载中",
+        "tracks": {},
+        "control": None,
+    }
+    view.global_speed_bps = 6 * 1024 * 1024
+
+    view._update_queue_summary(["RJ00000001", "RJ00000002"])
+
+    assert "下载中 1" in view.queue_summary.value
+    assert "暂停 1" in view.queue_summary.value
+    assert "总速度 6.0 MB/s" in view.queue_summary.value
+    assert view.btn_pause_all.disabled is False
+    assert view.btn_resume_all.disabled is False
+
+
+def test_progress_uses_work_speed_for_card_and_global_speed_for_header(
+        monkeypatch, tmp_path: Path) -> None:
+    view, _controller = make_view(monkeypatch, tmp_path)
+    rj_id = "RJ00000001"
+    view.active_downloads[rj_id]["status"] = "下载中"
+    monkeypatch.setattr(view, "build_queue_item", lambda *_args, **_kwargs: None)
+
+    event = SimpleNamespace(
+        rj_id=rj_id,
+        track_title="track.mp3",
+        downloaded_bytes=5,
+        total_bytes=10,
+        status="downloading",
+        work_speed_bps=2 * 1024 * 1024,
+        track_speed_bps=1 * 1024 * 1024,
+        global_speed_bps=6 * 1024 * 1024,
+        eta_seconds=5,
+    )
+
+    view.update_track_progress(event)
+
+    assert view.active_downloads[rj_id]["last_speed_bps"] == 2 * 1024 * 1024
+    assert view.global_speed_bps == 6 * 1024 * 1024
+    assert "总速度 6.0 MB/s" in view.queue_summary.value
+
+
+def test_completed_work_is_removed_from_active_queue_immediately(
+        monkeypatch, tmp_path: Path) -> None:
+    view, _controller = make_view(monkeypatch, tmp_path)
+
+    view.update_work_status("RJ00000001", "Completed")
+
+    assert "RJ00000001" not in view.active_downloads
+    assert "显示 0 项" in view.queue_summary.value
+    assert view.btn_pause_all.disabled is True
+    assert view.btn_resume_all.disabled is True
+
+
+def test_batch_controls_delegate_to_controller(monkeypatch, tmp_path: Path) -> None:
+    view, controller = make_view(monkeypatch, tmp_path)
+
+    view._batch_pause()
+    view._batch_resume()
+
+    assert ("pause_all", "", {}) in controller.calls
+    assert ("resume_all", "", {}) in controller.calls
