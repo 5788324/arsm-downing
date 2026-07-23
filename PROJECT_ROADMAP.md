@@ -1,459 +1,222 @@
 # PROJECT_ROADMAP.md
 
-# arsm-downing / arsm-suite 下一阶段执行路线图
+# ARSM Suite 中长期产品路线
 
-> **状态说明（2026-07-20）**：本文件保留中长期产品路线和历史阶段。当前开发事实、优先级和可执行任务以 `CURRENT_STATE.md` 与 `NEXT_TASK_ROADMAP.md` 为准。播放器暂不进入当前稳定性修复范围。
+> 更新时间：2026-07-23  
+> 当前事实以 `CURRENT_STATE.md` 为准；当前可执行任务以 `NEXT_TASK_ROADMAP.md` 为准。
 
-## 0. 当前方向
+## 1. 产品方向
 
-本项目继续作为一个单一 Flet 个人应用推进，不拆成多个独立项目。
-
-```text
-arsm-downing / arsm-suite
-├── downloader 下载模块
-├── library 资源库管理模块
-├── player 播放模块
-├── migration 迁移模块
-└── LibraryVault 统一 SQLite 访问层
-```
-
-当前阶段继续使用：
+ARSM Suite 继续作为一个单体 Windows 个人应用，不拆成多个相互竞争的项目。
 
 ```text
-Python + Flet + SQLite + asyncio + LibraryVault
+ARSM Suite
+├─ Downloader：下载、断点、队列和状态
+├─ Library：资源库索引、搜索、详情和异常诊断
+├─ Maintenance：迁移、External Intake、Tools 和恢复
+└─ Player：后续本地播放能力
 ```
 
-长期目标可以是一个本地个人媒体库，但当前阶段不跳到完整媒体库开发。当前优先顺序是：
+技术主线保持：
 
 ```text
-1. external intake 真实执行硬冻结（已完成）
-2. external intake 固定计划模型与纯扫描收口（已完成）
-3. external intake LibraryVault 快照与路径事务（已完成）
-4. external intake 逐作品文件执行与恢复状态机（沙盒已完成）
-5. 统一测试、CI、活跃 DB 在线快照（已完成）
-6. 下载核心 416 / Range / `.part`、缓存恢复与隔离 UI smoke（代码级已完成）
-7. Windows 一键验收包与 LibraryView 代码级收口（已完成；Windows 证据待 Codex）
-8. T6 复制资源库沙盒执行与 Tools/backlog 安全收口（已完成）
-9. 迁移安全已完成；数据库 Schema 与资源库扫描一致性（当前）
-10. Windows 维护窗口和 T7 小批量验收
-11. 通过稳定性验收后再评估播放器
+Python + Flet + SQLite + asyncio + aiohttp + LibraryVault
 ```
 
----
+## 2. 长期不变的原则
 
-## 1. 核心原则
-
-### 1.1 SQLite 是唯一真源
+### 2.1 SQLite 唯一真源
 
 ```text
-history.db / SQLite = 唯一真源
-LibraryVault = 唯一 DB 访问入口
-P3 JSON report = 只读诊断报告
-manifest.json = 后续可选导出/缓存
+history.db / SQLite = 业务唯一真源
+LibraryVault = 唯一正式数据库访问入口
+扫描 JSON / manifest = 报告、缓存或审计证据
 ```
 
-禁止：
+禁止新增第二套业务数据库来替换当前主线。
+
+### 2.2 不推倒重写
+
+新架构必须通过渐进式门面和只读模型接入：
 
 ```text
-把 P3 扫描 JSON 当成 P6 UI 数据源
-把 manifest.json 当成主数据源
-让 UI 绕过 LibraryVault 直接读写 SQLite
-让新模块自己 LibraryVault()
-让新模块自己 sqlite3.connect()
+UI
+→ Service / Read Model
+→ LibraryVault / Orchestrator
+→ SQLite / Network / Filesystem
 ```
 
-### 1.2 文档跟随事实，不代替事实
+Service 层不是第二个 repository，也不能绕过 `LibraryVault`。
 
-遇到以下问题时：
+### 2.3 高风险操作独立
+
+以下事项不得与普通 UI 或性能优化混在同一 PR：
+
+- 正式数据库迁移；
+- 正式文件移动、隔离或删除；
+- External Intake execute；
+- VACUUM；
+- backlog 批量恢复；
+- `.part` 重置；
+- 正式目录整理。
+
+## 3. 已完成阶段：基础与 RC
+
+### Phase A：下载器和数据库收口
+
+已完成：
+
+- LibraryVault 单例和 SQLite 访问边界；
+- works/downloads 状态诊断与兼容；
+- HTTP 200/206/416；
+- Range、Content-Range、Content-Length 和 `.part`；
+- 暂停、恢复、失败重试与镜像切换；
+- metadata cache 受控恢复。
+
+### Phase B：资源库和维护工具
+
+已完成：
+
+- `library_items/library_index`；
+- 搜索、分页、封面、异常分类和 Dashboard；
+- 快照式 rebuild 和原子索引替换；
+- 迁移 manifest、四表同步、回滚和 post-verify；
+- External Intake 计划、文件事务、Journal 和沙盒恢复；
+- Tools 缓存、队列、VACUUM、backlog 与安全保护。
+
+### Phase C：发布候选
+
+已完成：
+
+- `0.9.0-rc.1`；
+- 205 项 portable tests；
+- Linux/Windows CI；
+- PyInstaller one-folder；
+- Windows Artifact 和 SHA-256；
+- 隔离路径启动与状态文件边界验证；
+- PR #1 合并到 `main`。
+
+当前结果：`PASS_WITH_NOTES`。
+
+## 4. 当前阶段：Post-RC 稳定化
+
+### Phase D1：大队列性能和状态分层
+
+目标：
+
+- 100+ 任务下减少 SQLite N+1 查询；
+- 下载页只渲染只读模型；
+- 元数据准备和音频下载并发分离；
+- 批量 RJ 先预览再统一入队；
+- 页面隐藏后停止昂贵刷新；
+- 状态迁移显式化。
+
+该阶段只做低风险内部优化，不改数据库 schema，不替换下载核心。
+
+### Phase D2：Windows Desktop 和真实网络证据
+
+目标：
+
+- 用户桌面五页视觉验收；
+- 正常关闭、连续启停和残留进程；
+- 真实 ASMR.one 认证路径调查；
+- 隔离小样本暂停/恢复/完成；
+- 长路径、文件占用和 Defender 观察。
+
+视觉证据由具备视觉能力的模型审查，DeepSeek 只负责运行明确脚本，不负责判断截图。
+
+## 5. 后续体验阶段
+
+### Phase E1：资源库体验
+
+候选功能：
+
+- 分类与排序；
+- 详情侧栏；
+- 文件列表和截断提示；
+- 复制路径；
+- 最近下载和容量维度；
+- 页面生命周期优化。
+
+### Phase E2：托盘与后台运行
+
+候选功能：
+
+- 关闭窗口时退出或最小化到托盘；
+- 打开、暂停全部、继续全部、彻底退出；
+- 后台状态提示。
+
+该阶段必须建立在当前幂等 shutdown 已稳定的基础上。
+
+### Phase E3：播放器 MVP
+
+候选功能：
+
+- 播放、暂停、上一首、下一首；
+- seek 和播放进度；
+- 恢复上次位置；
+- 常用格式兼容；
+- 与资源库详情联动。
+
+播放器不在当前任务中启动。
+
+## 6. 维护窗口阶段
+
+T7 正式小批量目录整理继续冻结。
+
+开放条件：
+
+1. 当前混合任务清空或进入维护窗口；
+2. 在线只读 snapshot 和 manifest 通过；
+3. 复制资源库沙盒通过；
+4. 只选择 1~3 个低风险目录；
+5. Journal、rollback 和 post-verify 完整。
+
+该阶段单独立项，不与产品功能开发混合。
+
+## 7. 已放弃 v2 的处理原则
+
+`ARSM Library v2` 作为独立重写分支已放弃。
+
+吸收：
+
+- Service/read model；
+- 批量快照；
+- 元数据并发池；
+- 批量预览；
+- 状态迁移；
+- 页面生命周期；
+- 资源库详情思路；
+- 托盘概念。
+
+拒绝：
+
+- 新 `library.db`；
+- 新下载表替换现有历史；
+- v2 续传实现；
+- 不继承旧任务的切换方式；
+- 正式库直入开关；
+- 未验收的整套 UI 和托盘代码。
+
+## 8. 阶段顺序
 
 ```text
-要不要重构
-够不够安全
-状态是否可信
-DB 是否有脏数据
-是否可以继续扩展
+已完成：基础下载/资源库/维护/RC
+当前：大队列性能与状态分层
+随后：Desktop 视觉与真实网络证据
+再后：资源库体验与可选托盘
+维护窗口：独立执行 T7
+最后：播放器 MVP
 ```
 
-优先顺序必须是：
-
-```text
-1. 直接看代码
-2. 跑只读诊断脚本
-3. 看输出结果
-4. 再写结论和任务
-```
-
-### 1.3 不合并不同性质的 DB 写入
-
-禁止一次任务同时做：
-
-```text
-修 downloads / works 状态
-写 library_items / library_files 索引
-改 UI
-改下载核心
-删除文件
-```
-
-尤其注意：
-
-```text
-P4 的 RC9 安全修复 和 P5 的资源库索引入库 必须分开执行。
-```
-
----
-
-## 2. 总阶段顺序
-
-```text
-P1：UI 侧 LibraryVault 单例确认
-P2：RC9 下载状态只读诊断
-P3：资源库只读扫描 MVP
-P4：RC9 安全修复第一轮
-P4.5：library_items schema 决策
-P5：资源库索引入库
-P6：资源库管理 UI MVP
-P7：播放器 MVP
-P8：媒体库体验打磨
-```
-
-说明：
-
-```text
-P0（RC8.7 final audit）已完成，不再作为下一步待执行项。
-```
-
----
-
-## 3. 当前现实目标
-
-```text
-1. 确认整个 Flet 应用只创建一个 LibraryVault 实例
-2. 解释 failed / paused / registered / prepared 等状态
-3. 扫描 E:\arsm 并产出只读资源库报告
-4. 在写入资源库索引前确定 library_items schema
-```
-
-当前不要做：
-
-```text
-完整播放器
-漂亮媒体库 UI
-Web 管理器
-OpenList 深度集成
-LRC/转录完整集成
-下载器大重构
-DB 大重构
-```
-
----
-
-## 4. P1：UI 侧 LibraryVault 单例确认
-
-### 目标
-
-确认整个 Flet 应用只创建一次 `LibraryVault()`。
-
-### 任务
-
-```text
-1. grep LibraryVault(
-2. grep sqlite3.connect
-3. 检查 main.py / ui/app.py / 启动初始化文件
-4. 检查 DownloadView / ToolsView / LibraryView 是否自己创建 DB
-5. 如果只有单实例，记录到 WORKLOG
-6. 如果发现多实例，先停止后续开发，做最小收口
-```
-
-### 建议安全网
-
-可在 `LibraryVault.__init__` 中加入多实例 warning，但这是可选优化，不是当前阶段必做项。
-
----
-
-## 5. P2：RC9 下载状态只读诊断
-
-### 目标
-
-解释 `failed / paused / registered / prepared` 等状态。只读，不修 DB。
-
-### 任务
-
-```text
-1. 统计 works_status
-2. 统计 downloads_status
-3. failed 按 error prefix 分类
-4. paused 按文件存在状态分类
-5. registered 按真实待下载/历史残留分类
-6. 重点 RJ 单独诊断
-7. 检查异常 RJ 号
-8. 检查 normalize_rj_id 是否覆盖所有写入入口
-```
-
-重点 RJ：
-
-```text
-RJ01588893
-RJ01534605
-RJ00323125
-RJ323125
-missing_work_paths 几项
-```
-
-### 输出
-
-```text
-RC9_DOWNLOAD_STATUS_DIAGNOSIS.json
-RC9_DOWNLOAD_STATUS_DIAGNOSIS_SUMMARY.txt
-```
-
-### 禁止
-
-```text
-不改 DB
-不删文件
-不移动文件
-不重新下载
-不批量重置状态
-```
-
----
-
-## 6. P3：资源库只读扫描 MVP
-
-### 目标
-
-扫描 `E:\arsm`，输出只读资源库报告。不写 DB，不接 UI。
-
-### 任务
-
-```text
-1. 扫描 E:\arsm
-2. 识别 RJ 目录
-3. 识别非 RJ 目录
-4. 分类 audio / video / image / subtitle / text / archive / other
-5. 统计每个作品文件数
-6. 统计每个作品总大小
-7. 找封面候选
-8. 找音频候选
-9. 找字幕/LRC 候选
-10. 输出 JSON report
-11. 输出 summary
-```
-
-### 输出
-
-```text
-library_scan_report.json
-library_scan_summary.txt
-```
-
-### 关键规则
-
-```text
-P3 JSON 只是给人看的诊断报告。
-P3 JSON 不进入 P6 UI 数据路径。
-P6 UI 必须通过 LibraryVault / SQLite 获取数据。
-```
-
----
-
-## 7. P4：RC9 安全修复第一轮
-
-### 目标
-
-基于 P2 诊断结果，只修确定安全的问题。
-
-### 可修类型
-
-```text
-最终文件存在且大小匹配，但 DB 状态不是 completed
-work 已完成但 downloads 状态滞后
-RJ 号历史脏数据且映射唯一
-local_path 明确可修正且目标存在
-```
-
-### 不修类型
-
-```text
-缺文件
-路径不确定
-大小不匹配
-URL 不确定
-metadata 缺失
-RJ 号映射不唯一
-旧路径不存在且目标也不存在
-pending_user_review
-```
-
-### 禁止
-
-```text
-不批量全库 update
-不猜路径
-不根据标题模糊匹配修 DB
-不删除文件
-不与 P5 资源库索引入库合并执行
-```
-
----
-
-## 8. P4.5：library schema 决策
-
-### 结论
-
-```text
-library_index：保留为位置/迁移/扫描发现索引
-library_items：新建，作为 P6 UI 的作品级资源库索引
-library_files：后续需要文件详情/播放器时再建
-```
-
-### 必须回答
-
-```text
-1. 是否新建 library_items：是
-2. 是否复用 library_index：否，不硬塞内容索引字段
-3. library_items 是否作为 P6 UI 主数据源：是
-4. P3 JSON 是否作为 P6 UI 主数据源：否
-5. library_files 是否第一版创建：否
-```
-
----
-
-## 9. P5：资源库索引入库
-
-### 目标
-
-把 P3 扫描结果写入 SQLite 的 `library_items`，供 P6 UI 使用。
-
-### 写入范围
-
-```text
-P5 只写 library_items
-P5 不写 works / downloads / library_index / download status
-```
-
----
-
-## 10. P6：资源库管理 UI MVP
-
-### 第一版功能
-
-```text
-作品列表
-RJ 搜索
-标题搜索
-封面显示
-文件数/大小显示
-状态标签
-异常提示
-打开文件夹
-刷新资源库索引
-```
-
-### 数据源规则
-
-P6 UI 必须通过 `LibraryVault / SQLite` 获取数据。
-
-禁止在 `ui/library_view.py` 或相关 UI 文件中出现：
-
-```python
-open("library_scan_report.json")
-json.load(...)
-sqlite3.connect(...)
-LibraryVault()
-```
-
----
-
-## 11. P7：播放器 MVP
-
-### 第一版功能
-
-```text
-播放音频
-暂停
-继续
-上一首
-下一首
-显示当前音轨
-显示播放进度
-保存播放进度
-恢复上次播放位置
-```
-
-### 首选方案
-
-先试 Flet audio。
-
-### 放弃信号
-
-命中以下任一情况则转向 `python-vlc` 或 `mpv`：
-
-```text
-1. 拿不到精确播放位置回调
-2. seek / 切歌明显卡顿
-3. 长时间播放超过 10 分钟后内存增长或崩溃
-4. 不支持资源库中常见格式，例如 flac / ogg
-```
-
----
-
-## 12. P8：媒体库体验打磨
-
-P8 是后期目标，不属于当前执行范围。
-
-相关 UI/UX 灵感统一放入：
-
-```text
-docs/IDEAS_BACKLOG.md
-```
-
----
-
-## 13. AI 工具分工
-
-### Codex
-
-```text
-最终审查
-Git 合并
-RC closeout 判断
-DB 风险判断
-关键小改动
-```
-
-### OpenCode + DeepSeek
-
-```text
-诊断脚本
-scanner MVP
-pytest
-JSON 报告
-低风险代码实现
-```
-
-### Claude / ChatGPT / Hermes
-
-```text
-架构判断
-规划
-文档整理
-风险审查
-```
-
----
-
-## 14. 当前最重要的一句话
-
-```text
-当前阶段不追求完整媒体库；先完成 P1/P2/P3/P4.5。SQLite 仍是唯一真源，LibraryVault 是唯一 DB 入口，P3 JSON 不进入 UI 数据路径，P4 下载状态修复和 P5 资源库索引入库必须分开执行。
-```
-
-
-## 2026-07-20 接手阶段补充
-
-- T8A 迁移安全重构：完成。
-- T8B 资源库快照重建：完成，`library_items/library_index` 原子替换并清理陈旧索引。
-- T9 发布候选收口：完成，版本 `0.9.0-rc.1`，构建链与交接文档已建立。
-- 下一阶段：GitHub CI 与 Windows/Codex 最终证据；播放器继续留在后续版本。
+## 9. 成功标准
+
+项目不以功能数量作为成功标准，而以以下结果为准：
+
+- 现有历史和活动任务不丢失；
+- `.part` 不被错误删除；
+- 数据库状态和真实文件一致；
+- 100+ 任务时 UI 仍可用；
+- 文件操作有 dry-run、Journal 和恢复路径；
+- Windows 构建可重复；
+- 文档始终与 `main` 真实状态一致。
