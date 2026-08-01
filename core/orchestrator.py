@@ -21,6 +21,7 @@ from core.audio import AudioProcessor
 from core.speed import SpeedTracker
 from core.status import WorkStatus
 from core.download_response import local_partial_size, plan_download_response
+from core.metadata_scheduler import MetadataScheduler
 
 logger = logging.getLogger("echovault")
 
@@ -39,6 +40,9 @@ class Orchestrator:
         self._global_inflight = 0
         self._global_inflight_lock = asyncio.Lock()
         self._per_rj_inflight: Dict[str, int] = {}
+        self.metadata_scheduler = MetadataScheduler(
+            getattr(config, "metadata_concurrency", 2)
+        )
         self.download_queue: asyncio.Queue = asyncio.Queue()
         self._queued_work_data: Dict[str, dict] = {}  # RC7.7: rj_id→{meta,targets,root_path}
         self.queued_rj_ids: set = set()
@@ -177,7 +181,8 @@ class Orchestrator:
                 self.download_queue.task_done()
 
     async def boot_workers(self):
-        """Start work_concurrency worker tasks."""
+        """Start independent metadata workers and download workers."""
+        await self.metadata_scheduler.start()
         n = max(1, min(self.config.work_concurrency, 4))
         mp = self.config.metadata_proxy or "off"
         dp = self.config.download_proxy or "direct"
@@ -199,6 +204,8 @@ class Orchestrator:
         logger.info(
             f"CONCURRENCY_STATE [{label}] "
             f"work_concurrency={self.config.work_concurrency} "
+            f"metadata_concurrency={self.metadata_scheduler.concurrency} "
+            f"metadata_queued={self.metadata_scheduler.queued_count} "
             f"file_concurrency={self.config.file_concurrency} "
             f"queued_rj_ids={len(self.queued_rj_ids)} "
             f"active_tasks={len(self.active_tasks)} "
@@ -237,6 +244,7 @@ class Orchestrator:
 
         self._queued_work_data.clear()
         self.queued_rj_ids.clear()
+        await self.metadata_scheduler.shutdown()
         self.db.commit()
         await self.kernel.shutdown()
         logger.info("Shutdown complete")
@@ -289,26 +297,29 @@ class Orchestrator:
         ext = self.db.get_external_works()
         if not ext:
             return 0
-        sem = asyncio.Semaphore(max_concurrent)
-
         async def _enrich_one(rj_id):
-            async with sem:
-                cached = self.db.get_metadata_cache(rj_id)
-                if cached:
-                    self.db.enrich_external_metadata(
-                        rj_id, None, cached.get("cover_url", ""),
-                        cached.get("title", rj_id), cached.get("circle", ""))
-                    return
+            cached = self.db.get_metadata_cache(rj_id)
+            if cached:
+                self.db.enrich_external_metadata(
+                    rj_id, None, cached.get("cover_url", ""),
+                    cached.get("title", rj_id), cached.get("circle", ""))
+                return
+
+            async def _fetch():
                 rj_num = self._numeric_rj_id(rj_id)
-                meta = await self.kernel.fetch(f"/api/workInfo/{rj_num}")
-                if meta:
-                    title = meta.get("title", rj_id)
-                    circle = meta.get("circle", {}).get("name", "")
-                    cover = meta.get("mainCoverUrl", "")
-                    self.db.set_metadata_cache(
-                        rj_id, title, circle, cover, meta, [])
-                    self.db.enrich_external_metadata(
-                        rj_id, meta, cover, title, circle)
+                return await self.kernel.fetch(f"/api/workInfo/{rj_num}")
+
+            meta = await self.metadata_scheduler.submit(
+                f"enrich:{rj_id}", _fetch
+            )
+            if meta:
+                title = meta.get("title", rj_id)
+                circle = meta.get("circle", {}).get("name", "")
+                cover = meta.get("mainCoverUrl", "")
+                self.db.set_metadata_cache(
+                    rj_id, title, circle, cover, meta, [])
+                self.db.enrich_external_metadata(
+                    rj_id, meta, cover, title, circle)
 
         tasks = [_enrich_one(row["rj_id"]) for row in ext]
         await asyncio.gather(*tasks)
@@ -857,19 +868,26 @@ class Orchestrator:
     #  P1-1: Metadata cache integration
     # ══════════════════════════════════════════════
     async def _fetch_metadata_live(self, rj_id: str, rj_numeric: str):
-        meta_raw = await self.kernel.fetch(f"/api/workInfo/{rj_numeric}")
-        if not meta_raw:
-            return None, None
-        tracks_raw = await self.kernel.fetch(f"/api/tracks/{rj_numeric}?v=2")
-        if not tracks_raw:
-            return meta_raw, None
-        circle_name = meta_raw.get('circle', {}).get('name', 'Unknown')
-        self.db.set_metadata_cache(
-            rj_id=rj_id, title=meta_raw.get('title', ''),
-            circle=circle_name,
-            cover_url=meta_raw.get('mainCoverUrl', ''),
-            metadata_raw=meta_raw, tracks_raw=tracks_raw)
-        return meta_raw, tracks_raw
+        async def _fetch():
+            logger.info(
+                "METADATA_SLOT_ACQUIRE rj=%s limit=%s",
+                rj_id, self.metadata_scheduler.concurrency,
+            )
+            meta_raw = await self.kernel.fetch(f"/api/workInfo/{rj_numeric}")
+            if not meta_raw:
+                return None, None
+            tracks_raw = await self.kernel.fetch(f"/api/tracks/{rj_numeric}?v=2")
+            if not tracks_raw:
+                return meta_raw, None
+            circle_name = meta_raw.get('circle', {}).get('name', 'Unknown')
+            self.db.set_metadata_cache(
+                rj_id=rj_id, title=meta_raw.get('title', ''),
+                circle=circle_name,
+                cover_url=meta_raw.get('mainCoverUrl', ''),
+                metadata_raw=meta_raw, tracks_raw=tracks_raw)
+            return meta_raw, tracks_raw
+
+        return await self.metadata_scheduler.submit(f"prepare:{rj_id}", _fetch)
 
     # ══════════════════════════════════════════════
     #  P3.2: prepare_work — separate metadata from download

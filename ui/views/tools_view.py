@@ -138,6 +138,14 @@ class ToolsView(ft.Container):
             Styles.glass_container(self.log_area, padding=10),
         ], spacing=12, scroll=ft.ScrollMode.AUTO, expand=True)
 
+        self._active = False
+
+    def set_active(self, active: bool) -> None:
+        changed = bool(active) != self._active
+        self._active = bool(active)
+        if self._active and changed:
+            self.refresh_backlog()
+
     def log(self, message: str, color: str = "white"):
         self.log_area.controls.append(ft.Text(message, color=color, size=12, font_family="Consolas"))
         self.log_area.update()

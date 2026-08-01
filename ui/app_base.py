@@ -58,8 +58,13 @@ class AppController:
         self.page.bgcolor = BG_DARK
         self.page.padding = 0
 
-        # ── RC7: graceful shutdown on window close ──
-        self.page.on_window_event = self._on_window_event
+        # ── Graceful shutdown on window close ──
+        # Flet 0.27 moved window events and window state under ``page.window``.
+        # Register the guard before a close is requested: otherwise Windows
+        # destroys the native window first and leaves this Python process (and
+        # its downloader loop) alive without a visible window.
+        self.page.window.prevent_close = True
+        self.page.window.on_event = self._on_window_event
         self._closing = False
         self._ui_poller_stop = threading.Event()
 
@@ -138,7 +143,7 @@ class AppController:
             return
         self._closing = True
         try:
-            self.page.window_prevent_close = True
+            self.page.window.prevent_close = True
             self.page.update()
         except Exception:
             logger.debug("Unable to set window close guard", exc_info=True)
@@ -248,10 +253,10 @@ class AppController:
                         if error:
                             logger.error("Closing after shutdown error: %s", error)
                         try:
-                            self.page.window_destroy()
+                            self.page.window.destroy()
                         except Exception:
                             try:
-                                self.page.window_close()
+                                self.page.window.close()
                             except Exception:
                                 logger.debug("Unable to close Flet window", exc_info=True)
 
