@@ -17,6 +17,7 @@ from core.library_diagnostics import (
 )
 from ui.theme import (
     ACCENT_PRIMARY,
+    ACCENT_SECONDARY,
     BG_SURFACE_LIGHT,
     ERROR,
     SUCCESS,
@@ -25,6 +26,7 @@ from ui.theme import (
 )
 
 LIBRARY_PAGE_SIZE = 20
+FILE_PREVIEW_LIMIT = 200
 ANOMALY_DISPLAY_LIMIT = 200
 COVER_CANDIDATES = (
     "cover.jpg", "cover.jpeg", "cover.png", "cover.webp",
@@ -65,7 +67,11 @@ class LibraryView(ft.Container):
         self._current_page = 0
         self._mode = "cards"
         self._anomaly_filter = "__all__"
+        self._category = "all"
+        self._sort = "size_desc"
         self._load_generation = 0
+        self._detail_generation = 0
+        self._selected_rj_id = ''
 
         self.search_input = ft.TextField(
             hint_text="搜索 RJ / 文件夹 / 路径，输入后回车",
@@ -96,6 +102,20 @@ class LibraryView(ft.Container):
             on_click=lambda e: self._go_page(1),
         )
         self.mode_toggle = ft.Row([], spacing=6)
+        self.category_chips = ft.Row([], spacing=4, wrap=True)
+        self.sort_dropdown = ft.Dropdown(
+            value=self._sort,
+            width=150,
+            dense=True,
+            text_size=12,
+            options=[
+                ft.dropdown.Option("size_desc", "按容量"),
+                ft.dropdown.Option("files_desc", "按文件数"),
+                ft.dropdown.Option("name_asc", "按文件夹名"),
+                ft.dropdown.Option("rj_desc", "按 RJ 编号"),
+            ],
+            on_change=self._set_sort,
+        )
         self.anomaly_chips = ft.Row([], spacing=4, wrap=True)
 
         self.grid = ft.GridView(
@@ -106,6 +126,18 @@ class LibraryView(ft.Container):
             run_spacing=12,
         )
         self.anomaly_list = ft.ListView(expand=True, spacing=4)
+        self.detail_panel = Styles.glass_container(
+            ft.Column([
+                ft.Icon(ft.Icons.TOUCH_APP_OUTLINED, color=ACCENT_PRIMARY, size=34),
+                ft.Text("选择一张专辑", size=16, weight=ft.FontWeight.BOLD),
+                ft.Text("右侧会显示作品元数据与文件列表。", size=12, color="grey"),
+            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+               alignment=ft.MainAxisAlignment.CENTER, spacing=10),
+            padding=18,
+            width=370,
+            expand=False,
+        )
+        self.library_body = ft.Row([self.grid, self.detail_panel], expand=True, spacing=14)
 
         self.content = ft.Column([
             ft.Text("资源库", size=28, weight=ft.FontWeight.BOLD),
@@ -116,6 +148,8 @@ class LibraryView(ft.Container):
                 self.clear_search_button,
             ], spacing=6),
             self.mode_toggle,
+            ft.Row([self.category_chips, ft.Text("", expand=True), self.sort_dropdown],
+                   alignment=ft.MainAxisAlignment.END),
             self.anomaly_chips,
             ft.Row([
                 self.loading_text,
@@ -125,7 +159,7 @@ class LibraryView(ft.Container):
                 self.btn_next,
             ], alignment=ft.MainAxisAlignment.END),
             ft.Divider(height=1, color="transparent"),
-            self.grid,
+            self.library_body,
             self.anomaly_list,
         ], expand=True, spacing=8)
 
@@ -162,6 +196,37 @@ class LibraryView(ft.Container):
         if mode == self._mode:
             return
         self._mode = mode
+        self._current_page = 0
+        self.load_library()
+
+    def _build_category_chips(self) -> None:
+        self.category_chips.controls.clear()
+        choices = (
+            ("all", "全部作品"),
+            ("audio", "有音频"),
+            ("missing_cover", "无本地封面"),
+            ("warnings", "有警告"),
+        )
+        for key, label in choices:
+            self.category_chips.controls.append(ft.Chip(
+                label=ft.Text(label, size=11, color="white"),
+                bgcolor=ACCENT_PRIMARY if self._category == key else None,
+                shape=ft.RoundedRectangleBorder(radius=10),
+                on_click=lambda e, selected=key: self._set_category(selected),
+            ))
+
+    def _set_category(self, category: str) -> None:
+        if category == self._category:
+            return
+        self._category = category
+        self._current_page = 0
+        self.load_library()
+
+    def _set_sort(self, _event=None) -> None:
+        selected = str(self.sort_dropdown.value or "size_desc")
+        if selected == self._sort:
+            return
+        self._sort = selected
         self._current_page = 0
         self.load_library()
 
@@ -209,13 +274,20 @@ class LibraryView(ft.Container):
         search = (self.search_input.value or "").strip()
         requested_page = self._current_page
         anomaly_filter = self._anomaly_filter
+        category = self._category
+        sort = self._sort
         configured_roots = self._configured_roots()
 
         self._build_mode_toggle()
+        self._build_category_chips()
         self.loading_text.value = "正在读取资源库…"
         self.grid.visible = mode == "cards"
         self.anomaly_list.visible = mode == "anomalies"
         self.anomaly_chips.visible = mode == "anomalies"
+        self.category_chips.visible = mode == "cards"
+        self.sort_dropdown.visible = mode == "cards"
+        self.library_body.visible = mode == "cards"
+        self.detail_panel.visible = mode == "cards"
         self.btn_prev.disabled = True
         self.btn_next.disabled = True
         self._safe_update()
@@ -228,6 +300,8 @@ class LibraryView(ft.Container):
                         search=search,
                         offset=max(0, requested_page) * LIBRARY_PAGE_SIZE,
                         limit=LIBRARY_PAGE_SIZE,
+                        category=category,
+                        sort=sort,
                     )
                     total = int(initial.get("total", 0))
                     total_pages = max(
@@ -239,10 +313,14 @@ class LibraryView(ft.Container):
                             search=search,
                             offset=actual_page * LIBRARY_PAGE_SIZE,
                             limit=LIBRARY_PAGE_SIZE,
+                            category=category,
+                            sort=sort,
                         )
                     initial.update({
                         "mode": mode,
                         "search": search,
+                        "category": category,
+                        "sort": sort,
                         "page": actual_page,
                         "total_pages": total_pages,
                     })
@@ -325,10 +403,19 @@ class LibraryView(ft.Container):
         total_pages = int(snapshot.get("total_pages", 1))
         total = int(snapshot.get("total", 0))
         search = snapshot.get("search", "")
+        category = snapshot.get("category", "all")
+        sort = snapshot.get("sort", "size_desc")
+        category_label = {
+            "all": "全部作品", "audio": "有音频", "missing_cover": "无本地封面", "warnings": "有警告",
+        }.get(category, "全部作品")
+        sort_label = {
+            "size_desc": "容量", "files_desc": "文件数", "name_asc": "文件夹名", "rj_desc": "RJ 编号",
+        }.get(sort, "容量")
         self.summary_bar.value = self._summary_text(snapshot)
         self.page_info.value = (
             f"第 {self._current_page + 1}/{total_pages} 页 · {total} 项"
             + (f" · 搜索“{search}”" if search else "")
+            + (f" · {category_label} · 按{sort_label}" if category != "all" or sort != "size_desc" else "")
         )
         self.btn_prev.disabled = self._current_page <= 0
         self.btn_next.disabled = self._current_page + 1 >= total_pages
@@ -379,13 +466,103 @@ class LibraryView(ft.Container):
                 ),
             ], spacing=6)
             container = Styles.glass_container(card, padding=10)
-            if folder_path:
-                container.tooltip = folder_path
-                container.on_click = (
-                    lambda e, path=folder_path: self._open_folder(path)
-                )
+            container.on_click = lambda e, selected=rj_id: self.select_album(selected)
+            container.tooltip = f"查看 {rj_id} 的详情"
             self.grid.controls.append(container)
 
+    def select_album(self, rj_id: str) -> None:
+        """Select a poster and load its read-only detail off the UI thread."""
+        self._selected_rj_id = str(rj_id or "").strip().upper()
+        self._detail_generation += 1
+        generation = self._detail_generation
+        self.detail_panel.content = ft.Container(
+            padding=24,
+            alignment=ft.alignment.center,
+            content=ft.Column([
+                ft.ProgressRing(width=24, height=24, stroke_width=2),
+                ft.Text("正在读取专辑详情…", size=12, color=ACCENT_PRIMARY),
+            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=10),
+        )
+        self._safe_update()
+
+        def worker() -> dict[str, Any]:
+            detail = self.app_controller.db.get_library_detail(self._selected_rj_id)
+            if not detail:
+                return {"error": "未找到这张专辑的索引记录"}
+            detail["files"] = collect_file_preview(
+                str(detail.get("folder_path") or ""), FILE_PREVIEW_LIMIT
+            )
+            return detail
+
+        def apply(detail: dict[str, Any]) -> None:
+            if generation != self._detail_generation or not self._active:
+                return
+            self.detail_panel.content = self._detail_content(detail)
+            self._safe_update()
+
+        self.app_controller.run_blocking(worker, apply, action_label="读取专辑详情")
+
+    def _detail_content(self, detail: dict[str, Any]) -> ft.Control:
+        if detail.get("error"):
+            return ft.Container(padding=22, alignment=ft.alignment.center,
+                content=ft.Text(str(detail["error"]), color=ERROR, size=13))
+        rj_id = str(detail.get("rj_id") or "")
+        folder_path = str(detail.get("folder_path") or "")
+        title = str(detail.get("metadata_title") or detail.get("work_title") or detail.get("folder_name") or rj_id)
+        circle = str(detail.get("metadata_circle") or detail.get("work_circle") or "未知社团")
+        cover_source = _resolve_local_cover(folder_path, bool(detail.get("has_cover")))
+        if not cover_source:
+            cover_source = detail.get("metadata_cover_url") or detail.get("work_cover_url") or None
+        cover = _cover_widget(cover_source, 156) if cover_source else _no_cover_widget(156)
+        metadata = detail.get("metadata_json") if isinstance(detail.get("metadata_json"), dict) else {}
+        tags = _metadata_tags(metadata)
+        files_snapshot = detail.get("files") or {}
+        entries = files_snapshot.get("items") or []
+        file_rows = [
+            ft.Row([
+                ft.Icon(_file_icon(entry.get("kind", "other")), size=15, color=ACCENT_SECONDARY),
+                ft.Column([
+                    ft.Text(entry.get("path", ""), size=11, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                    ft.Text(fmt_size(int(entry.get("size", 0))), size=10, color="grey"),
+                ], expand=True, spacing=1),
+            ], spacing=8)
+            for entry in entries
+        ] or [ft.Text("未发现可显示的文件", size=12, color="grey")]
+        if files_snapshot.get("error"):
+            file_rows = [ft.Text(str(files_snapshot["error"]), size=12, color=ERROR)]
+        if files_snapshot.get("truncated"):
+            file_rows.insert(0, ft.Text(
+                f"仅显示前 {FILE_PREVIEW_LIMIT} 项；完整作品含 {int(detail.get('total_files', 0))} 个文件。",
+                size=11, color=WARNING,
+            ))
+        badges = ft.Row([
+            _badge(f"{int(detail.get('audio_count', 0))} 音频", SUCCESS),
+            _badge(f"{int(detail.get('total_files', 0))} 文件", ACCENT_PRIMARY),
+            _badge(fmt_size(int(detail.get('total_size', 0))), ACCENT_SECONDARY),
+        ], wrap=True, spacing=5)
+        tag_row = ft.Row([_badge(tag, BG_SURFACE_LIGHT) for tag in tags[:8]], wrap=True, spacing=4)
+        return ft.Column([
+            ft.Row([
+                ft.Text("专辑详情", size=17, weight=ft.FontWeight.BOLD, expand=True),
+                ft.IconButton(icon=ft.Icons.CONTENT_COPY_OUTLINED, tooltip="复制 RJ 编号",
+                              on_click=lambda e, value=rj_id: self._copy_text(value, "RJ 编号")),
+                ft.IconButton(icon=ft.Icons.CONTENT_COPY_OUTLINED, tooltip="复制专辑路径",
+                              on_click=lambda e, value=folder_path: self._copy_text(value, "专辑路径"),
+                              disabled=not bool(folder_path)),
+                ft.IconButton(icon=ft.Icons.FOLDER_OPEN_OUTLINED, tooltip="打开专辑文件夹",
+                              on_click=lambda e, path=folder_path: self._open_folder(path),
+                              disabled=not bool(folder_path)),
+            ], spacing=2),
+            cover,
+            ft.Text(title, size=14, weight=ft.FontWeight.W_600, max_lines=2,
+                    overflow=ft.TextOverflow.ELLIPSIS, tooltip=title),
+            ft.Text(f"{rj_id} · {circle}", size=12, color=ACCENT_PRIMARY),
+            badges,
+            tag_row,
+            ft.Divider(height=10),
+            ft.Text("文件列表", size=14, weight=ft.FontWeight.BOLD),
+            ft.ListView(file_rows, spacing=7, expand=True),
+        ], spacing=8, expand=True)
     def _build_anomaly_chips(self, groups: dict[str, list[dict]]) -> None:
         self.anomaly_chips.controls.clear()
         total = sum(len(groups.get(key, [])) for key in ANOMALY_ORDER)
@@ -419,6 +596,7 @@ class LibraryView(ft.Container):
         self.page_info.value = (
             f"共 {len(selected)} 项异常{suffix}"
             + (f" · 搜索“{search}”" if search else "")
+            + (f" · {category_label} · 按{sort_label}" if category != "all" or sort != "size_desc" else "")
         )
         self.btn_prev.disabled = True
         self.btn_next.disabled = True
@@ -465,6 +643,78 @@ class LibraryView(ft.Container):
         if not success:
             self.app_controller.show_snack(message)
 
+    def _copy_text(self, value: str, label: str) -> None:
+        if not value:
+            self.app_controller.show_snack(f"{label}为空，无法复制")
+            return
+        try:
+            if self.page:
+                self.page.set_clipboard(value)
+            self.app_controller.show_snack(f"已复制{label}")
+        except Exception as exc:
+            self.app_controller.show_snack(f"复制{label}失败：{exc}")
+
+
+def collect_file_preview(folder_path: str, limit: int = FILE_PREVIEW_LIMIT) -> dict[str, Any]:
+    """Enumerate at most ``limit`` files for a detail panel, never a full scan."""
+    root = Path(folder_path)
+    if not root.is_dir():
+        return {"items": [], "truncated": False, "error": "专辑文件夹不存在或无法访问"}
+    preview: list[dict[str, Any]] = []
+    try:
+        for current, directories, names in os.walk(root):
+            directories.sort(key=str.casefold)
+            names.sort(key=str.casefold)
+            for name in names:
+                candidate = Path(current) / name
+                try:
+                    size = candidate.stat().st_size
+                except OSError:
+                    size = 0
+                preview.append({
+                    "path": str(candidate.relative_to(root)).replace("\\", "/"),
+                    "size": size,
+                    "kind": _file_kind(candidate.suffix),
+                })
+                if len(preview) > max(1, int(limit)):
+                    return {"items": preview[:-1], "truncated": True}
+    except OSError as exc:
+        return {"items": preview, "truncated": False, "error": f"读取文件列表失败: {exc}"}
+    return {"items": preview, "truncated": False}
+
+
+def _file_kind(suffix: str) -> str:
+    extension = str(suffix or "").lower()
+    if extension in {".mp3", ".m4a", ".flac", ".wav", ".ogg", ".opus", ".aac"}:
+        return "audio"
+    if extension in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
+        return "image"
+    if extension in {".mp4", ".mkv", ".webm", ".avi"}:
+        return "video"
+    return "other"
+
+
+def _file_icon(kind: str):
+    return {
+        "audio": ft.Icons.AUDIOTRACK_OUTLINED,
+        "image": ft.Icons.IMAGE_OUTLINED,
+        "video": ft.Icons.MOVIE_OUTLINED,
+    }.get(kind, ft.Icons.INSERT_DRIVE_FILE_OUTLINED)
+
+
+def _metadata_tags(metadata: dict[str, Any]) -> list[str]:
+    raw = metadata.get("tags") or metadata.get("tag") or []
+    if isinstance(raw, dict):
+        raw = list(raw.values())
+    if not isinstance(raw, list):
+        raw = [raw]
+    tags: list[str] = []
+    for item in raw:
+        value = item.get("name") if isinstance(item, dict) else item
+        value = str(value or "").strip()
+        if value and value not in tags:
+            tags.append(value)
+    return tags
 
 def _badge(text: str, color: str) -> ft.Container:
     return ft.Container(

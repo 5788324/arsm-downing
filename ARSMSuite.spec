@@ -23,6 +23,8 @@ hiddenimports = sorted(set(
         "aiofiles",
         "yarl",
         "sqlite3",
+        "pystray",
+        "PIL",
     ]
 ))
 

@@ -150,3 +150,10 @@ Based on `takoyune/asmr.one-downloader`, MIT License. See [`LICENSE`](LICENSE).
 - 最终 one-folder：`ARSM-Suite-0.9.0-rc.2-windows-x64.zip`，57,251,928 bytes、195 entries，SHA-256 `37bece06a014631c8756a41de237a6d77db7de7f0f50949257550bdb65ee8e08`；SHA 文件一致，ZIP 内含 `ARSM-Suite.exe`，EXE File/ProductVersion 均为 `0.9.0-rc.2`。
 - 最终 EXE 的下载中心、资源库、系统工具、设置四页已可见往返并保存隔离截图；标题栏关闭连续 3 次均记录完整 shutdown，ARSM-Suite 与 Flet 子进程均为零残留。
 - 正式 `history.db`、`config.json`、`queue.json`、`E:\arsm`、正式任务与 `.part`：零接触。本地验收通过，下一门槛仅为 Git 提交、PR 与远端 CI；尚未创建 Release。
+### 资源库体验
+
+资源库以分页海报墙展示。点击专辑可在右侧查看只读元数据和最多 200 项文件预览；支持分类、排序、复制 RJ/路径及打开该专辑目录，不会移动正式资源库文件。
+
+### 系统托盘
+
+Windows 下点击标题栏关闭会隐藏到系统托盘。右键托盘图标可打开窗口、暂停/继续全部任务或彻底退出；若托盘后端不可用，应用会安全退出而不留下后台进程。

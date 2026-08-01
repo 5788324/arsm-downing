@@ -9,6 +9,7 @@ from pathlib import Path
 
 from core.paths import app_path
 from core.version import display_title
+from core.tray import SystemTray
 
 logger = logging.getLogger("echovault")
 
@@ -66,10 +67,17 @@ class AppController:
         self.page.window.prevent_close = True
         self.page.window.on_event = self._on_window_event
         self._closing = False
+        self._exit_requested = False
         self._ui_poller_stop = threading.Event()
 
         # ── UI message queue for thread-safe cross-thread updates ──
         self.ui_queue: queue.Queue = queue.Queue()
+        self.tray = SystemTray(
+            on_show=lambda: self.ui_queue.put(("tray_show_window",)),
+            on_pause_all=lambda: self.ui_queue.put(("tray_pause_all",)),
+            on_resume_all=lambda: self.ui_queue.put(("tray_resume_all",)),
+            on_exit=lambda: self.ui_queue.put(("tray_exit",)),
+        )
 
         # ── Initialize Core Backend ──
         self.config = ConfigManager.load()
@@ -101,6 +109,7 @@ class AppController:
         )
 
         self.setup_ui()
+        self.tray.start()
 
         # ── Start background workers ──
         # ── Start background workers (work_concurrency) ──
@@ -138,8 +147,17 @@ class AppController:
         self.db.close()
 
     def _on_window_event(self, e):
-        """Graceful, idempotent shutdown on window close."""
+        """Hide to tray on a normal close; explicit tray exit shuts down."""
         if e.data != "close" or self._closing:
+            return
+        if not self._exit_requested and self.tray.available:
+            self._hide_to_tray()
+            return
+        self._begin_shutdown()
+
+    def _begin_shutdown(self) -> None:
+        """Begin the existing idempotent backend shutdown sequence."""
+        if self._closing:
             return
         self._closing = True
         try:
@@ -166,6 +184,29 @@ class AppController:
                 pass
 
         future.add_done_callback(_finish_close)
+
+    def _hide_to_tray(self) -> None:
+        try:
+            self.page.window.visible = False
+            self.page.update()
+            logger.info("Window hidden to system tray")
+        except Exception:
+            logger.exception("Unable to hide window to system tray")
+            self._begin_shutdown()
+
+    def _show_from_tray(self) -> None:
+        try:
+            self.page.window.visible = True
+            self.page.window.minimized = False
+            self.page.window.to_front()
+            self.page.update()
+            logger.info("Window restored from system tray")
+        except Exception:
+            logger.exception("Unable to restore window from system tray")
+
+    def _exit_from_tray(self) -> None:
+        self._exit_requested = True
+        self._begin_shutdown()
 
     # ──────────────────────────────────────────────────────
     #  Thread-safe message enqueue (called from any thread)
@@ -247,8 +288,23 @@ class AppController:
                         callback, result = msg[1], msg[2]
                         callback(result)
 
+                    elif msg_type == "tray_show_window":
+                        self._show_from_tray()
+
+                    elif msg_type == "tray_pause_all":
+                        self.pause_all_downloads()
+
+                    elif msg_type == "tray_resume_all":
+                        self.resume_all_downloads()
+
+                    elif msg_type == "tray_exit":
+                        self._exit_from_tray()
+
                     elif msg_type == "close_window":
                         self._ui_poller_stop.set()
+                        tray = getattr(self, "tray", None)
+                        if tray is not None:
+                            tray.stop()
                         error = msg[1] if len(msg) > 1 else None
                         if error:
                             logger.error("Closing after shutdown error: %s", error)
