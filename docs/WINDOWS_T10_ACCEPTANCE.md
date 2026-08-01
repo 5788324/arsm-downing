@@ -1,62 +1,67 @@
-# ARSM Suite T10 交接
+# Windows T10 RC2 验收记录（未放行）
+
+日期：2026-08-01
+结论：条件 GO（禁止提交、推送、建 PR 或发布）
 
 ## 基线
 
-```text
-仓库：5788324/arsm-downing
-必须拉取：main@9f292e7947804f2e4d53290039501f79c6d1805d
-目标版本：0.9.0-rc.2
-交付方式：本地 overlay，不由 ChatGPT 推送
-```
+- 隔离 worktree：`G:\Antigravity\arsm.one\arsm-downing-t10-worktree`
+- 基线：`main@9f292e7947804f2e4d53290039501f79c6d1805d`
+- 分支：`codex/t10-queue-service`
+- Flet：`0.27.6`
+- 自动测试：`230 passed, 3 skipped`；跳过项仅为当前 Windows 环境不支持符号链接的三项测试。
+- `compileall`：通过；`git diff --check`：通过。
 
-## Codex 输入
+## 已通过的隔离 GUI 证据
 
-- `ARSM-T10-Batch-Paste-Fix-Overlay.zip`
-- `T10_BATCH_PASTE_CODEX_TASK.md`
-- `T10_BATCH_PASTE_LOCAL_TEST_REPORT.json`
+- RC2 one-folder：`ARSM-Suite-0.9.0-rc.2-windows-x64.zip`，57,247,433 bytes，195 个条目；SHA-256：`a8961e730111519b49200ff7c82f06930fd81d0d30e6aaba19e829c37416fdb3`。
+- EXE 文件版本和窗口标题均为 `0.9.0-rc.2`。
+- 200 个合成任务的七种筛选均显示与 SQLite 一致的数量：活动 160、下载中 0、等待中 80、暂停 40、失败 40、完成 40、全部 200。
+- 从“全部”的第二页切换到“活动任务”后自动回到第 1/7 页；完成任务只在“已完成/全部”筛选中出现。
+- 下载中心、资源库、系统工具、设置连续往返两轮，返回下载中心后队列摘要仍与 SQLite 一致；不存在“统计与成就”页。
+- 设置页将 `metadata_concurrency` 从 2 保存为 3；正常关闭、重启后界面和隔离 `config.json` 仍为 3；随后恢复默认值 2。
+- 三轮标题栏正常关闭均无 `ARSM-Suite` 残留进程。
+- 新的最小隔离实例通过本机 `127.0.0.1` 限速 HTTP 服务下载真实字节流：下载中显示作品/总网速与 ETA；暂停后 `.part` 为 20,578,304 bytes 且稳定；全部继续发出 `Range: bytes=20578304-`，收到匹配的 HTTP 206；最终 `local-t10.bin` 为 32,311,682 bytes，`.part` 消失，SQLite 记录 registered/completed，活动队列立即移除该作品。
 
-## 操作顺序
+截图和关闭证据：`Evidence/T10-RC2/`。
 
-1. 保留现有 `codex/t10-queue-service` 隔离 worktree；
-2. 运行 overlay 中 `VERIFY_T10_BATCH_PASTE_PACKAGE.ps1`；
-3. 运行 `APPLY_T10_BATCH_PASTE_FIX.ps1`，脚本会校验被修改文件的导出源码哈希；
-4. 使用真实 Flet 0.27.6 运行 import、compileall、pytest 和 `git diff --check`；
-5. 重新构建 Windows one-folder；
-6. 只补齐“批量粘贴”取消/确认 GUI 验收并做最小回归；
-7. 更新 `docs/WINDOWS_T10_ACCEPTANCE.md`；
-8. 全部通过后一个 commit、一次 push、一个新 PR。
+## 未完成的放行项
 
-## 禁止
+- 批量 RJ 预览的取消/确认：桌面自动化可点击并显示控件焦点，但未能稳定将文本输入或文件选择事件送达隔离 Flet shell；不能将单元测试替代为现场证据。
+- 真实小任务的开始、非空 `.part`、全部暂停、全部继续、Range 恢复和最终文件：通过，使用本机限速 HTTP 流和独立 SQLite；未访问网络或正式下载环境。
 
-- 不直接合并旧 PR #6；
-- 不访问正式 `history.db`、`E:\arsm` 或现有 100+ 任务；
-- 不修改 200/206/416 和 `.part` 核心；
-- 不执行 External Intake、迁移、VACUUM、backlog 或 T7；
-- 不让用户手工测试；
-- 不在失败后做零碎多次推送。
-
-## 必交证据
-
-- 分支、commit、PR URL；
-- Ubuntu/Windows CI；
-- `pytest` 总数；
-- Windows 构建 ZIP 和 SHA-256；
-- 下载页活动/下载中/等待/暂停/失败/完成筛选截图；
-- 第 1 页和第 2 页截图；
-- 批量粘贴输入、预览、取消零副作用与确认仅 ready 入队截图；
-- metadata_concurrency 保存重启；
-- 正常关闭后进程清单；
-- 正式环境零接触声明。
+因此本轮不进行 Git 提交、push、PR，也不发布。正式 `history.db`、`config.json`、`queue.json`、现有下载任务、`.part` 和 `E:\arsm` 均未访问或修改。
 
 
-## 2026-08-01 RC2 T10 隔离 Windows 验收更新
+## 2026-08-01 后续复测
 
-- 真实 Flet 0.27.6；compileall 和 git diff --check 均通过；pytest 为 230 passed、3 skipped（Windows 符号链接不可用）。
-- RC2 ZIP：ARSM-Suite-0.9.0-rc.2-windows-x64.zip，57,247,433 bytes，195 项，SHA-256 a8961e730111519b49200ff7c82f06930fd81d0d30e6aaba19e829c37416fdb3。
-- 七种队列筛选、分页回退、四页导航、metadata_concurrency 重启持久化、三轮正常关闭均已在隔离目录通过。
-- 本机 127.0.0.1 限速 HTTP 流已完成真实下载、暂停、非空 .part 保留、Range 206 续传、最终文件与完成项移除验证。
-- 原生 FilePicker 已从主入口移除，改为应用内批量粘贴对话框；等待最终 EXE 验证取消零副作用和确认仅加入 ready 项。验证前维持条件 GO。
-- 正式 history.db、config.json、queue.json、E:\arsm、现有任务和正式 .part 均未访问或修改。
+- 已完成本机 HTTP 真字节流的完整链路：下载、网速/ETA、暂停、非空且稳定的 .part、Range bytes=20578304- 与 HTTP 206、最终文件 32,311,682 bytes、SQLite completed/registered、活动队列移除。
+- 发现并修复 FilePicker 未注册到 page.overlay 的 Flet 0.27.6 兼容问题，新增回归测试；修复后全量测试为 231 passed、3 skipped。
+- 重新构建的候选 ZIP：57,246,973 bytes，195 项，SHA-256 912d7b819613ce56f5182718655605f112b5ef6af31460eae72b4a86e66f0d51。
+- 但实际新构建 EXE 点击批量导入文件后仍不弹出 Windows 选档框，日志无结果回调。因此批量预览取消/确认的现场证据仍失败；维持条件 GO，禁止 Git 放行。
+
+
+## 2026-08-01 GPT 批量粘贴修复（待 Windows 复测）
+
+原生 FilePicker 不再作为 RC2 批量输入入口。当前修复将按钮改为“批量粘贴”，在应用内部打开多行 TextField 对话框。
+
+代码级结果：
+
+- 输入对话框取消：不调用预览、不写 DB、不创建目录、不启动下载；
+- 预览对话框取消：works/downloads/队列/目录保持不变；
+- 最终确认：只提交 `BatchEnqueuePreview.ready`；
+- 重开输入框：旧的未提交文本不会保留；
+- FilePicker 从 `page.overlay` 移除，最终验收不再依赖原生 Windows 选档框；
+- 临时 Flet 接口桩下全量测试：238/238 PASS。
+
+仍需在真实 Flet 0.27.6 最终 EXE 中确认：
+
+1. “批量粘贴”按钮可稳定打开多行输入框；
+2. 混合输入预览显示 8 类统计；
+3. 取消前后 works/downloads/活动队列/目录树零变化；
+4. 确认后实际新增数等于 ready 数，其他分类不入队。
+
+上述四项通过前，整体结论继续为条件 GO，禁止提交、push、PR 和发布。
 
 
 ## 2026-08-01 T10 批量粘贴 Fix2 真实 Windows 复测
@@ -72,22 +77,6 @@
 - 正式 `history.db`、`config.json`、`queue.json`、`E:\arsm`、正式任务和 `.part`：零接触。
 
 当前结论：批量粘贴 GUI 与分类逻辑 PASS；整体 RC2 保持“条件 GO”，等待 T12 隔离真实网络/认证验收后再决定 Git 放行与发布。
-## 2026-08-01 T12 隔离真实网络小文件验收
-
-- Clash HTTP 代理 `127.0.0.1:7897` 可用；`RJ01276295`、`RJ01271436`、`RJ01261242`、`RJ01242844` 的 metadata 与 tracks 请求均成功。
-- 使用 `RJ01276295` 的最小 MP3 做端到端验证：metadata 与封面明确使用 `http://127.0.0.1:7897`，封面响应 `200`；音频 `download_proxy=None`，响应 `200`。
-- 音频临时文件只写入隔离目录 `_t12-network-check-20260801`：预期、接收和落盘均为 `1,627,577` bytes，大小精确一致；未创建下载任务或写入正式数据。
-- 小文件真实链路 PASS；多文件完整下载、外网暂停恢复和长期稳定性仍属于后续 T12/T11，RC2 暂不发布。
-### T12 并发 metadata 验证补充
-
-- 使用四个用户提供的 RJ，在 `metadata_concurrency=2` 下只读请求 metadata 与 tracks。
-- 实测峰值并发 `2`，四项 metadata 和 tracks 均成功；没有创建下载任务或启动音频 worker。
-### T12 真实外网暂停/续传补充（2026-08-01）
-
-- 以 `RJ01276295` 的 `1,627,577` bytes MP3 在隔离目录进行真实暂停/恢复：先落盘 `.part=524,288` bytes，再以 `Range: bytes=524288-` 续传。
-- 续传响应 `206`，`Content-Range: bytes 524288-1627576/1627577`；追加 `1,103,289` bytes 后最终大小精确为 `1,627,577` bytes。
-- 下载通道 `download_proxy=None`。完成后删除临时音频，只保留 JSON 证据；没有创建 SQLite 下载任务。
-- 曾尝试约 14.9MB 文件，但受当前外网吞吐量影响在验收命令时限内未完成；已停止测试进程并清理遗留 `.part`，不将其计为通过或产品缺陷。
 ## 2026-08-01 T11/T12 隔离真实网络与长期运行收口
 
 - 新增 `scripts/t11_t12_live_acceptance.py`：只允许新 sandbox，真实复用 `Orchestrator`；audio 最小优先、最多 4 文件且总量不超过 64MiB。

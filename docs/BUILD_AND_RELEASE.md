@@ -1,6 +1,6 @@
 # ARSM Suite 构建与发布
 
-当前发布候选版本：`0.9.0-rc.1`。
+当前发布候选版本：`0.9.0-rc.2`（尚未放行发布）。
 
 ## Windows 便携版
 
@@ -21,8 +21,8 @@
 产物：
 
 ```text
-release/ARSM-Suite-0.9.0-rc.1-windows-x64.zip
-release/ARSM-Suite-0.9.0-rc.1-windows-x64.zip.sha256
+release/ARSM-Suite-0.9.0-rc.2-windows-x64.zip
+release/ARSM-Suite-0.9.0-rc.2-windows-x64.zip.sha256
 ```
 
 ## 运行数据位置
@@ -68,4 +68,12 @@ python scripts/release_check.py
 
 ## 当前边界
 
-Linux 已完成 PyInstaller Analysis、EXE 和 COLLECT 构建验证。Windows EXE 启动、Flet Desktop 运行时、真实站点下载、文件锁和长路径仍以 Windows/Codex 证据为最终结论。
+Linux 已完成 PyInstaller Analysis、EXE 和 COLLECT 构建验证。Windows EXE 启动、Flet Desktop 运行时和真实小文件下载已有隔离证据；文件锁、长路径与 Defender 仍须在触发时记录，不能以未触发表述为通过。
+
+## 2026-08-02 RC2 最终关闭与可见 GUI 验收
+
+- 修复 Flet 0.27.6 窗口生命周期兼容性：关闭事件、阻止默认关闭、销毁窗口均改用 `page.window` API。旧 API 会让原生窗口先消失而保留 Python/下载器进程。
+- 无运行数据的隔离源码副本已完成真实 Flet 回归：`237 passed, 3 skipped`；3 个 skipped 均为 Windows 环境不支持符号链接。`compileall`、Flet import 与 `git diff --check` 通过。
+- 最终 one-folder：`ARSM-Suite-0.9.0-rc.2-windows-x64.zip`，57,251,928 bytes、195 entries，SHA-256 `37bece06a014631c8756a41de237a6d77db7de7f0f50949257550bdb65ee8e08`；SHA 文件一致，ZIP 内含 `ARSM-Suite.exe`，EXE File/ProductVersion 均为 `0.9.0-rc.2`。
+- 最终 EXE 的下载中心、资源库、系统工具、设置四页已可见往返并保存隔离截图；标题栏关闭连续 3 次均记录完整 shutdown，ARSM-Suite 与 Flet 子进程均为零残留。
+- 正式 `history.db`、`config.json`、`queue.json`、`E:\arsm`、正式任务与 `.part`：零接触。本地验收通过，下一门槛仅为 Git 提交、PR 与远端 CI；尚未创建 Release。

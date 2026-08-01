@@ -1,8 +1,8 @@
 """Post-RC application shell.
 
-The RC1 controller remains in :mod:`ui.app_base`.  This shell removes the
+The RC1 controller remains in :mod:`ui.app_base`. This shell removes the
 unused achievements page and adds one UI-thread refresh after global queue
-operations.  T10 can later fold the small compatibility layer back into the
+operations. T10 can later fold the small compatibility layer back into the
 service-oriented application structure without changing the release-tested
 backend.
 """
@@ -19,8 +19,6 @@ class AppController(BaseAppController):
     def __init__(self, page: ft.Page):
         super().__init__(page)
 
-        # Base RC1 layout: download, library, achievements, tools, settings.
-        # Keep existing view instances but remove/reindex the unused page.
         old_views = self.views
         self.views = {
             0: old_views[0],
@@ -33,6 +31,10 @@ class AppController(BaseAppController):
         self.nav_rail.selected_index = 0
         self.current_view = 0
         self.views_container.content = self.views[0]
+        for index, view in self.views.items():
+            setter = getattr(view, "set_active", None)
+            if callable(setter):
+                setter(index == 0)
         try:
             self.page.update()
         except Exception:
@@ -42,13 +44,22 @@ class AppController(BaseAppController):
         idx = e.control.selected_index
         if idx not in self.views:
             return
+        previous = self.views.get(self.current_view)
+        if previous is not None:
+            setter = getattr(previous, "set_active", None)
+            if callable(setter):
+                setter(False)
         self.current_view = idx
-        self.views_container.content = self.views[idx]
+        current = self.views[idx]
+        self.views_container.content = current
         self.views_container.update()
-        if idx == 1:
-            self.views[1].load_library()
+        setter = getattr(current, "set_active", None)
+        if callable(setter):
+            setter(True)
+        elif idx == 1:
+            current.load_library()
         elif idx == 2:
-            self.views[2].refresh_backlog()
+            current.refresh_backlog()
 
     def _queue_download_view_refresh(self, *, reset_speed: bool) -> None:
         def refresh(_result):

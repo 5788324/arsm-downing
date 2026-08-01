@@ -51,6 +51,11 @@ class DownloadView(ft.Container):
         )
 
         self.file_picker = ft.FilePicker(on_result=self.on_file_selected)
+        # Native desktop pickers must be registered with Flet page.overlay.
+        # Retain compatibility with lightweight unit-test page doubles.
+        overlay = getattr(self.app_controller.page, 'overlay', None)
+        if overlay is not None:
+            overlay.append(self.file_picker)
         self.batch_btn = ft.ElevatedButton(
             "\u6279\u91cf\u5bfc\u5165\u6587\u4ef6", icon=ft.Icons.FOLDER_OPEN,
             style=ft.ButtonStyle(
@@ -91,7 +96,6 @@ class DownloadView(ft.Container):
         ], spacing=12)
 
         self.content = ft.Column([
-            self.file_picker,
             ft.Text("\u4e0b\u8f7d\u4e2d\u5fc3", size=32, weight=ft.FontWeight.BOLD),
             ft.Row([self.rj_input, self.download_btn, self.batch_btn],
                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN),

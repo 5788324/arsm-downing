@@ -1,62 +1,92 @@
-# ARSM Suite T10 交接
+# TAKEOVER-T10 Queue Service 验收说明
 
-## 基线
+## 范围
+
+T10 解决 100+ 任务时的 SQLite N+1、批量输入不可解释、元数据并发无独立上限和隐藏页面无意义刷新问题。Windows 验收后，批量输入主入口进一步从不可靠的原生 FilePicker 改为应用内“批量粘贴”多行对话框。
+
+## 实现
+
+### DownloadService
+
+- 复用 AppController 的唯一 `LibraryVault`；
+- 一次聚合 CTE + 一次字节汇总，总计固定两次 SELECT；
+- 输出不可变 page/item/summary；
+- 保留 orphan downloads；
+- terminal work 不被历史 paused/failed 行重新激活；
+- read-only，不修改 DB。
+
+### Batch preview
+
+输入：RJ、纯数字、ASMR.one URL、空格/换行/中英文标点。
+
+分类：
 
 ```text
-仓库：5788324/arsm-downing
-必须拉取：main@9f292e7947804f2e4d53290039501f79c6d1805d
-目标版本：0.9.0-rc.2
-交付方式：本地 overlay，不由 ChatGPT 推送
+ready
+invalid_tokens
+duplicate_input
+already_active
+already_in_queue
+already_in_library
+already_completed
+needs_review
 ```
 
-## Codex 输入
+预览不写 DB、不建目录、不发网络请求。
 
-- `ARSM-T10-Batch-Paste-Fix-Overlay.zip`
-- `T10_BATCH_PASTE_CODEX_TASK.md`
-- `T10_BATCH_PASTE_LOCAL_TEST_REPORT.json`
+### MetadataScheduler
 
-## 操作顺序
+- asyncio FIFO queue；
+- 默认 2，最大 8；
+- 作品 metadata 和 tracks 在同一 slot 内完成；
+- 外部作品补全也复用同一队列；
+- 与音频 work/file workers 独立；
+- shutdown 幂等。
 
-1. 保留现有 `codex/t10-queue-service` 隔离 worktree；
-2. 运行 overlay 中 `VERIFY_T10_BATCH_PASTE_PACKAGE.ps1`；
-3. 运行 `APPLY_T10_BATCH_PASTE_FIX.ps1`，脚本会校验被修改文件的导出源码哈希；
-4. 使用真实 Flet 0.27.6 运行 import、compileall、pytest 和 `git diff --check`；
-5. 重新构建 Windows one-folder；
-6. 只补齐“批量粘贴”取消/确认 GUI 验收并做最小回归；
-7. 更新 `docs/WINDOWS_T10_ACCEPTANCE.md`；
-8. 全部通过后一个 commit、一次 push、一个新 PR。
+### Lifecycle
 
-## 禁止
+- 下载页隐藏：停止卡片重绘；
+- 返回：重新获取快照；
+- 资源库隐藏：使旧 worker 回调失效；
+- Tools/Settings：激活时刷新。
 
-- 不直接合并旧 PR #6；
-- 不访问正式 `history.db`、`E:\arsm` 或现有 100+ 任务；
-- 不修改 200/206/416 和 `.part` 核心；
-- 不执行 External Intake、迁移、VACUUM、backlog 或 T7；
-- 不让用户手工测试；
-- 不在失败后做零碎多次推送。
+## 自动证据
 
-## 必交证据
+```text
+pytest 232/232 PASS
+compileall PASS
+任务量 10/50/100/200：每次 2 SELECT
+metadata 100 作业：peak_active=2
+```
 
-- 分支、commit、PR URL；
-- Ubuntu/Windows CI；
-- `pytest` 总数；
-- Windows 构建 ZIP 和 SHA-256；
-- 下载页活动/下载中/等待/暂停/失败/完成筛选截图；
-- 第 1 页和第 2 页截图；
-- 批量粘贴输入、预览、取消零副作用与确认仅 ready 入队截图；
-- metadata_concurrency 保存重启；
-- 正常关闭后进程清单；
-- 正式环境零接触声明。
+## Codex Windows 验收
+
+必须使用临时 DB 和隔离目录。至少构造 200 个任务、每个 3 个文件，验证：
+
+1. 页面首次打开不冻结；
+2. 活动/下载中/等待/暂停/失败/完成/全部筛选；
+3. 上一页/下一页；
+4. 全部暂停/继续后汇总同步；
+5. 完成项从活动筛选消失；
+6. 总网速与作品网速同时正确；
+7. 批量输入取消前零新增任务；
+8. 确认后只添加 ready；
+9. metadata_concurrency 保存重启；
+10. 四页切换和正常关闭。
+
+## 明确不测
+
+不得使用正式 DB、正式 E 盘资源库或现有 100+ 下载任务作为夹具。
 
 
-## 2026-08-01 RC2 T10 隔离 Windows 验收更新
+## 2026-08-01 批量粘贴补充
 
-- 真实 Flet 0.27.6；compileall 和 git diff --check 均通过；pytest 为 230 passed、3 skipped（Windows 符号链接不可用）。
-- RC2 ZIP：ARSM-Suite-0.9.0-rc.2-windows-x64.zip，57,247,433 bytes，195 项，SHA-256 a8961e730111519b49200ff7c82f06930fd81d0d30e6aaba19e829c37416fdb3。
-- 七种队列筛选、分页回退、四页导航、metadata_concurrency 重启持久化、三轮正常关闭均已在隔离目录通过。
-- 本机 127.0.0.1 限速 HTTP 流已完成真实下载、暂停、非空 .part 保留、Range 206 续传、最终文件与完成项移除验证。
-- 原生 FilePicker 已从主入口移除，改为应用内批量粘贴对话框；等待最终 EXE 验证取消零副作用和确认仅加入 ready 项。验证前维持条件 GO。
-- 正式 history.db、config.json、queue.json、E:\arsm、现有任务和正式 .part 均未访问或修改。
+- “批量导入文件”从 RC2 主界面移除；
+- FilePicker 不再注册到 `page.overlay`；
+- “批量粘贴”直接打开应用内 multiline TextField；
+- 输入取消和预览取消均为零副作用；
+- 最终确认只提交 `ready`；
+- 真实 Flet 最终 EXE 验收仍是 Git 放行前最后一项。
 
 
 ## 2026-08-01 T10 批量粘贴 Fix2 真实 Windows 复测
@@ -72,22 +102,6 @@
 - 正式 `history.db`、`config.json`、`queue.json`、`E:\arsm`、正式任务和 `.part`：零接触。
 
 当前结论：批量粘贴 GUI 与分类逻辑 PASS；整体 RC2 保持“条件 GO”，等待 T12 隔离真实网络/认证验收后再决定 Git 放行与发布。
-## 2026-08-01 T12 隔离真实网络小文件验收
-
-- Clash HTTP 代理 `127.0.0.1:7897` 可用；`RJ01276295`、`RJ01271436`、`RJ01261242`、`RJ01242844` 的 metadata 与 tracks 请求均成功。
-- 使用 `RJ01276295` 的最小 MP3 做端到端验证：metadata 与封面明确使用 `http://127.0.0.1:7897`，封面响应 `200`；音频 `download_proxy=None`，响应 `200`。
-- 音频临时文件只写入隔离目录 `_t12-network-check-20260801`：预期、接收和落盘均为 `1,627,577` bytes，大小精确一致；未创建下载任务或写入正式数据。
-- 小文件真实链路 PASS；多文件完整下载、外网暂停恢复和长期稳定性仍属于后续 T12/T11，RC2 暂不发布。
-### T12 并发 metadata 验证补充
-
-- 使用四个用户提供的 RJ，在 `metadata_concurrency=2` 下只读请求 metadata 与 tracks。
-- 实测峰值并发 `2`，四项 metadata 和 tracks 均成功；没有创建下载任务或启动音频 worker。
-### T12 真实外网暂停/续传补充（2026-08-01）
-
-- 以 `RJ01276295` 的 `1,627,577` bytes MP3 在隔离目录进行真实暂停/恢复：先落盘 `.part=524,288` bytes，再以 `Range: bytes=524288-` 续传。
-- 续传响应 `206`，`Content-Range: bytes 524288-1627576/1627577`；追加 `1,103,289` bytes 后最终大小精确为 `1,627,577` bytes。
-- 下载通道 `download_proxy=None`。完成后删除临时音频，只保留 JSON 证据；没有创建 SQLite 下载任务。
-- 曾尝试约 14.9MB 文件，但受当前外网吞吐量影响在验收命令时限内未完成；已停止测试进程并清理遗留 `.part`，不将其计为通过或产品缺陷。
 ## 2026-08-01 T11/T12 隔离真实网络与长期运行收口
 
 - 新增 `scripts/t11_t12_live_acceptance.py`：只允许新 sandbox，真实复用 `Orchestrator`；audio 最小优先、最多 4 文件且总量不超过 64MiB。

@@ -129,6 +129,17 @@ class LibraryView(ft.Container):
             self.anomaly_list,
         ], expand=True, spacing=8)
 
+        self._active = False
+
+    def set_active(self, active: bool) -> None:
+        changed = bool(active) != self._active
+        self._active = bool(active)
+        if not self._active:
+            # Invalidate any worker result that was started while visible.
+            self._load_generation += 1
+        elif changed:
+            self.load_library()
+
     def _safe_update(self) -> None:
         try:
             if self.page:

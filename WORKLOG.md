@@ -1,137 +1,153 @@
 # ARSM Suite 当前阶段工作日志
 
-> 2026-06-27 至 2026-07-21 的完整历史见：  
-> [`docs/archive/WORKLOG_20260627_20260721.md`](docs/archive/WORKLOG_20260627_20260721.md)
+历史日志见 `docs/archive/WORKLOG_20260627_20260721.md`。
 
-## 当前快照
+## 2026-07-23：RC2 下载页修复
 
-```text
-已发布候选：0.9.0-rc.1
-当前开发候选：0.9.0-rc.2
-当前任务：T9.1 下载页现场缺陷修复
-下一任务：T10 Queue Service 与大队列性能
-本地测试：211/211 PASS
-正式数据：零访问、零修改
-```
+- Windows 实机证明全部暂停/开始核心有效；
+- 修复汇总滞后、增加全局/作品网速；
+- 完成项立即移出活动队列；
+- 删除统计与成就页；
+- GitHub Ubuntu/Windows 211/211 PASS；
+- 合并提交：`9f292e7947804f2e4d53290039501f79c6d1805d`。
 
-## 2026-07-21：0.9.0-rc.1 合并
+## 2026-07-30：TAKEOVER-T10 本地开发
 
-- PR #1 合并到 `main`；
-- 合并提交 `9f292e7947804f2e4d53290039501f79c6d1805d`；
-- Ubuntu/Windows CI 和 205 tests 通过；
-- Windows one-folder Artifact 通过；
-- 自动结论 `PASS_WITH_NOTES`。
+### 执行方式
 
-## 2026-07-22：v2 审计与放弃
+- 只读 GitHub；
+- 未推送、未创建远端 PR；
+- 从 RC1 Bundle 重建源码，并通过 GitHub 只读文件核对 RC2 当前文件；
+- 审查旧 PR #6，仅吸收有效设计，不直接合并旧分支。
 
-- `ARSM-Library-v2-source-20260722` 不作为替代版本；
-- 不合并其数据库、下载引擎和 UI；
-- Service/read model、批量快照、metadata queue、批量预览、状态迁移和页面生命周期纳入 T10。
+### 完成
 
-## 2026-07-23：Post-RC 文档重整
-
-- PR #7 合并；
-- README、CURRENT_STATE、路线图、交接、决策和工作流与 RC 合并后的事实对齐；
-- 旧 2700+ 行 WORKLOG 完整归档。
-
-## 2026-07-23：Windows 真实下载验收复核
-
-### 输入
-
-`CODEX_WINDOWS_ACCEPTANCE.md`
-
-### 已确认
-
-- Windows 11 三次启动和标题栏正常关闭；
-- 隔离配置保存并重启保留；
-- 9 个不同 RJ 和 475 条下载记录；
-- 暂停后 466 paused，4 个非空 `.part` 合计约 30.3 MB；
-- 重启后暂停状态保持；
-- 全部开始后恢复 downloading/queued；
-- `.part` 增长到约 54.0 MB；
-- 最终 MP3 14,017,924 字节；
-- 正式环境未触碰。
-
-### 发现
-
-批量恢复后下载页汇总仍显示旧状态：
-
-```text
-下载中 0、排队 0、暂停 9
-```
-
-### 判定
-
-核心批量动作有效；缺陷位于 UI 刷新和汇总层。
-
-## 2026-07-23：T9.1 下载页现场缺陷修复
-
-### 执行者
-
-```text
-ChatGPT
-```
-
-### 目标
-
-在开始 T10 前修复现场验收发现的问题，并删除无用成就页。
-
-### 实际完成
-
-1. 新增 `reload_queue_from_database()`；
-2. 全部暂停/继续结束后通过 UI queue 触发一次 DB 重载；
-3. 汇总按活动作品重新计算；
-4. 增加实时总网速；
-5. 卡片改用 `work_speed_bps`；
-6. 完成作品立即移出活动队列；
-7. 批量按钮改为“全部暂停/全部继续”，并按状态禁用；
-8. 从运行时导航移除 Dashboard/“统计与成就”，成就检查改为兼容 no-op；
-9. RC1 界面实现保留为 `app_base.py` / `download_view_base.py`，RC2 通过小型兼容层覆盖，待 T10 再合并整理；
-10. 旧 achievements 配置字段暂留兼容；
-11. 版本改为 `0.9.0-rc.2`；
-12. 新增 6 项回归测试。
-
-### 修改文件
-
-```text
-core/version.py
-ui/app.py
-ui/app_base.py（RC1 兼容基线）
-ui/views/download_view.py
-ui/views/download_view_base.py（RC1 兼容基线）
-tests/test_download_ui_semantics.py
-tests/test_app_background.py
-tests/test_import_smoke.py
-tests/test_release_packaging.py
-README.md
-CURRENT_STATE.md
-NEXT_TASK_ROADMAP.md
-HANDOFF.md
-WORKLOG.md
-DECISIONS.md
-```
-
-### 数据影响
-
-```text
-正式 DB：未访问
-真实 E:\arsm：未访问
-正式任务：未修改
-下载核心：未修改
-文件删除：无；“统计与成就”已从运行时导航移除
-```
+- `core/read_models.py`；
+- `core/services/download_service.py`；
+- `core/metadata_scheduler.py`；
+- `core/state_policy.py`；
+- 配置和设置页增加 `metadata_concurrency`；
+- Orchestrator 接入独立 metadata worker queue；
+- 下载页接入队列快照、分页、筛选和批量预览；
+- RC2 全局/作品网速、完成项即时移除和批量按钮保持；
+- 四页 active/inactive 生命周期；
+- 新增性能、并发、状态、UI 和生命周期回归测试。
 
 ### 测试
 
 ```text
-python -m compileall -q core ui tools tests scripts main.py：PASS
-python -m pytest：211/211 PASS
+compileall：PASS
+pytest：232/232 PASS
+10/50/100/200 个任务：2 次 SELECT
+100 个 metadata 作业：峰值 2
 ```
 
-本地容器无真实 Flet，UI 测试通过临时接口桩运行；GitHub CI 必须使用真实锁定依赖复核。
+本地 UI 测试使用临时 Flet 接口桩，该桩不进入交付包。真实 Flet 和 Windows 由 Codex验收。
 
-### 剩余
+### 数据影响
 
-- GitHub Linux/Windows CI；
-- 10 个输入/9 distinct 原因由 T10 批量预览明确呈现；
-- 合并后开始 T10。
+```text
+正式数据库：未访问
+E:\arsm：未访问
+现有任务：未访问
+数据库 schema：未改变
+文件移动/删除：无
+Git 远端写入：无
+```
+
+### 下一步
+
+Codex拉取最新 main，应用 overlay，完成 Windows/Flet/构建/CI 和最终 PR。
+
+
+## 2026-08-01 RC2 T10 隔离 Windows 验收更新
+
+- 真实 Flet 0.27.6；compileall 和 git diff --check 均通过；pytest 为 230 passed、3 skipped（Windows 符号链接不可用）。
+- RC2 ZIP：ARSM-Suite-0.9.0-rc.2-windows-x64.zip，57,247,433 bytes，195 项，SHA-256 a8961e730111519b49200ff7c82f06930fd81d0d30e6aaba19e829c37416fdb3。
+- 七种队列筛选、分页回退、四页导航、metadata_concurrency 重启持久化、三轮正常关闭均已在隔离目录通过。
+- 本机 127.0.0.1 限速 HTTP 流已完成真实下载、暂停、非空 .part 保留、Range 206 续传、最终文件与完成项移除验证。
+- 批量预览取消/确认的现场 UI 证据仍缺失：当前 Flet 桌面壳自动化无法稳定发送文本输入或文件选择结果。结论保持条件 GO；不提交、不推送、不建 PR、不发布。
+- 正式 history.db、config.json、queue.json、E:\arsm、现有任务和正式 .part 均未访问或修改。
+
+
+## 2026-08-01：批量粘贴阻塞修复
+
+### 输入事实
+
+- Codex 提供 `ARSM-T10-CURRENT-SOURCE-CLEAN.zip`，SHA-256 `2acf0d616a090e0e2eb16130b0c488f02910e9fff44ea0a5c7fdd7f731587922`；
+- 包含 340 个文件，未包含 Git、虚拟环境、构建、Evidence、数据库、配置、队列或 `.part`；
+- 原生 Flet 0.27.6 FilePicker 在最终 EXE 中未可靠弹出，批量预览现场验收被阻塞。
+
+### 修改
+
+- 将“批量导入文件”替换为应用内“批量粘贴”；
+- 多行 TextField 支持 RJ、纯数字、ASMR.one URL 和多种分隔符；
+- 关闭输入对话框不触发分类、数据库、目录、网络或队列操作；
+- 点击预览后继续复用现有完整分类模型；
+- 确认时只对 `ready` 项调用 `start_download`；
+- FilePicker 从 page.overlay 移除，不再进入 RC2 主链路；
+- 重开输入对话框时不保留上次未提交文本。
+
+### 自动验证
+
+```text
+compileall：PASS
+pytest collection（临时 Flet 接口桩）：238
+pytest（临时 Flet 接口桩）：238/238 PASS
+新增 UI 回归：5 项
+正式数据访问：无
+Git 远端写入：无
+```
+
+临时 Flet 桩仅用于当前 Linux 容器，不进入交付包。最终真实 Flet 0.27.6 验收由 Codex完成。
+
+
+## 2026-08-01 T10 批量粘贴 Fix2 真实 Windows 复测
+
+- 真实 Flet `0.27.6`：输入对话框与批量预览均已在隔离 Windows EXE 显示；原生 FilePicker 不再参与主链路。
+- 修复了两项真实 Flet/GUI 缺陷：对话框改用 `page.open(dialog)` / `page.close(dialog)`，并且不再把下载页展示缓存误判为“当前活动”。
+- 自动验证：对话框定向 `18 passed`；完整回归 `236 passed, 3 skipped`。3 项 skipped 均为 Windows 环境无法创建符号链接。
+- Fix2 构建：`ARSM-Suite-0.9.0-rc.2-windows-x64.zip`，57,249,902 bytes，195 entries，SHA-256 `e5eb73c033a7cac62b053f52846eb92b71d5214b73f348b3f4f4ff2d6ccdcbc7`，包含 `ARSM-Suite.exe`。
+- 输入取消零副作用：`works=0`、`downloads=0`、活动任务 `0`、下载文件 `0` 均保持不变。
+- 预览取消零副作用：隔离夹具的 `works=2`、`downloads=1`、`library_items=1`、活动 `1`、下载文件 `0` 均保持不变。
+- 混合输入已现场显示完整分类：ready 2、invalid 1、duplicate 1、active 0、queue 1、library 1、completed 1、review 1；不存在静默丢项。
+- 确认“添加 2 项”只为 `RJ00000001` 和 `RJ00000008` 取得 metadata 槽位；其他分类没有启动。外网 metadata 在 150 秒内未返回且未落库，按 T12 `BLOCKED_BY_NETWORK/AUTH` 记录，不视为下载成功。
+- 正式 `history.db`、`config.json`、`queue.json`、`E:\arsm`、正式任务和 `.part`：零接触。
+
+当前结论：批量粘贴 GUI 与分类逻辑 PASS；整体 RC2 保持“条件 GO”，等待 T12 隔离真实网络/认证验收后再决定 Git 放行与发布。
+## 2026-08-01 T12 隔离真实网络小文件验收
+
+- Clash HTTP 代理 `127.0.0.1:7897` 可用；`RJ01276295`、`RJ01271436`、`RJ01261242`、`RJ01242844` 的 metadata 与 tracks 请求均成功。
+- 使用 `RJ01276295` 的最小 MP3 做端到端验证：metadata 与封面明确使用 `http://127.0.0.1:7897`，封面响应 `200`；音频 `download_proxy=None`，响应 `200`。
+- 音频临时文件只写入隔离目录 `_t12-network-check-20260801`：预期、接收和落盘均为 `1,627,577` bytes，大小精确一致；未创建下载任务或写入正式数据。
+- 小文件真实链路 PASS；多文件完整下载、外网暂停恢复和长期稳定性仍属于后续 T12/T11，RC2 暂不发布。
+### T12 并发 metadata 验证补充
+
+- 使用四个用户提供的 RJ，在 `metadata_concurrency=2` 下只读请求 metadata 与 tracks。
+- 实测峰值并发 `2`，四项 metadata 和 tracks 均成功；没有创建下载任务或启动音频 worker。
+### T12 真实外网暂停/续传补充（2026-08-01）
+
+- 以 `RJ01276295` 的 `1,627,577` bytes MP3 在隔离目录进行真实暂停/恢复：先落盘 `.part=524,288` bytes，再以 `Range: bytes=524288-` 续传。
+- 续传响应 `206`，`Content-Range: bytes 524288-1627576/1627577`；追加 `1,103,289` bytes 后最终大小精确为 `1,627,577` bytes。
+- 下载通道 `download_proxy=None`。完成后删除临时音频，只保留 JSON 证据；没有创建 SQLite 下载任务。
+- 曾尝试约 14.9MB 文件，但受当前外网吞吐量影响在验收命令时限内未完成；已停止测试进程并清理遗留 `.part`，不将其计为通过或产品缺陷。
+## 2026-08-01 T11/T12 隔离真实网络与长期运行收口
+
+- 新增 `scripts/t11_t12_live_acceptance.py`：只允许新 sandbox，真实复用 `Orchestrator`；audio 最小优先、最多 4 文件且总量不超过 64MiB。
+- `RJ01276295` 真实音频验收通过：4/4 完成，总计 `30,285,707` bytes；暂停时 `.part=54,694` bytes 稳定，服务重建后收到 HTTP `206` Range 续传，最终活动任务为 0。
+- 连续运行 `2,741.38` 秒，27 个一分钟 SQLite 快照稳定；正常 shutdown，无本验收 ARSM/Python 遗留进程。
+- 详细证据：`docs/T11_T12_REAL_NETWORK_LONG_RUN.md` 及隔离 sandbox 的 JSON、日志和文件哈希。可见四页长时往返未在本轮重做，继续沿用 T10 Windows 证据；Defender、长路径、文件占用均未触发。
+- 当前为 **条件 GO**：不得据此发布、提交或推送；先完成最终自动回归与人工代码/CI 复核。
+## 最终自动回归（2026-08-01）
+
+- 在新建的无运行数据源码副本中，固定可写 TEMP 后执行：`236 passed, 3 skipped in 95.43s`。
+- 3 个 skipped 均为 Windows 环境无法创建 symbolic link；`compileall` 与真实 Flet 导入通过。
+- 当前工作树旁的 pytest 保护门拒绝执行，是因为隔离验收运行已生成本地 `history.db/config.json`；该拒绝是预期安全机制，不是测试失败。
+- 新增验收脚本不被冻结应用导入，未改变下载器生产模块或 Windows one-folder 包内容，因此本轮不重复构建 ZIP；既有 RC2 Fix2 构建仍仅作为上一轮二进制证据，未因此放行发布。
+## 2026-08-02 RC2 最终关闭与可见 GUI 验收
+
+- 修复 Flet 0.27.6 窗口生命周期兼容性：关闭事件、阻止默认关闭、销毁窗口均改用 `page.window` API。旧 API 会让原生窗口先消失而保留 Python/下载器进程。
+- 无运行数据的隔离源码副本已完成真实 Flet 回归：`237 passed, 3 skipped`；3 个 skipped 均为 Windows 环境不支持符号链接。`compileall`、Flet import 与 `git diff --check` 通过。
+- 最终 one-folder：`ARSM-Suite-0.9.0-rc.2-windows-x64.zip`，57,251,928 bytes、195 entries，SHA-256 `37bece06a014631c8756a41de237a6d77db7de7f0f50949257550bdb65ee8e08`；SHA 文件一致，ZIP 内含 `ARSM-Suite.exe`，EXE File/ProductVersion 均为 `0.9.0-rc.2`。
+- 最终 EXE 的下载中心、资源库、系统工具、设置四页已可见往返并保存隔离截图；标题栏关闭连续 3 次均记录完整 shutdown，ARSM-Suite 与 Flet 子进程均为零残留。
+- 正式 `history.db`、`config.json`、`queue.json`、`E:\arsm`、正式任务与 `.part`：零接触。本地验收通过，下一门槛仅为 Git 提交、PR 与远端 CI；尚未创建 Release。

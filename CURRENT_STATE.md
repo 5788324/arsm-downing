@@ -1,147 +1,154 @@
 # ARSM Suite 当前状态
 
-> 更新时间：2026-07-23  
-> 已发布候选：`0.9.0-rc.1`  
-> 当前开发候选：`0.9.0-rc.2`  
-> 当前阶段：下载页现场缺陷修复，随后进入 TAKEOVER-T10
+> 更新时间：2026-08-01
+> 远端基线：`main@9f292e7947804f2e4d53290039501f79c6d1805d`
+> 当前版本：`0.9.0-rc.2`
+> 当前阶段：`T10 Windows 验收通过；T11/T12 隔离多文件与长期运行通过（保留 GUI 长时观察备注）`
 
-## 1. 当前产品状态
+## 1. 已确认发布事实
 
-ARSM Suite 继续作为一个单体 Windows Flet 应用，当前主页面为：
+- `0.9.0-rc.1` Release、ZIP 和 SHA-256 已通过；
+- Windows 11 隔离环境已验证三次正常启动/关闭、真实元数据、真实文件列表、非空 `.part`、暂停、关闭重启、恢复和最终非空 MP3；
+- “全部暂停”和“全部开始”核心行为有效；旧缺陷是 UI 汇总未刷新；
+- RC2 已修复汇总、网速、完成项移除和批量按钮状态，并删除成就页；
+- RC2 GitHub Ubuntu/Windows CI：211/211 PASS。
 
-```text
-下载中心
-资源库
-系统工具
-设置
-```
+## 2. T10 本地实现
 
-“统计与成就”页面已从 `0.9.0-rc.2` 删除。历史配置中的 `achievements` 字段暂时保留兼容读取，不再展示或写入新成就。
+### Queue Service
 
-## 2. 架构约束
+- 不可变 `DownloadQueueItem/DownloadQueueSummary/DownloadQueuePage`；
+- `DownloadService` 只复用现有 `LibraryVault`，不创建第二连接；
+- 队列快照固定两次 SELECT，不按卡片查询；
+- 分页 1~200 项，默认 24；
+- 筛选：活动、下载中、等待、暂停、失败、完成、全部；
+- completed 默认不占活动队列。
 
-```text
-history.db / SQLite = 唯一业务真源
-LibraryVault = 唯一正式数据库访问入口
-UI 不直接 sqlite3.connect()
-queue.json 不作为历史状态真源
-文件移动/隔离/删除必须 dry-run 且可恢复
-```
+### 批量输入
 
-## 3. 已完成阶段
+- 主入口改为应用内“批量粘贴”多行对话框，不再依赖 Windows 原生 FilePicker；
+- 支持 RJ、纯数字、ASMR.one URL；
+- 预览阶段零写入、零建目录、零网络；
+- 识别输入重复、活动任务、SQLite 队列、资源库索引、完成历史和同前缀目录；
+- 确认后才逐项入队，并明确解释“提交 10 个但只有 9 个不同 RJ”的原因。
 
-| 阶段 | 状态 | 结果 |
-|---|---|---|
-| T0~T4 | PASS | External Intake 冻结、事务层、统一测试和 CI |
-| T5A | PASS | 200/206/416、`.part`、暂停恢复和镜像切换 |
-| T5C | PASS | 资源库搜索、分页、异常视图和后台加载 |
-| T6/T6B | PASS | 复制资源库沙盒、Tools 与 backlog 安全收口 |
-| T8A | PASS | 迁移 manifest、四表同步和回滚 |
-| T8B | PASS | 快照 rebuild 与原子索引替换 |
-| T9 | PASS_WITH_NOTES | 0.9.0-rc.1、构建链和 Windows Artifact |
-| T9.1 | CODE_COMPLETE | 下载页现场缺陷修复与成就页删除 |
+### Metadata Scheduler
 
-## 4. 0.9.0-rc.1 发布与 CI
+- 独立 FIFO worker queue；
+- 默认 2，限制 1~8；
+- 与 work/file 并发独立；
+- 100 个作业峰值并发实测为 2；
+- shutdown 幂等，关闭时取消未完成 metadata 作业。
 
-```text
-PR #1：MERGED
-main 合并提交：9f292e7947804f2e4d53290039501f79c6d1805d
-portable pytest：205/205 PASS
-Ubuntu / Python 3.10：PASS
-Windows / Python 3.12：PASS
-Windows one-folder Artifact：PASS
-```
+### UI 生命周期
 
-## 5. Windows 11 真实验收
+- 下载页隐藏后停止卡片重绘，后台下载继续；
+- 返回下载页立即读取 SQLite 快照；
+- 资源库离开后使正在返回的旧查询结果失效；
+- Tools 和 Settings 只在激活时执行必要刷新。
 
-Codex 隔离验收记录：
+### 状态策略
 
-```text
-Windows 11 Pro 10.0.26200 x64
-main/tag SHA：9f292e7947804f2e4d53290039501f79c6d1805d
-结论：PASS_WITH_NOTES
-```
+- 新增显式合法/非法迁移规则；
+- read model 的按钮能力使用该策略；
+- 不批量迁移旧状态，不修改 schema；
+- 全写路径强制 enforcement 留待后续小任务，避免破坏历史兼容。
 
-已经实际验证：
-
-- 连续三次启动并通过标题栏正常关闭；
-- 下载中心、资源库、统计与成就、系统工具、设置均能打开（成就页现已决定删除）；
-- 隔离配置原子保存并在重启后保留；
-- 真实元数据和文件列表写入；
-- 9 个不同 RJ、475 条下载记录；
-- 暂停后 466 条 paused，非空 `.part` 保留；
-- 正常关闭、重启后暂停状态保持；
-- “全部开始”能够恢复下载；
-- `.part` 数量和字节数继续增长；
-- 存在 14,017,924 字节的最终 MP3；
-- 未触碰正式 DB、正式目录和正式任务。
-
-确认的缺陷：
-
-```text
-批量恢复后，底部汇总仍显示旧的“下载中 0、排队 0、暂停 9”。
-```
-
-## 6. T9.1 修复内容
-
-`0.9.0-rc.2` 已完成代码级修复：
-
-1. 批量暂停/继续完成后发送一次 UI 刷新消息；
-2. 下载页从 SQLite 重新构建活动队列；
-3. 汇总文本与按钮状态同步刷新；
-4. 汇总显示实时全局总速度；
-5. 每张卡使用 `work_speed_bps`，不再把全局速度复制到每张卡；
-6. 工作完成后立即从活动队列移除；
-7. “全部开始”改名为“全部继续”；
-8. 没有可暂停/继续任务时按钮自动禁用；
-9. 删除 Dashboard/统计与成就页面；
-10. 删除下载完成后的成就检查调用。
-
-本地验证：
+## 3. 验证
 
 ```text
 compileall：PASS
-portable tests：211/211 PASS
+批量粘贴修复本地测试桩：238/238 PASS
+Windows 修复前基线：231 passed，3 skipped
+10/50/100/200 个任务：固定 2 次 SELECT
+100 个 metadata 作业：峰值并发 2
+正式 DB：未访问
+真实 E:\arsm：未访问
+旧 .part：未修改
+数据库 schema：未修改
 ```
 
-待 GitHub 使用真实 Flet 0.27.6 运行 Linux/Windows CI。
+批量粘贴新增测试在临时 Flet 接口桩下通过；该桩不进入交付包。真实 Flet 0.27.6 下只需复测批量粘贴对话框、取消零副作用和确认仅加入 ready 项。
 
-## 7. 批量按钮结论
+## 4. Git 状态
 
-两个按钮都有实际核心作用：
+- ChatGPT 本轮没有推送、没有创建远端分支、没有更新 PR；
+- 旧 Draft PR #6 基于 `main@9f292e...`，与 RC2 直接冲突，不应直接 merge；
+- Codex 应从最新 `main@9f292e7` 新建一个分支，应用 T10 overlay，形成一个 commit 和一个 PR；
+- 旧 PR #6 可在新 PR 建立后关闭并注明 superseded。
 
-- **全部暂停**：把 queued/downloading 文件写为 paused、冻结速度、清空内存队列并取消活动任务；
-- **全部继续**：清除 global pause，扫描可恢复任务，重新准备目标并入队。
+## 5. Codex 必做
 
-此前“像没用”的主要原因是 UI 汇总不刷新，不是核心动作没有执行。
+1. 在现有隔离 worktree 应用 `ARSM-T10-Batch-Paste-Fix-Overlay.zip`；
+2. 使用真实 Flet 0.27.6 跑 import、compileall、pytest 和 `git diff --check`；
+3. 重新构建 Windows one-folder 并更新 ZIP/SHA-256；
+4. 验证“批量粘贴”打开应用内多行对话框，不触发原生 FilePicker；
+5. 混合输入取消后 works/downloads/队列/目录零变化；
+6. 确认后仅 ready 项入队，预览统计与实际一致；
+7. 快速复核筛选、暂停/继续、设置和三次关闭；
+8. 全部通过后一个 commit、一次 push、一个新 PR。
 
-## 8. 尚待确认
+## 6. 继续冻结
 
-Windows 验收提交了 10 个任务，但 SQLite 中是 9 个不同 RJ。当前没有证据证明数据丢失；可能是输入重复、已存在任务或无效项被去重。该问题进入 T10 的批量预览功能：提交前明确显示可添加、重复、已存在和无效数量。
+正式迁移、External Intake execute、VACUUM、backlog execute、T7 和任何生产批量状态写入继续冻结。
 
-## 9. 正式环境边界
 
-本轮开发和测试均未：
+## 2026-08-01 RC2 T10 隔离 Windows 验收更新
 
-- 连接或修改正式 `history.db`；
-- 读取、移动或删除真实 `E:\arsm`；
-- 修改正式配置或队列；
-- 改动现有 100+ 混合状态任务；
-- 修改 200/206/416 下载核心或 `.part` 语义。
+- 真实 Flet 0.27.6；compileall 和 git diff --check 均通过；pytest 为 230 passed、3 skipped（Windows 符号链接不可用）。
+- RC2 ZIP：ARSM-Suite-0.9.0-rc.2-windows-x64.zip，57,247,433 bytes，195 项，SHA-256 a8961e730111519b49200ff7c82f06930fd81d0d30e6aaba19e829c37416fdb3。
+- 七种队列筛选、分页回退、四页导航、metadata_concurrency 重启持久化、三轮正常关闭均已在隔离目录通过。
+- 本机 127.0.0.1 限速 HTTP 流已完成真实下载、暂停、非空 .part 保留、Range 206 续传、最终文件与完成项移除验证。
+- 原生 FilePicker 现场入口无法可靠弹出，已决定退出 RC2 主链路；当前源码改为应用内“批量粘贴”对话框并新增零副作用/仅 ready 入队回归测试。该修复尚未由真实 Flet 0.27.6 最终 EXE 验证，因此维持条件 GO；不提交、不推送、不建 PR、不发布。
+- 正式 history.db、config.json、queue.json、E:\arsm、现有任务和正式 .part 均未访问或修改。
 
-## 10. 当前冻结
 
-```text
-External Intake execute
-正式资源库迁移、移动、隔离和删除
-正式 VACUUM
-正式 backlog execute
-T7 正式目录整理
-```
+## 2026-08-01 T10 批量粘贴 Fix2 真实 Windows 复测
 
-## 11. 下一步
+- 真实 Flet `0.27.6`：输入对话框与批量预览均已在隔离 Windows EXE 显示；原生 FilePicker 不再参与主链路。
+- 修复了两项真实 Flet/GUI 缺陷：对话框改用 `page.open(dialog)` / `page.close(dialog)`，并且不再把下载页展示缓存误判为“当前活动”。
+- 自动验证：对话框定向 `18 passed`；完整回归 `236 passed, 3 skipped`。3 项 skipped 均为 Windows 环境无法创建符号链接。
+- Fix2 构建：`ARSM-Suite-0.9.0-rc.2-windows-x64.zip`，57,249,902 bytes，195 entries，SHA-256 `e5eb73c033a7cac62b053f52846eb92b71d5214b73f348b3f4f4ff2d6ccdcbc7`，包含 `ARSM-Suite.exe`。
+- 输入取消零副作用：`works=0`、`downloads=0`、活动任务 `0`、下载文件 `0` 均保持不变。
+- 预览取消零副作用：隔离夹具的 `works=2`、`downloads=1`、`library_items=1`、活动 `1`、下载文件 `0` 均保持不变。
+- 混合输入已现场显示完整分类：ready 2、invalid 1、duplicate 1、active 0、queue 1、library 1、completed 1、review 1；不存在静默丢项。
+- 确认“添加 2 项”只为 `RJ00000001` 和 `RJ00000008` 取得 metadata 槽位；其他分类没有启动。外网 metadata 在 150 秒内未返回且未落库，按 T12 `BLOCKED_BY_NETWORK/AUTH` 记录，不视为下载成功。
+- 正式 `history.db`、`config.json`、`queue.json`、`E:\arsm`、正式任务和 `.part`：零接触。
 
-1. 推送 T9.1 单独分支和 PR；
-2. GitHub Linux/Windows CI 使用真实 Flet 运行；
-3. CI 通过后合并 `0.9.0-rc.2` 修复；
-4. 开始 `TAKEOVER-T10：Queue Service 与大队列性能优化`。
+当前结论：批量粘贴 GUI 与分类逻辑 PASS；整体 RC2 保持“条件 GO”，等待 T12 隔离真实网络/认证验收后再决定 Git 放行与发布。
+## 2026-08-01 T12 隔离真实网络小文件验收
+
+- Clash HTTP 代理 `127.0.0.1:7897` 可用；`RJ01276295`、`RJ01271436`、`RJ01261242`、`RJ01242844` 的 metadata 与 tracks 请求均成功。
+- 使用 `RJ01276295` 的最小 MP3 做端到端验证：metadata 与封面明确使用 `http://127.0.0.1:7897`，封面响应 `200`；音频 `download_proxy=None`，响应 `200`。
+- 音频临时文件只写入隔离目录 `_t12-network-check-20260801`：预期、接收和落盘均为 `1,627,577` bytes，大小精确一致；未创建下载任务或写入正式数据。
+- 小文件真实链路 PASS；多文件完整下载、外网暂停恢复和长期稳定性仍属于后续 T12/T11，RC2 暂不发布。
+### T12 并发 metadata 验证补充
+
+- 使用四个用户提供的 RJ，在 `metadata_concurrency=2` 下只读请求 metadata 与 tracks。
+- 实测峰值并发 `2`，四项 metadata 和 tracks 均成功；没有创建下载任务或启动音频 worker。
+### T12 真实外网暂停/续传补充（2026-08-01）
+
+- 以 `RJ01276295` 的 `1,627,577` bytes MP3 在隔离目录进行真实暂停/恢复：先落盘 `.part=524,288` bytes，再以 `Range: bytes=524288-` 续传。
+- 续传响应 `206`，`Content-Range: bytes 524288-1627576/1627577`；追加 `1,103,289` bytes 后最终大小精确为 `1,627,577` bytes。
+- 下载通道 `download_proxy=None`。完成后删除临时音频，只保留 JSON 证据；没有创建 SQLite 下载任务。
+- 曾尝试约 14.9MB 文件，但受当前外网吞吐量影响在验收命令时限内未完成；已停止测试进程并清理遗留 `.part`，不将其计为通过或产品缺陷。
+## 2026-08-01 T11/T12 隔离真实网络与长期运行收口
+
+- 新增 `scripts/t11_t12_live_acceptance.py`：只允许新 sandbox，真实复用 `Orchestrator`；audio 最小优先、最多 4 文件且总量不超过 64MiB。
+- `RJ01276295` 真实音频验收通过：4/4 完成，总计 `30,285,707` bytes；暂停时 `.part=54,694` bytes 稳定，服务重建后收到 HTTP `206` Range 续传，最终活动任务为 0。
+- 连续运行 `2,741.38` 秒，27 个一分钟 SQLite 快照稳定；正常 shutdown，无本验收 ARSM/Python 遗留进程。
+- 详细证据：`docs/T11_T12_REAL_NETWORK_LONG_RUN.md` 及隔离 sandbox 的 JSON、日志和文件哈希。可见四页长时往返未在本轮重做，继续沿用 T10 Windows 证据；Defender、长路径、文件占用均未触发。
+- 当前为 **条件 GO**：不得据此发布、提交或推送；先完成最终自动回归与人工代码/CI 复核。
+## 最终自动回归（2026-08-01）
+
+- 在新建的无运行数据源码副本中，固定可写 TEMP 后执行：`236 passed, 3 skipped in 95.43s`。
+- 3 个 skipped 均为 Windows 环境无法创建 symbolic link；`compileall` 与真实 Flet 导入通过。
+- 当前工作树旁的 pytest 保护门拒绝执行，是因为隔离验收运行已生成本地 `history.db/config.json`；该拒绝是预期安全机制，不是测试失败。
+- 新增验收脚本不被冻结应用导入，未改变下载器生产模块或 Windows one-folder 包内容，因此本轮不重复构建 ZIP；既有 RC2 Fix2 构建仍仅作为上一轮二进制证据，未因此放行发布。
+## 2026-08-02 RC2 最终关闭与可见 GUI 验收
+
+- 修复 Flet 0.27.6 窗口生命周期兼容性：关闭事件、阻止默认关闭、销毁窗口均改用 `page.window` API。旧 API 会让原生窗口先消失而保留 Python/下载器进程。
+- 无运行数据的隔离源码副本已完成真实 Flet 回归：`237 passed, 3 skipped`；3 个 skipped 均为 Windows 环境不支持符号链接。`compileall`、Flet import 与 `git diff --check` 通过。
+- 最终 one-folder：`ARSM-Suite-0.9.0-rc.2-windows-x64.zip`，57,251,928 bytes、195 entries，SHA-256 `37bece06a014631c8756a41de237a6d77db7de7f0f50949257550bdb65ee8e08`；SHA 文件一致，ZIP 内含 `ARSM-Suite.exe`，EXE File/ProductVersion 均为 `0.9.0-rc.2`。
+- 最终 EXE 的下载中心、资源库、系统工具、设置四页已可见往返并保存隔离截图；标题栏关闭连续 3 次均记录完整 shutdown，ARSM-Suite 与 Flet 子进程均为零残留。
+- 正式 `history.db`、`config.json`、`queue.json`、`E:\arsm`、正式任务与 `.part`：零接触。本地验收通过，下一门槛仅为 Git 提交、PR 与远端 CI；尚未创建 Release。

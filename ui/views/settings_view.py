@@ -59,6 +59,11 @@ class SettingsView(ft.Container):
             value=getattr(config, "work_concurrency", 1),
             label="{value}",
         )
+        self.metadata_concurrency_slider = ft.Slider(
+            min=1, max=8, divisions=7,
+            value=getattr(config, "metadata_concurrency", 2),
+            label="{value}",
+        )
         self.file_concurrency_slider = ft.Slider(
             min=1, max=16, divisions=15,
             value=getattr(config, "file_concurrency", 4),
@@ -108,6 +113,8 @@ class SettingsView(ft.Container):
                 ft.Row([self.download_fallback_switch]),
                 ft.Text("同时下载的作品数"),
                 self.work_concurrency_slider,
+                ft.Text("同时准备元数据的作品数"),
+                self.metadata_concurrency_slider,
                 ft.Text("每个作品同时下载的文件数"),
                 self.file_concurrency_slider,
                 ft.Text(
@@ -122,6 +129,11 @@ class SettingsView(ft.Container):
             scroll=ft.ScrollMode.AUTO,
             expand=True,
         )
+
+        self._active = False
+
+    def set_active(self, active: bool) -> None:
+        self._active = bool(active)
 
     def _refresh_lib_paths(self):
         self.lib_path_list.controls.clear()
@@ -197,6 +209,7 @@ class SettingsView(ft.Container):
         config.download_fallback_to_proxy = self.download_fallback_switch.value
         config.proxy = config.metadata_proxy
         config.work_concurrency = int(self.work_concurrency_slider.value)
+        config.metadata_concurrency = int(self.metadata_concurrency_slider.value)
         config.file_concurrency = int(self.file_concurrency_slider.value)
         config.max_concurrent = config.file_concurrency  # legacy compatibility
         config.tag_audio = self.tag_audio_switch.value
