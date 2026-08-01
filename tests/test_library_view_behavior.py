@@ -129,3 +129,90 @@ def test_library_vault_page_search_and_cover_join(tmp_path: Path) -> None:
     assert result["works_count"] == 1
     assert result["items"][0]["rj_id"] == "RJ00000042"
     assert result["items"][0]["metadata_cover_url"] == "https://example.invalid/cover.jpg"
+
+
+def test_library_file_preview_is_bounded_and_classifies_files(tmp_path: Path) -> None:
+    from ui.views.library_view import collect_file_preview
+
+    album = tmp_path / "RJ00000077"
+    album.mkdir()
+    for index in range(201):
+        suffix = ".mp3" if index == 0 else ".txt"
+        (album / f"{index:03d}{suffix}").write_bytes(b"x")
+
+    preview = collect_file_preview(str(album), limit=200)
+
+    assert preview["truncated"] is True
+    assert len(preview["items"]) == 200
+    assert preview["items"][0]["kind"] == "audio"
+    assert preview["items"][0]["size"] == 1
+
+
+def test_library_vault_detail_returns_metadata_snapshot(tmp_path: Path) -> None:
+    from core.database import LibraryVault
+    import json
+    from datetime import datetime
+
+    db_path = tmp_path / "history.db"
+    album = tmp_path / "RJ00000088"
+    album.mkdir()
+    with LibraryVault(db_path) as vault:
+        vault.execute_write(
+            "INSERT INTO works (rj_id, title, circle, local_path, status) VALUES (?, ?, ?, ?, ?)",
+            ("RJ00000088", "Work title", "Work circle", str(album), "completed"),
+        )
+        vault.execute_write(
+            """INSERT INTO library_items
+               (rj_id, folder_path, folder_name, total_files, total_size,
+                audio_count, has_audio, has_cover, warnings_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("RJ00000088", str(album), "Album folder", 4, 4096, 3, 1, 0, "[]"),
+        )
+        vault.execute_write(
+            """INSERT INTO metadata_cache
+               (rj_id, title, circle, cover_url, metadata_json, tracks_json,
+                fetched_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("RJ00000088", "Cache title", "Cache circle", "",
+             json.dumps({"tags": ["sleep", "roleplay"]}), json.dumps([{"title": "Track"}]),
+             datetime.now(), datetime.now()),
+        )
+        detail = vault.get_library_detail("rj00000088")
+
+    assert detail is not None
+    assert detail["metadata_title"] == "Cache title"
+    assert detail["metadata_json"]["tags"] == ["sleep", "roleplay"]
+    assert detail["tracks_json"] == [{"title": "Track"}]
+    assert detail["folder_path"] == str(album)
+
+def test_library_category_and_sort_are_forwarded_to_database(tmp_path: Path) -> None:
+    controller = FakeController(tmp_path)
+    view = LibraryView(controller)
+    view._set_category("audio")
+    view.sort_dropdown.value = "name_asc"
+    view._set_sort()
+    assert controller.db.page_calls[-1]["category"] == "audio"
+    assert controller.db.page_calls[-1]["sort"] == "name_asc"
+
+
+def test_library_vault_page_category_and_sort(tmp_path: Path) -> None:
+    from core.database import LibraryVault
+
+    db_path = tmp_path / "history.db"
+    with LibraryVault(db_path) as vault:
+        vault.execute_write(
+            """INSERT INTO library_items
+               (rj_id, folder_path, folder_name, total_files, total_size, has_audio, has_cover, warnings_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("RJ00000002", "two", "Zulu", 2, 20, 1, 0, "[]"),
+        )
+        vault.execute_write(
+            """INSERT INTO library_items
+               (rj_id, folder_path, folder_name, total_files, total_size, has_audio, has_cover, warnings_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("RJ00000001", "one", "Alpha", 8, 10, 0, 1, '["warning"]'),
+        )
+        audio = vault.get_library_page(category="audio", sort="name_asc", limit=20)
+        warnings = vault.get_library_page(category="warnings", sort="files_desc", limit=20)
+
+    assert [row["rj_id"] for row in audio["items"]] == ["RJ00000002"]
+    assert [row["rj_id"] for row in warnings["items"]] == ["RJ00000001"]

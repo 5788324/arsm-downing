@@ -135,3 +135,40 @@ def test_close_queue_uses_flet_027_window_api() -> None:
 
     assert controller.page.window.destroyed is True
     assert controller.page.window.closed is False
+class _Tray:
+    def __init__(self, available: bool = True) -> None:
+        self.available = available
+        self.stopped = False
+    def stop(self) -> None:
+        self.stopped = True
+
+
+class _CloseEvent:
+    data = "close"
+
+
+def test_window_close_hides_to_available_tray() -> None:
+    controller = BaseAppController.__new__(BaseAppController)
+    controller._closing = False
+    controller._exit_requested = False
+    controller.tray = _Tray(available=True)
+    calls = []
+    controller._hide_to_tray = lambda: calls.append("hide")
+    controller._begin_shutdown = lambda: calls.append("shutdown")
+
+    controller._on_window_event(_CloseEvent())
+
+    assert calls == ["hide"]
+    assert controller._closing is False
+
+
+def test_explicit_tray_exit_uses_graceful_shutdown() -> None:
+    controller = BaseAppController.__new__(BaseAppController)
+    controller._exit_requested = False
+    calls = []
+    controller._begin_shutdown = lambda: calls.append("shutdown")
+
+    controller._exit_from_tray()
+
+    assert controller._exit_requested is True
+    assert calls == ["shutdown"]

@@ -51,3 +51,7 @@ arsm-downing/
 .codex/
 tmp_debug_*/
 tmp_probe_*/
+.venv/
+.venv-build/
+release/
+.pytest_cache/

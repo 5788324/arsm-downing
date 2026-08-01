@@ -1060,7 +1060,8 @@ class LibraryVault:
             return {}
 
     def get_library_page(self, *, search: str = "", offset: int = 0,
-                         limit: int = 20) -> dict:
+                         limit: int = 20, category: str = "all",
+                         sort: str = "size_desc") -> dict:
         """Return one card page plus summary using a single serialized read."""
         try:
             with self._lock:
@@ -1071,6 +1072,19 @@ class LibraryVault:
                         "(li.rj_id LIKE ? OR li.folder_name LIKE ? OR li.folder_path LIKE ?)"
                     )
                     params.extend([query, query, query])
+                category_conditions = {
+                    "audio": "li.has_audio = 1",
+                    "missing_cover": "li.has_cover = 0",
+                    "warnings": "li.warnings_json IS NOT NULL AND li.warnings_json != '[]' AND li.warnings_json != ''",
+                }
+                if category in category_conditions:
+                    conditions.append(category_conditions[category])
+                order_by = {
+                    "size_desc": "li.total_size DESC, li.rj_id",
+                    "files_desc": "li.total_files DESC, li.rj_id",
+                    "name_asc": "li.folder_name COLLATE NOCASE, li.rj_id",
+                    "rj_desc": "li.rj_id DESC",
+                }.get(sort, "li.total_size DESC, li.rj_id")
                 where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
                 total = int(self.conn.execute(
                     f"SELECT COUNT(*) FROM library_items li {where}", params
@@ -1080,7 +1094,7 @@ class LibraryVault:
                         FROM library_items li
                         LEFT JOIN metadata_cache mc ON mc.rj_id = li.rj_id
                         {where}
-                        ORDER BY li.total_size DESC, li.rj_id
+                        ORDER BY {order_by}
                         LIMIT ? OFFSET ?""",
                     [*params, int(limit), int(offset)],
                 ).fetchall()
@@ -1097,6 +1111,39 @@ class LibraryVault:
         except Exception as exc:
             logging.error("get_library_page error: %s", exc)
             return {"items": [], "total": 0, "works_count": 0, "summary": {}}
+
+    def get_library_detail(self, rj_id: str) -> dict | None:
+        """Return one immutable library-detail snapshot without touching disk."""
+        normalized = str(rj_id or "").strip().upper()
+        if not normalized:
+            return None
+        try:
+            with self._lock:
+                row = self.conn.execute(
+                    """SELECT li.*, w.title AS work_title, w.circle AS work_circle,
+                              w.status AS work_status, w.cover_url AS work_cover_url,
+                              mc.title AS metadata_title, mc.circle AS metadata_circle,
+                              mc.cover_url AS metadata_cover_url,
+                              mc.metadata_json, mc.tracks_json, mc.fetched_at
+                       FROM library_items li
+                       LEFT JOIN works w ON w.rj_id = li.rj_id
+                       LEFT JOIN metadata_cache mc ON mc.rj_id = li.rj_id
+                       WHERE li.rj_id = ?""",
+                    (normalized,),
+                ).fetchone()
+            if not row:
+                return None
+            result = dict(row)
+            for key in ("metadata_json", "tracks_json", "warnings_json"):
+                raw = result.get(key) or "[]"
+                try:
+                    result[key] = json.loads(raw)
+                except (TypeError, ValueError):
+                    result[key] = [] if key != "metadata_json" else {}
+            return result
+        except Exception as exc:
+            logging.error("get_library_detail error: %s", exc)
+            return None
 
     def get_library_diagnostic_rows(self) -> dict:
         """Return immutable row snapshots for background filesystem diagnosis."""
