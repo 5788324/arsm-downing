@@ -130,14 +130,17 @@ class NetworkKernel:
         return None
 
     async def stream(self, url: str, headers: dict = None,
-                     purpose: str = 'download') -> aiohttp.ClientResponse:
-        """Stream a file download using the correct proxy for its purpose.
+                     purpose: str = 'download', *,
+                     direct: bool = False) -> aiohttp.ClientResponse:
+        """Stream a file with explicit per-purpose routing.
 
-        Args:
-            url: Download URL.
-            headers: Extra HTTP headers (e.g. Range).
-            purpose: 'download' or 'cover' — selects the right proxy.
+        ``direct=True`` is an exceptional, caller-audited bypass.  Normal cover
+        requests never become audio/download requests just to evade a failed proxy.
         """
         await self.boot()
-        proxy = self.config.get_proxy_for(purpose)
+        proxy = None if direct else self.config.get_proxy_for(purpose)
+        logging.getLogger("echovault").debug(
+            "STREAM purpose=%s route=%s url=%s",
+            purpose, "direct" if direct else (proxy or "direct"), url,
+        )
         return await self.session.get(url, headers=headers, proxy=proxy)

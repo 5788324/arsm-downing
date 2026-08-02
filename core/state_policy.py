@@ -18,18 +18,19 @@ class StateTransitionDecision:
 class WorkStatePolicy:
     """Explicit transition policy for new writes without rewriting legacy rows."""
 
-    TERMINAL = {"completed", "registered", "verified", "external", "indexed"}
+    TERMINAL = {"completed", "registered", "verified", "external", "indexed", "cancelled"}
     ALLOWED = {
         "": {"preparing", "prepared", "queued", "external", "indexed"},
-        "preparing": {"prepared", "metadata_failed", "failed", "paused"},
-        "prepared": {"queued", "metadata_failed", "paused", "failed"},
-        "metadata_failed": {"preparing", "queued", "failed"},
-        "queued": {"downloading", "paused", "failed", "metadata_failed"},
-        "resuming": {"queued", "downloading", "paused", "failed"},
-        "downloading": {"paused", "partial", "failed", "completed"},
-        "paused": {"resuming", "queued", "failed"},
-        "partial": {"resuming", "queued", "failed", "completed", "verified"},
-        "failed": {"queued", "resuming", "preparing", "paused"},
+        "preparing": {"prepared", "metadata_failed", "failed", "paused", "cancelled"},
+        "prepared": {"queued", "metadata_failed", "paused", "failed", "cancelled"},
+        "metadata_failed": {"preparing", "queued", "failed", "cancelled"},
+        "queued": {"downloading", "paused", "failed", "metadata_failed", "cancelled"},
+        "resuming": {"queued", "downloading", "paused", "failed", "cancelled"},
+        "downloading": {"paused", "partial", "failed", "completed", "cancelled"},
+        "paused": {"resuming", "queued", "failed", "cancelled"},
+        "partial": {"resuming", "queued", "failed", "completed", "verified", "cancelled"},
+        "failed": {"queued", "resuming", "preparing", "paused", "cancelled"},
+        "cancelled": {"failed", "queued", "resuming", "preparing"},
         "completed": {"registered", "verified"},
         "registered": {"completed", "verified", "failed"},
         "verified": {"completed", "missing"},
@@ -49,6 +50,8 @@ class WorkStatePolicy:
             "resuming...": "resuming",
             "no pending tracks": "no_pending",
             "partially completed": "partial",
+            "canceled": "cancelled",
+            "已取消": "cancelled",
         }
         if value.startswith("partially completed"):
             return "partial"

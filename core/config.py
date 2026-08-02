@@ -53,6 +53,7 @@ class ConfigManager:
         self.metadata_proxy: Optional[str] = None   # API metadata requests
         self.download_proxy: Optional[str] = None   # Audio file downloads
         self.cover_proxy: Optional[str] = None      # Cover image downloads
+        self.cover_fallback_to_direct: bool = False  # strict proxy boundary by default
         self.download_fallback_to_proxy: bool = False  # RC7.5: default OFF
 
         # ── Legacy (kept for backward compat, maps to metadata_proxy) ──
@@ -147,6 +148,8 @@ class ConfigManager:
                 config.metadata_proxy = data.get('metadata_proxy')
                 config.download_proxy = data.get('download_proxy')
                 config.cover_proxy = data.get('cover_proxy')
+                config.cover_fallback_to_direct = bool(
+                    data.get('cover_fallback_to_direct', False))
                 config.download_fallback_to_proxy = bool(
                     data.get('download_fallback_to_proxy', False))  # RC7.5: default OFF
 
@@ -182,6 +185,7 @@ class ConfigManager:
             "metadata_proxy": self.metadata_proxy,
             "download_proxy": self.download_proxy,
             "cover_proxy": self.cover_proxy,
+            "cover_fallback_to_direct": self.cover_fallback_to_direct,
             "download_fallback_to_proxy": self.download_fallback_to_proxy,
             "proxy": self.proxy,
             "proxy_download": self.proxy_download,

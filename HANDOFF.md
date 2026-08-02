@@ -1,5 +1,14 @@
 # ARSM Suite T10 交接
 
+
+## 2026-08-02 PR1 直接源码候选交接
+
+- 唯一源码事实源：基于 `main@50346f9da9a5d24dda99f7d8c6c21e2f9210c1a6`、已成功应用 V6 的完整 worktree 快照。
+- 本轮不再运行应用器；Codex 直接解压完整源码并运行 `WINDOWS_VALIDATION.ps1`。
+- 已解决唯一聚焦失败：cancelled 不阻止 VACUUM，但继续保护 metadata cache。
+- 自动门禁全部通过前，不得提交、push、创建 PR 或发布。
+- 正式数据边界：禁止访问 `E:\arsm`、正式 history/config/queue、现有任务与 `.part`。
+
 ## 基线
 
 ```text
@@ -166,3 +175,10 @@
 - 7/7 metadata、5 个最小音频已完成；文件大小：RJ01589930 4,840,239、RJ01616587 9,843,959、RJ01606670 9,654,848、RJ01632789 209,715、RJ01627434 19,008,630 bytes。
 - metadata/cover=`127.0.0.1:7897`，audio=direct，所有完成文件均 HTTP 200/SQLite registered。
 - 长时观察超过 52 分钟稳定；harness SQLite 快照卡住，隔离停止后数据库锁释放。独立 Orchestrator shutdown PASS，因此 T16 结论为 PASS_WITH_NOTES。
+
+## PR1 直接源码候选交接（2026-08-02）
+
+- 可审查分支：codex/pr1-release-blocker-direct-source，基线 main@50346f9da9a5d24dda99f7d8c6c21e2f9210c1a6。
+- Windows 自动门禁：focused 49 passed，full 294 passed/3 skipped，release check、PyInstaller 与 EXE 通过。
+- GUI：四页、批量粘贴取消、工具安全冻结、三轮启动/关闭和托盘退出后的无残留通过。证据位于隔离验收目录，未接触正式数据。
+- 下一步：完成用户设备高 DPI 视觉复核后，创建单一提交、推送并建立 Draft PR；不得直接改 main 或发布。

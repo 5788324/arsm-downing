@@ -78,6 +78,7 @@ class DownloadView(BaseDownloadView):
                 ft.dropdown.Option(key="paused", text="已暂停"),
                 ft.dropdown.Option(key="failed", text="失败"),
                 ft.dropdown.Option(key="completed", text="已完成"),
+                ft.dropdown.Option(key="cancelled", text="已取消"),
                 ft.dropdown.Option(key="all", text="全部"),
             ],
             on_change=self._on_filter_change,
@@ -193,6 +194,7 @@ class DownloadView(BaseDownloadView):
             "paused": WorkStatus.PAUSED,
             "failed": WorkStatus.FAILED,
             "completed": WorkStatus.COMPLETED,
+            "cancelled": WorkStatus.CANCELLED,
         }.get(item.queue_state, WorkStatus.normalize(item.work_status))
 
     def _apply_queue_page(self, model: DownloadQueuePage) -> None:
@@ -315,7 +317,7 @@ class DownloadView(BaseDownloadView):
 
     def _update_queue_summary(self, _visible_items=None):
         if self.queue_model is None:
-            counts = {"active": 0, "queued": 0, "paused": 0, "failed": 0}
+            counts = {"active": 0, "queued": 0, "paused": 0, "failed": 0, "cancelled": 0}
             for data in self.active_downloads.values():
                 state = self.normalize_status(data.get("status", ""))
                 if state in {"downloading", "resuming"}:
@@ -331,6 +333,7 @@ class DownloadView(BaseDownloadView):
                 "queued": summary.queued_tasks + len(self._transient_rj_ids),
                 "paused": summary.paused_tasks,
                 "failed": summary.failed_tasks,
+                "cancelled": summary.cancelled_tasks,
             }
             total = summary.total_tasks + len(self._transient_rj_ids)
             completed = summary.completed_tasks
@@ -343,6 +346,7 @@ class DownloadView(BaseDownloadView):
             f"  排队 {counts['queued']}"
             f"  暂停 {counts['paused']}"
             f"  失败 {counts['failed']}"
+            f"  已取消 {counts['cancelled']}"
             f"  完成 {completed}"
             f"  总速度 {self._format_speed(self.global_speed_bps)}"
         )
@@ -369,14 +373,7 @@ class DownloadView(BaseDownloadView):
         return super()._find_work_dir(rj_id)
 
     def _resolve_cover_source(self, rj_id: str):
-        snapshot = self.active_downloads.get(rj_id, {}).get("snapshot")
-        if isinstance(snapshot, DownloadQueueItem) and snapshot.cover_url:
-            work_dir = Path(snapshot.local_path) if snapshot.local_path else None
-            if work_dir and work_dir.exists():
-                source = super()._resolve_cover_source(rj_id)
-                if source:
-                    return source
-            return snapshot.cover_url
+        """Never hand a remote URL to Flet; only use the core-managed local cache."""
         return super()._resolve_cover_source(rj_id)
 
     def build_queue_item(self, rj_id: str, update_list: bool = True):
@@ -411,7 +408,7 @@ class DownloadView(BaseDownloadView):
 
     def update_work_status(self, rj_id: str, status: str):
         normalized = self.normalize_status(status)
-        if normalized in {"queued", "downloading", "paused", "failed", "partial", "completed"}:
+        if normalized in {"queued", "downloading", "paused", "failed", "partial", "completed", "cancelled"}:
             self._transient_rj_ids = [
                 value for value in self._transient_rj_ids if value != rj_id
             ]
@@ -539,6 +536,8 @@ class DownloadView(BaseDownloadView):
         if orchestrator is not None:
             active_ids.update(getattr(orchestrator, "active_tasks", {}).keys())
             active_ids.update(getattr(orchestrator, "queued_rj_ids", set()))
+            active_ids.update(getattr(orchestrator, "preparing_rj_ids", set()))
+            active_ids.update(getattr(orchestrator, "resuming_rj_ids", set()))
         try:
             preview = self.download_service.preview_enqueue(
                 text,
@@ -567,6 +566,11 @@ class DownloadView(BaseDownloadView):
             self._preview_group("历史已完成", preview.already_completed),
             self._preview_group("需要复核", preview.needs_review),
         ]
+        reasons = preview.reasons or {}
+        cancelled = tuple(
+            rj_id for rj_id in preview.needs_review
+            if str(reasons.get(rj_id, "")).startswith("已取消任务")
+        )
         dialog = ft.AlertDialog(
             title=ft.Text("批量 RJ 预览"),
             content=ft.Container(
@@ -577,15 +581,32 @@ class DownloadView(BaseDownloadView):
                 ft.TextButton("取消", on_click=lambda _e: self._close_preview(dialog)),
                 *(
                     [ft.TextButton(
+                        f"继续 {len(cancelled)} 个已取消任务",
+                        on_click=lambda _e: self._resume_cancelled_preview(dialog, cancelled),
+                    )] if cancelled else []
+                ),
+                *(
+                    [ft.TextButton(
                         f"添加 {len(preview.ready)} 项",
                         on_click=lambda _e: self._confirm_preview(dialog, preview),
-                    )]
-                    if preview.ready else []
+                    )] if preview.ready else []
                 ),
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
         self._open_dialog(dialog)
+
+    def _resume_cancelled_preview(self, dialog, rj_ids) -> None:
+        self._close_preview(dialog)
+        for rj_id in rj_ids:
+            if rj_id not in self._transient_rj_ids:
+                self._transient_rj_ids.append(rj_id)
+            self.active_downloads[rj_id] = {
+                "status": "恢复中...", "tracks": {}, "control": None,
+                "last_time": time.time(), "last_bytes": 0, "cache_hit": False,
+            }
+            self.app_controller.resume_cancelled_download(rj_id)
+        self._render_queue_page()
 
     def _close_preview(self, dialog):
         self._close_dialog(dialog)
@@ -644,7 +665,7 @@ class DownloadView(BaseDownloadView):
         self._update_queue_summary()
 
     def cancel_item(self, rj_id: str):
-        # Base semantics pause and preserve .part; this layer only changes visibility.
+        # Base semantics now persist a true cancelled state.
         super().cancel_item(rj_id)
         self._transient_rj_ids = [value for value in self._transient_rj_ids if value != rj_id]
         self._update_queue_summary()

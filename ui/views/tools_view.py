@@ -13,6 +13,17 @@ class ToolsView(ft.Container):
         self.log_area = ft.ListView(expand=True, spacing=5, auto_scroll=True)
         self.keep_source_mode = True
         self.delete_source_confirm_pending = False
+        self.advanced_mode_enabled = False
+        self._advanced_confirm_pending = False
+        self.advanced_mode_switch = ft.Switch(
+            label="高级维护模式", value=False,
+            on_change=self._on_advanced_mode_change,
+        )
+        self.advanced_mode_note = ft.Text("", size=12, color=WARNING)
+        self.advanced_mode_panel = ft.Container(
+            content=ft.Column([self.advanced_mode_switch, self.advanced_mode_note], spacing=4),
+            padding=10, border=ft.border.all(1, "#3b3b4f"), border_radius=10,
+        )
 
         # Backlog widgets
         self.backlog_summary = ft.Text("", size=13, color="grey")
@@ -138,7 +149,77 @@ class ToolsView(ft.Container):
             Styles.glass_container(self.log_area, padding=10),
         ], spacing=12, scroll=ft.ScrollMode.AUTO, expand=True)
 
+        self.content.controls.insert(1, self.advanced_mode_panel)
+        self._refresh_advanced_visibility()
+
         self._active = False
+
+    def _on_advanced_mode_change(self, _event=None):
+        requested = bool(self.advanced_mode_switch.value)
+        if not requested:
+            self.advanced_mode_enabled = False
+            self._advanced_confirm_pending = False
+            self._refresh_advanced_visibility()
+            return
+        if not self._advanced_confirm_pending:
+            self._advanced_confirm_pending = True
+            self.advanced_mode_switch.value = False
+            self.app_controller.show_snack("再次打开高级维护模式以确认本次会话启用")
+            self._refresh_advanced_visibility()
+            return
+        self._advanced_confirm_pending = False
+        self.advanced_mode_enabled = True
+        self.advanced_mode_switch.value = True
+        self.app_controller.show_snack("高级维护模式已为本次会话启用")
+        self._refresh_advanced_visibility()
+
+
+    def _require_advanced(self, action: str) -> bool:
+        if self.advanced_mode_enabled:
+            return True
+        self.app_controller.show_snack(f"{action}仅在高级维护模式中可用")
+        return False
+
+
+    def _refresh_advanced_visibility(self) -> None:
+        enabled = bool(self.advanced_mode_enabled)
+        self.advanced_mode_note.value = (
+            "高级维护模式已启用：操作前仍会执行安全检查。"
+            if enabled else
+            "默认关闭。数据库压缩、缓存删除、状态恢复和删除源目录属于高级操作。"
+        )
+        explicit = (
+            self.keep_source_checkbox, self.delete_source_checkbox,
+            self.backlog_summary, self.backlog_source,
+            self.backlog_batch_size, self.backlog_preview_text,
+        )
+        for control in explicit:
+            control.visible = enabled
+
+        hidden_labels = {
+            "缓存与数据库", "检查并压缩数据库", "安全清理元数据缓存",
+            "历史任务恢复", "预览", "恢复队列",
+        }
+
+        def walk(control):
+            text = getattr(control, "text", None)
+            value = getattr(control, "value", None)
+            label = getattr(control, "label", None)
+            candidate = text if isinstance(text, str) else value if isinstance(value, str) else label
+            if candidate in hidden_labels:
+                control.visible = enabled
+            child = getattr(control, "content", None)
+            if child is not None:
+                walk(child)
+            for item in getattr(control, "controls", None) or ():
+                walk(item)
+
+        walk(self.content)
+        try:
+            if self.page:
+                self.update()
+        except Exception:
+            pass
 
     def set_active(self, active: bool) -> None:
         changed = bool(active) != self._active
@@ -227,6 +308,8 @@ class ToolsView(ft.Container):
 
     def repair_db(self, e):
         """VACUUM on a dedicated connection and fail closed for active queues."""
+        if not self._require_advanced("数据库压缩"):
+            return
         del e
         from core.tools_maintenance import vacuum_database
 
@@ -280,6 +363,8 @@ class ToolsView(ft.Container):
 
     def clear_cache(self, e):
         """Delete only expired cache rows that no resumable task references."""
+        if not self._require_advanced("元数据缓存清理"):
+            return
         del e
         from core.tools_maintenance import (
             cleanup_metadata_cache,
@@ -483,6 +568,8 @@ class ToolsView(ft.Container):
 
     def migrate_execute(self, e, batch_limit: int):
         """RC8.4: Real migration using config.output_dir with keep-source default."""
+        if not self._require_advanced("实际资源迁移"):
+            return
         from core.migration import MigrationEngine
         db = self.app_controller.db
         engine = MigrationEngine(db)
@@ -807,6 +894,8 @@ class ToolsView(ft.Container):
 
     def backlog_reenable(self, e):
         """Re-enable only after preview and only while the runtime queue is idle."""
+        if not self._require_advanced("历史状态恢复"):
+            return
         del e
         rj_ids = list(getattr(self, "_backlog_candidate_ids", []))
         if not rj_ids:

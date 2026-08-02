@@ -48,7 +48,13 @@ class Orchestrator:
         self.queued_rj_ids: set = set()
         self.active_tasks: Dict[str, asyncio.Task] = {}
         self.worker_tasks: List[asyncio.Task] = []
+        # Legacy queue-invalidation marker used by pause.
         self.cancelled_rjs: set = set()
+        # True user cancellation marker; never set by pause.
+        self.user_cancelled_rjs: set = set()
+        # In-flight guards close rapid duplicate-click races.
+        self.preparing_rj_ids: set = set()
+        self.resuming_rj_ids: set = set()
         self._shutting_down: bool = False
         # ── RC7.8: pause/resume lifecycle ──
         self.global_paused: bool = False
@@ -172,7 +178,13 @@ class Orchestrator:
                 await task
             except asyncio.CancelledError:
                 logging.info(f"Task {rj_id} cancelled.")
-                self._emit_work_status(rj_id, "Paused")
+                durable_cancel = (
+                    rj_id in self.user_cancelled_rjs or
+                    (self.db.get_works_status(rj_id) or "").lower() == "cancelled"
+                )
+                self._emit_work_status(
+                    rj_id, "Cancelled" if durable_cancel else "Paused"
+                )
             except Exception as e:
                 logging.error(f"Job failed for {rj_id}: {e}", exc_info=True)
                 self._emit_work_status(rj_id, f"Error: {e}")
@@ -253,29 +265,110 @@ class Orchestrator:
     #  P1.5-5:  pause / resume with DB state
     # ══════════════════════════════════════════════
     def pause_job(self, rj_id):
-        """Pause all non-terminal downloads for this rj_id."""
-        # Write paused to DB for all tracks that aren't terminal
+        """Pause all non-terminal downloads and persist a resumable work state."""
         rows = self.db.get_downloads_by_rj(rj_id)
+        changed = 0
         for row in rows:
-            if row["status"] not in ('completed', 'registered', 'failed', 'paused', 'stale', 'ignored'):
+            if str(row["status"] or "").lower() not in {
+                "completed", "registered", "failed", "paused", "stale",
+                "ignored", "cancelled",
+            }:
                 self.db.upsert_download(
                     row["id"], rj_id, row["track_title"],
-                    row["local_path"], 'paused',
-                    row["downloaded_bytes"], row["total_bytes"])
-
-        # Freeze speed meters
+                    row["local_path"], "paused",
+                    row["downloaded_bytes"], row["total_bytes"],
+                )
+                changed += 1
+        work_status = (self.db.get_works_status(rj_id) or "").lower()
+        if work_status and work_status not in {
+            "completed", "registered", "verified", "external", "indexed", "cancelled",
+        }:
+            self.db.execute_write(
+                "UPDATE works SET status='paused' WHERE rj_id=?", (rj_id,)
+            )
         self.speed.pause_work(rj_id)
-
-        # Cancel active task if running
         if rj_id in self.active_tasks:
             self.active_tasks[rj_id].cancel()
         else:
             self.cancelled_rjs.add(rj_id)
         self._emit_work_status(rj_id, "Paused")
+        return {"status": "paused", "changed": changed}
 
     def cancel_job(self, rj_id):
-        """Legacy cancel behavior: pause and preserve partial files."""
-        self.pause_job(rj_id)
+        """Persist a true cancellation while preserving completed and partial files."""
+        rows = self.db.get_downloads_by_rj(rj_id)
+        work_status = (self.db.get_works_status(rj_id) or "").lower()
+        terminal = {"completed", "registered", "verified", "external", "indexed"}
+        non_terminal_rows = [
+            row for row in rows
+            if str(row["status"] or "").lower() not in
+            {"completed", "registered", "stale", "ignored", "cancelled"}
+        ]
+        if work_status in terminal and not non_terminal_rows:
+            return {"status": "already_terminal", "changed": 0, "preserved_bytes": 0}
+
+        changed = 0
+        preserved_bytes = 0
+        for row in non_terminal_rows:
+            final_path = Path(row["local_path"])
+            part_path = final_path.with_suffix(final_path.suffix + ".part")
+            actual = local_partial_size(
+                final_path, part_path, int(row["total_bytes"] or 0)
+            )
+            preserved_bytes += actual
+            self.db.upsert_download(
+                row["id"], rj_id, row["track_title"], row["local_path"],
+                "cancelled", actual, row["total_bytes"],
+                error="Cancelled by user; partial data preserved",
+            )
+            changed += 1
+
+        if work_status or rows:
+            self.db.execute_write(
+                "UPDATE works SET status='cancelled' WHERE rj_id=?", (rj_id,)
+            )
+        self.speed.pause_work(rj_id)
+        self.user_cancelled_rjs.add(rj_id)
+        self.cancelled_rjs.add(rj_id)
+        self.queued_rj_ids.discard(rj_id)
+        self._queued_work_data.pop(rj_id, None)
+        task = self.active_tasks.get(rj_id)
+        if task is not None and not task.done():
+            task.cancel()
+        self._emit_work_status(rj_id, "Cancelled")
+        logger.info(
+            "CANCEL_JOB rj=%s changed=%s preserved_bytes=%s",
+            rj_id, changed, preserved_bytes,
+        )
+        return {
+            "status": "cancelled",
+            "changed": changed,
+            "preserved_bytes": preserved_bytes,
+        }
+
+    async def retry_cancelled_job(self, rj_id: str) -> dict:
+        """Explicitly re-enable a cancelled job, preserving its existing partials."""
+        rows = self.db.get_downloads_by_rj(rj_id)
+        work_cancelled = (self.db.get_works_status(rj_id) or "").lower() == "cancelled"
+        changed = 0
+        for row in rows:
+            if str(row["status"] or "").lower() != "cancelled":
+                continue
+            self.db.upsert_download(
+                row["id"], rj_id, row["track_title"], row["local_path"],
+                "failed", row["downloaded_bytes"], row["total_bytes"],
+                error="Explicit retry after cancellation",
+            )
+            changed += 1
+        if not changed and not work_cancelled:
+            return {"status": "no_pending", "message": "No cancelled files"}
+        if work_cancelled:
+            self.db.execute_write(
+                "UPDATE works SET status='partial' WHERE rj_id=?", (rj_id,)
+            )
+        self.user_cancelled_rjs.discard(rj_id)
+        self.cancelled_rjs.discard(rj_id)
+        return await self._resume_one(rj_id)
 
     async def reconnect_job(self, rj_id: str) -> dict:
         """Pause an active job, wait for cancellation, then resume in order."""
@@ -412,7 +505,7 @@ class Orchestrator:
         rows = self.db.get_downloads_by_rj(rj_id)
         # If all downloads are terminal → skip
         all_terminal = all(
-            row["status"] in ('completed', 'registered', 'failed', 'stale', 'ignored')
+            row["status"] in ('completed', 'registered', 'failed', 'stale', 'ignored', 'cancelled')
             for row in rows)
         if all_terminal and rows:
             return False
@@ -511,7 +604,9 @@ class Orchestrator:
         for row in rows:
             rj_id = row["rj_id"]
             st = row["status"]
-            if rj_id in self.queued_rj_ids or rj_id in self.active_tasks:
+            if (rj_id in self.queued_rj_ids or rj_id in self.active_tasks
+                    or rj_id in self.preparing_rj_ids
+                    or rj_id in self.resuming_rj_ids):
                 continue
             if rj_id not in seen:
                 seen.add(rj_id)
@@ -554,135 +649,310 @@ class Orchestrator:
         return result
 
     async def _resume_one(self, rj_id: str) -> dict:
-        """Unified resume for single-task and batch.
+        """Unified resume for single-task, batch and tray actions.
 
-        Handles already_queued / already_running guards.
-        resume_job emits work_status internally — caller does NOT emit again.
+        ``resuming_rj_ids`` closes the double-click race while metadata is being
+        refreshed.  The check-and-add sequence runs without an intervening await on
+        the single orchestrator event loop.
         """
-        # Guard against duplicate enqueue
         if rj_id in self.active_tasks:
             return {"status": "already_running", "message": "Already active"}
-        if rj_id in self.queued_rj_ids:
-            return {"status": "already_queued", "message": "Already in queue"}
-        self.speed.resume_work(rj_id)
-        result = await self.resume_job(rj_id)
-        # resume_job emits Queued / No pending tracks / etc. internally
-        return result
+        if rj_id in self.queued_rj_ids or rj_id in self.resuming_rj_ids:
+            return {"status": "already_queued", "message": "Already in queue or resuming"}
+        work_status = (self.db.get_works_status(rj_id) or "").lower()
+        if work_status == "cancelled" or rj_id in self.user_cancelled_rjs:
+            return {
+                "status": "cancelled",
+                "message": "Cancelled tasks require an explicit retry action",
+                "skipped_cancelled": 1,
+            }
+        self.resuming_rj_ids.add(rj_id)
+        try:
+            self.cancelled_rjs.discard(rj_id)
+            self.speed.resume_work(rj_id)
+            return await self.resume_job(rj_id)
+        finally:
+            self.resuming_rj_ids.discard(rj_id)
 
     async def _resume_all_async(self):
-        """Internal: actually resume all paused/queued works.
-
-        RC7.8: Clear global_paused before resuming.
-        """
-        # ── RC7.8: reopen for new work ──
+        """Resume every restorable work and aggregate truthful recovery results."""
         self.global_paused = False
-        logger.info(f"RESUME_ALL: global_paused=False generation={self.pause_generation}")
-
+        logger.info(
+            "RESUME_ALL: global_paused=False generation=%s", self.pause_generation
+        )
         rj_ids = self.resume_all()
         stats = {
-            "resumed_to_queue": 0, "already_queued": 0,
-            "already_running": 0, "no_pending": 0,
-            "no_cache": 0, "cache_corrupt": 0, "failed": 0,
+            "resumed_to_queue": 0,
+            "resumed_partial": 0,
+            "retried_from_zero": 0,
+            "already_complete": 0,
+            "metadata_required": 0,
+            "unrecoverable": 0,
+            "skipped_cancelled": 0,
+            "paused_during_resume": 0,
+            "already_queued": 0,
+            "already_running": 0,
+            "no_pending": 0,
+            "cache_corrupt": 0,
+            "failed": 0,
         }
-        logger.info(f"resume_all: starting {len(rj_ids)} works")
+        logger.info("resume_all: starting %s works", len(rj_ids))
         self._log_concurrency_state("resume_all_start")
-
         for rj_id in rj_ids:
-            result = await self._resume_one(rj_id)
-            st = result.get("status", "unknown")
-            if st == "queued":
-                stats["resumed_to_queue"] += 1
-            elif st in stats:
-                stats[st] += 1
-            else:
+            try:
+                result = await self._resume_one(rj_id)
+            except Exception:
+                logger.exception("resume_all failed for %s", rj_id)
                 stats["failed"] += 1
-
-        logger.info(
-            f"resume_all DONE: total={len(rj_ids)} "
-            f"resumed_to_queue={stats['resumed_to_queue']} "
-            f"already_queued={stats['already_queued']} "
-            f"already_running={stats['already_running']} "
-            f"no_pending={stats['no_pending']} "
-            f"no_cache={stats['no_cache']} "
-            f"cache_corrupt={stats['cache_corrupt']} "
-            f"failed={stats['failed']}")
+                continue
+            status = result.get("status", "unknown")
+            if status == "queued":
+                stats["resumed_to_queue"] += 1
+            elif status in {
+                "already_queued", "already_running", "no_pending",
+                "cache_corrupt", "failed",
+            }:
+                stats[status] += 1
+            elif status == "paused":
+                stats["paused_during_resume"] += 1
+            elif status not in {
+                "reconciled_complete", "metadata_required", "cancelled", "unrecoverable",
+            }:
+                stats["failed"] += 1
+            for key in (
+                "resumed_partial", "retried_from_zero", "already_complete",
+                "metadata_required", "unrecoverable", "skipped_cancelled",
+            ):
+                stats[key] += int(result.get(key, 0) or 0)
+        logger.info("resume_all DONE: %s", stats)
         self._log_concurrency_state("resume_all_done")
         return stats
 
     async def resume_job(self, rj_id: str) -> dict:
-
-    # ══════════════════════════════════════════════
-        """Resume paused/queued downloads from DB state."""
+        """Reconcile disk/SQLite state and queue every genuinely restorable file."""
+        summary = {
+            "resumed_partial": 0,
+            "retried_from_zero": 0,
+            "already_complete": 0,
+            "metadata_required": 0,
+            "unrecoverable": 0,
+            "skipped_cancelled": 0,
+        }
         cached = self.db.get_metadata_cache(rj_id, allow_stale=True)
+        prepared_payload = None
         if not cached:
-            return {"status": "no_cache", "message": "No metadata cache"}
-        if cached.get("is_stale"):
-            logger.warning(
-                f"Resume {rj_id} using expired metadata cache")
+            logger.warning("Resume %s requires metadata refresh", rj_id)
+            prepared_payload = await self.prepare_work(
+                rj_id, force_refresh=True, allow_duplicate=True
+            )
+            if not prepared_payload or prepared_payload[0] is None:
+                summary["metadata_required"] = 1
+                self._emit_work_status(rj_id, "Metadata required")
+                return {
+                    "status": "metadata_required",
+                    "message": "Metadata refresh is required before retry",
+                    **summary,
+                }
 
-        try:
-            meta_raw = _json.loads(cached["metadata_json"])
-            tracks_raw = _json.loads(cached["tracks_json"])
-        except Exception:
-            return {"status": "cache_corrupt", "message": "Corrupt cache"}
+        if prepared_payload:
+            meta, all_targets, root_path, _from_cache = prepared_payload
+        else:
+            if cached.get("is_stale"):
+                logger.warning("Resume %s using expired metadata cache", rj_id)
+            try:
+                meta_raw = _json.loads(cached["metadata_json"])
+                tracks_raw = _json.loads(cached["tracks_json"])
+            except Exception:
+                prepared_payload = await self.prepare_work(
+                    rj_id, force_refresh=True, allow_duplicate=True
+                )
+                if not prepared_payload or prepared_payload[0] is None:
+                    summary["metadata_required"] = 1
+                    self._emit_work_status(rj_id, "Metadata required")
+                    return {
+                        "status": "metadata_required",
+                        "message": "Metadata cache is corrupt and refresh failed",
+                        **summary,
+                    }
+                meta, all_targets, root_path, _from_cache = prepared_payload
+            else:
+                meta = self._build_metadata(rj_id, meta_raw)
+                root_path = self.get_save_path(meta)
+                hierarchy = self.parse_hierarchy(tracks_raw, root_path, root_path)
 
-        meta = self._build_metadata(rj_id, meta_raw)
-        root_path = self.get_save_path(meta)
-        hierarchy = self.parse_hierarchy(tracks_raw, root_path, root_path)
+                def flatten(nodes):
+                    result = []
+                    for node in nodes:
+                        if node.type != 'folder':
+                            result.append(node)
+                        result.extend(flatten(node.children))
+                    return result
 
-        def flatten(nodes):
-            result = []
-            for n in nodes:
-                if n.type != 'folder':
-                    result.append(n)
-                result.extend(flatten(n.children))
-            return result
+                all_targets = self.deduplicate_tracks(flatten(hierarchy))
 
-        all_targets = self.deduplicate_tracks(flatten(hierarchy))
+        # A user can pause/cancel while a metadata refresh is awaiting I/O.  Recheck
+        # after every preparation path so a completed refresh never resurrects it.
+        if rj_id in self.user_cancelled_rjs:
+            result = self.cancel_job(rj_id)
+            summary["skipped_cancelled"] = 1
+            return {**result, **summary, "during_resume_prepare": True}
+        if rj_id in self.cancelled_rjs:
+            result = self.pause_job(rj_id)
+            return {**result, **summary, "during_resume_prepare": True}
 
-        # Only resume tracks that are paused/queued/downloading
         db_states = {
-            row["id"]: dict(row)
-            for row in self.db.get_downloads_by_rj(rj_id)
+            row["id"]: dict(row) for row in self.db.get_downloads_by_rj(rj_id)
         }
         resume_targets = []
-        for t in all_targets:
-            dl_id = self._make_dl_id(rj_id, t.id or t.title,
-                                     t.save_path, t.title)
-            st = db_states.get(dl_id, {})
-            status = st.get("status", "queued") if st else "queued"
-            if status in ('paused', 'queued', 'downloading'):
-                resume_targets.append(t)
+        for target in all_targets:
+            dl_id = self._make_dl_id(
+                rj_id, target.id or target.title, target.save_path, target.title
+            )
+            row = db_states.get(dl_id, {})
+            status = str(row.get("status", "queued") or "queued").lower()
+            final_path = Path(row.get("local_path") or target.save_path)
+            target.save_path = final_path
+            part_path = final_path.with_suffix(final_path.suffix + ".part")
+            expected = int(target.size or row.get("total_bytes", 0) or 0)
+
+            if status in {"stale", "ignored"}:
+                continue
+            if status == "cancelled":
+                summary["skipped_cancelled"] += 1
+                continue
+
+            try:
+                final_size = final_path.stat().st_size if final_path.exists() else 0
+                part_size = part_path.stat().st_size if part_path.exists() else 0
+            except OSError as exc:
+                summary["unrecoverable"] += 1
+                self.db.upsert_download(
+                    dl_id, rj_id, target.title, str(final_path), "failed",
+                    int(row.get("downloaded_bytes", 0) or 0), expected,
+                    error=f"Unable to inspect partial file: {exc}",
+                )
+                continue
+
+            # Never trust a terminal SQLite label without checking the actual file.
+            # Missing or truncated completed/registered files are repaired using the
+            # same partial/zero-byte policy as failed rows.
+            if status in {"completed", "registered"}:
+                if final_size > 0 and (expected <= 0 or final_size == expected):
+                    summary["already_complete"] += 1
+                    if part_path.exists():
+                        try:
+                            part_path.unlink()
+                        except OSError:
+                            pass
+                    continue
+                status = "failed"
+
+            if expected > 0 and (final_size > expected or part_size > expected):
+                summary["unrecoverable"] += 1
+                self.db.upsert_download(
+                    dl_id, rj_id, target.title, str(final_path), "failed",
+                    max(final_size, part_size), expected,
+                    error="Local file is larger than expected; manual review required",
+                )
+                continue
+
+            if expected > 0 and final_size == expected:
+                self.db.upsert_download(
+                    dl_id, rj_id, target.title, str(final_path), "completed",
+                    expected, expected,
+                )
+                if part_path.exists():
+                    try:
+                        part_path.unlink()
+                    except OSError:
+                        pass
+                summary["already_complete"] += 1
+                continue
+
+            if expected > 0 and part_size == expected:
+                try:
+                    final_path.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(str(part_path), str(final_path))
+                except OSError as exc:
+                    summary["unrecoverable"] += 1
+                    self.db.upsert_download(
+                        dl_id, rj_id, target.title, str(final_path), "failed",
+                        part_size, expected,
+                        error=f"Unable to finalize complete partial file: {exc}",
+                    )
+                    continue
+                self.db.upsert_download(
+                    dl_id, rj_id, target.title, str(final_path), "completed",
+                    expected, expected,
+                )
+                summary["already_complete"] += 1
+                continue
+
+            actual = max(part_size, final_size)
+            if actual > 0:
+                summary["resumed_partial"] += 1
+            elif status == "failed":
+                summary["retried_from_zero"] += 1
+
+            if status in {
+                "paused", "queued", "downloading", "resuming", "failed",
+                "partial", "prepared", "no_pending", "metadata_failed",
+            } or not row:
+                self.db.upsert_download(
+                    dl_id, rj_id, target.title, str(final_path), "queued",
+                    actual, expected,
+                )
+                self._emit_progress(
+                    rj_id, target.id or target.title, target.title,
+                    actual, expected, "pending",
+                )
+                resume_targets.append(target)
+            else:
+                summary["unrecoverable"] += 1
 
         if not resume_targets:
+            if (summary["already_complete"] and not summary["unrecoverable"]
+                    and not summary["skipped_cancelled"]):
+                self.db.execute_write(
+                    "UPDATE works SET status='completed' WHERE rj_id=?", (rj_id,)
+                )
+                self._emit_work_status(rj_id, "Completed")
+                return {
+                    "status": "reconciled_complete",
+                    "message": "All files were already complete",
+                    **summary,
+                }
+            if summary["unrecoverable"]:
+                self._emit_work_status(rj_id, "Failed: manual review required")
+                return {
+                    "status": "unrecoverable",
+                    "message": "One or more local files require manual review",
+                    **summary,
+                }
             self._emit_work_status(rj_id, "No pending tracks")
-            return {"status": "no_pending",
-                    "message": "No pending tracks to resume"}
+            return {
+                "status": "no_pending",
+                "message": "No pending tracks to resume",
+                **summary,
+            }
 
+        self.cancelled_rjs.discard(rj_id)
         self._emit_work_status(rj_id, "Resuming...")
-        for t in resume_targets:
-            dl_id = self._make_dl_id(rj_id, t.id or t.title,
-                                     t.save_path, t.title)
-            self.db.upsert_download(dl_id, rj_id, t.title,
-                                    str(t.save_path), 'queued',
-                                    t.save_path.stat().st_size
-                                    if t.save_path.exists() else 0,
-                                    t.size)
-            self._emit_progress(rj_id, t.id or t.title, t.title,
-                                t.save_path.stat().st_size
-                                if t.save_path.exists() else 0,
-                                t.size, "pending")
-
-        # ── RC7.7: store only rj_id + work_data, NOT coroutine ──
+        self.db.execute_write(
+            "UPDATE works SET status='queued' WHERE rj_id=?", (rj_id,)
+        )
         self._queued_work_data[rj_id] = {
-            "meta": meta, "targets": resume_targets,
-            "root_path": root_path}
-        await self.download_queue.put(rj_id)
+            "meta": meta, "targets": resume_targets, "root_path": root_path,
+        }
         self.queued_rj_ids.add(rj_id)
-        # ── RC7.4: emit "Queued" here — worker emits "Downloading" later ──
+        await self.download_queue.put(rj_id)
         self._emit_work_status(rj_id, "Queued")
-        return {"status": "queued", "message": "Queued for download",
-                "count": len(resume_targets)}
+        return {
+            "status": "queued",
+            "message": "Queued for download",
+            "count": len(resume_targets),
+            **summary,
+        }
 
     # ══════════════════════════════════════════════
     #  P1.5-2:  restore on startup
@@ -1033,34 +1303,43 @@ class Orchestrator:
     # ══════════════════════════════════════════════
     async def queue_job(self, rj_id: str, force_refresh: bool = False,
                         allow_duplicate: bool = False) -> dict:
-        """Prepare and enqueue one work, returning a structured result."""
+        """Prepare and enqueue one work, honoring duplicate clicks and user stops."""
         rj_id = rj_id.strip().upper()
         if not rj_id.startswith("RJ"):
             rj_id = f"RJ{rj_id}"
         if rj_id in self.active_tasks:
             return {"status": "already_running", "rj_id": rj_id}
-        if rj_id in self.queued_rj_ids:
+        if (rj_id in self.queued_rj_ids or rj_id in self.preparing_rj_ids
+                or rj_id in self.resuming_rj_ids):
             return {"status": "already_queued", "rj_id": rj_id}
 
-        meta, targets, root_path, from_cache = await self.prepare_work(
-            rj_id, force_refresh, allow_duplicate=allow_duplicate)
-        if meta is None:
-            return {"status": "prepare_failed", "rj_id": rj_id}
-
-        status_msg = "Queued (cached)" if from_cache else "Queued"
-        self._emit_work_status(rj_id, status_msg)
-        self._queued_work_data[rj_id] = {
-            "meta": meta, "targets": targets,
-            "root_path": root_path}
-        self.queued_rj_ids.add(rj_id)
-        await self.download_queue.put(rj_id)
-        return {
-            "status": "queued",
-            "rj_id": rj_id,
-            "track_count": len(targets),
-            "from_cache": from_cache,
-            "allow_duplicate": allow_duplicate,
-        }
+        self.preparing_rj_ids.add(rj_id)
+        try:
+            meta, targets, root_path, from_cache = await self.prepare_work(
+                rj_id, force_refresh, allow_duplicate=allow_duplicate
+            )
+            if meta is None:
+                return {"status": "prepare_failed", "rj_id": rj_id}
+            if rj_id in self.user_cancelled_rjs:
+                result = self.cancel_job(rj_id)
+                return {**result, "rj_id": rj_id, "during_prepare": True}
+            if rj_id in self.cancelled_rjs:
+                result = self.pause_job(rj_id)
+                return {**result, "rj_id": rj_id, "during_prepare": True}
+            status_msg = "Queued (cached)" if from_cache else "Queued"
+            self._emit_work_status(rj_id, status_msg)
+            self._queued_work_data[rj_id] = {
+                "meta": meta, "targets": targets, "root_path": root_path,
+            }
+            self.queued_rj_ids.add(rj_id)
+            await self.download_queue.put(rj_id)
+            return {
+                "status": "queued", "rj_id": rj_id,
+                "track_count": len(targets), "from_cache": from_cache,
+                "allow_duplicate": allow_duplicate,
+            }
+        finally:
+            self.preparing_rj_ids.discard(rj_id)
 
     # ══════════════════════════════════════════════
     #  download_file — returns bool
@@ -1253,12 +1532,15 @@ class Orchestrator:
             except asyncio.CancelledError:
                 self.speed.pause_track(meta.rj_id, track.id or track.title)
                 actual = local_partial_size(final_path, part_path, track.size)
+                final_status = (
+                    'cancelled' if meta.rj_id in self.user_cancelled_rjs else 'paused'
+                )
                 self.db.upsert_download(
                     dl_id, meta.rj_id, track.title, str(final_path),
-                    'paused', actual, track.size)
+                    final_status, actual, track.size)
                 self._emit_progress(
                     meta.rj_id, track.id or track.title, track.title,
-                    actual, track.size, "paused")
+                    actual, track.size, final_status)
                 raise
             except Exception as e:
                 actual = local_partial_size(final_path, part_path, track.size)
@@ -1322,40 +1604,94 @@ class Orchestrator:
     # ══════════════════════════════════════════════
     #  P1.5-4:  _process_download with result tracking
     # ══════════════════════════════════════════════
+    async def _download_cover(self, rj_id: str, url: str,
+                              root_path: Path) -> Optional[Path]:
+        """Fetch a cover through the cover route and atomically publish its cache."""
+        if not url:
+            return None
+        root_path.mkdir(parents=True, exist_ok=True)
+        candidates = (
+            root_path / "cover.jpg", root_path / "cover.jpeg",
+            root_path / "cover.png", root_path / "cover.webp",
+        )
+        for candidate in candidates:
+            try:
+                if candidate.is_file() and candidate.stat().st_size > 0:
+                    logger.info("COVER_CACHE_HIT rj=%s path=%s", rj_id, candidate)
+                    return candidate
+            except OSError:
+                continue
+
+        temp_path = root_path / ".cover.download.part"
+
+        def extension_for(payload: bytes, content_type: str) -> str:
+            lowered = (content_type or "").split(";", 1)[0].strip().lower()
+            if payload.startswith(b"\x89PNG\r\n\x1a\n") or lowered == "image/png":
+                return ".png"
+            if (payload[:4] == b"RIFF" and payload[8:12] == b"WEBP") or lowered == "image/webp":
+                return ".webp"
+            if payload.startswith(b"\xff\xd8\xff") or lowered in {"image/jpeg", "image/jpg"}:
+                return ".jpg"
+            return ".jpg"
+
+        async def attempt(*, direct: bool) -> Path:
+            response = await self.kernel.stream(url, purpose="cover", direct=direct)
+            try:
+                if response.status < 200 or response.status >= 300:
+                    raise OSError(f"cover HTTP {response.status}")
+                payload = await response.read()
+                if not payload:
+                    raise OSError("empty cover response")
+                final_path = root_path / f"cover{extension_for(payload, response.headers.get('Content-Type', ''))}"
+                await asyncio.to_thread(temp_path.write_bytes, payload)
+                os.replace(str(temp_path), str(final_path))
+                for candidate in candidates:
+                    if candidate != final_path:
+                        try:
+                            candidate.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                logger.info(
+                    "COVER_FETCH rj=%s route=%s bytes=%s path=%s",
+                    rj_id, "direct" if direct else "cover", len(payload), final_path,
+                )
+                return final_path
+            finally:
+                if not response.closed:
+                    response.close()
+
+        try:
+            return await asyncio.wait_for(attempt(direct=False), timeout=10.0)
+        except asyncio.CancelledError:
+            temp_path.unlink(missing_ok=True)
+            raise
+        except Exception as exc:
+            logger.warning("Cover route failed for %s: %s", rj_id, exc)
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            if not getattr(self.config, "cover_fallback_to_direct", False):
+                return None
+        try:
+            return await asyncio.wait_for(attempt(direct=True), timeout=10.0)
+        except asyncio.CancelledError:
+            temp_path.unlink(missing_ok=True)
+            raise
+        except Exception as exc:
+            logger.warning("Explicit cover direct fallback failed for %s: %s", rj_id, exc)
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
+
     async def _process_download(self, rj_id: str, meta: WorkMetadata,
                                  targets: List[TrackItem],
                                  root_path: Path) -> None:
-        cover_path: Optional[Path] = root_path / "cover.jpg"
-        if meta.cover_url:
-            root_path.mkdir(parents=True, exist_ok=True)
-            try:
-                async def fetch_cover():
-                    async with await self.kernel.stream(
-                        meta.cover_url, purpose='cover'
-                    ) as resp:
-                        if resp.status == 200:
-                            cover_path.write_bytes(await resp.read())
-                await asyncio.wait_for(fetch_cover(), timeout=10.0)
-            except asyncio.TimeoutError:
-                logging.warning(f"Cover timeout for {rj_id}")
-                cover_path = None
-            except Exception as e:
-                # Try direct if proxy failed
-                logging.warning(f"Cover proxy failed: {e}, trying direct")
-                try:
-                    async def fetch_cover_direct():
-                        async with await self.kernel.stream(
-                            meta.cover_url, purpose='download'
-                        ) as resp:
-                            if resp.status == 200:
-                                cover_path.write_bytes(await resp.read())
-                    await asyncio.wait_for(fetch_cover_direct(), timeout=10.0)
-                except Exception:
-                    logging.warning(
-                        f"Cover direct also failed for {rj_id}")
-                    cover_path = None
-        else:
-            cover_path = None
+        cover_path = await self._download_cover(
+            rj_id, meta.cover_url, root_path
+        )
 
         self._emit_work_status(rj_id, "Downloading")
 
@@ -1391,7 +1727,14 @@ class Orchestrator:
                      f"{success_count}/{total} success, {failed_count} failed")
 
         try:
-            if failed_count == 0 and cancelled_count == 0:
+            blocking_rows = [
+                row for row in self.db.get_downloads_by_rj(rj_id)
+                if str(row["status"] or "").lower() in {
+                    "failed", "paused", "queued", "downloading",
+                    "resuming", "cancelled", "metadata_failed",
+                }
+            ]
+            if failed_count == 0 and cancelled_count == 0 and not blocking_rows:
                 # All success — register work as completed
                 final_size = sum(
                     t.save_path.stat().st_size
@@ -1405,8 +1748,12 @@ class Orchestrator:
                         'registered', t.size, t.size)
                 self._emit_work_status(rj_id, "Completed")
             elif cancelled_count > 0:
-                # Was paused — leave paused tracks in DB, don't overwrite
-                self._emit_work_status(rj_id, "Paused (partial)")
+                # Distinguish a durable user cancellation from a pause.
+                if (rj_id in self.user_cancelled_rjs or
+                        (self.db.get_works_status(rj_id) or "").lower() == "cancelled"):
+                    self._emit_work_status(rj_id, "Cancelled")
+                else:
+                    self._emit_work_status(rj_id, "Paused (partial)")
             else:
                 # Some failed — register as partial, do NOT overwrite failed
                 self._emit_work_status(

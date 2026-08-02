@@ -16,6 +16,7 @@ class WorkStatus(Enum):
     PARTIAL = "partial"
 
     FAILED = "failed"
+    CANCELLED = "cancelled"
     METADATA_FAILED = "metadata_failed"
     NO_PENDING = "no_pending"
     STALE = "stale"
@@ -62,6 +63,7 @@ class WorkStatus(Enum):
             WorkStatus.INDEXED,
             WorkStatus.STALE,
             WorkStatus.IGNORED,
+            WorkStatus.CANCELLED,
         )
 
     @property
@@ -81,6 +83,7 @@ class WorkStatus(Enum):
             WorkStatus.REGISTERED: "已登记",
             WorkStatus.PARTIAL: "部分完成",
             WorkStatus.FAILED: "下载失败",
+            WorkStatus.CANCELLED: "已取消",
             WorkStatus.METADATA_FAILED: "元数据失败",
             WorkStatus.NO_PENDING: "无可恢复文件",
             WorkStatus.STALE: "历史残留",
@@ -117,6 +120,12 @@ class WorkStatus(Enum):
             "无待下载文件",
         ):
             return WorkStatus.NO_PENDING
+
+        if s_lower in ("cancelled", "canceled") or s in ("已取消", "任务已取消"):
+            return WorkStatus.CANCELLED
+
+        if "metadata required" in s_lower or s == "需要重新获取元数据":
+            return WorkStatus.METADATA_FAILED
 
         if s in ("stale", "历史残留"):
             return WorkStatus.STALE

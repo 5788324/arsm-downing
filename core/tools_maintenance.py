@@ -15,7 +15,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-ACTIVE_STATUSES = (
+# Maintenance blocking and data-retention are different safety domains.
+# Cancelled rows are durable terminal records: they must retain metadata for an
+# explicit retry, but they do not represent active I/O and therefore must not
+# block database-only maintenance such as VACUUM.
+MAINTENANCE_BLOCKING_STATUSES = (
     "queued",
     "paused",
     "downloading",
@@ -24,7 +28,17 @@ ACTIVE_STATUSES = (
     "stale",
     "ignored",
 )
-TERMINAL_QUEUE_STATUSES = ("completed", "registered", "metadata_failed")
+METADATA_PROTECTED_STATUSES = (*MAINTENANCE_BLOCKING_STATUSES, "cancelled")
+TERMINAL_QUEUE_STATUSES = (
+    "completed",
+    "registered",
+    "metadata_failed",
+    "cancelled",
+)
+
+# Backward-compatible public name used by existing maintenance tests and tools.
+# It intentionally excludes terminal cancellation.
+ACTIVE_STATUSES = MAINTENANCE_BLOCKING_STATUSES
 
 
 def _connect(db_path: str | Path, *, read_only: bool) -> sqlite3.Connection:
@@ -64,8 +78,18 @@ def _status_counts(conn: sqlite3.Connection) -> dict[str, int]:
     return {str(row["status"]): int(row["cnt"]) for row in rows}
 
 
+def _status_count(
+    status_counts: dict[str, int], statuses: tuple[str, ...]
+) -> int:
+    return sum(status_counts.get(status, 0) for status in statuses)
+
+
 def _active_count(status_counts: dict[str, int]) -> int:
-    return sum(status_counts.get(status, 0) for status in ACTIVE_STATUSES)
+    return _status_count(status_counts, MAINTENANCE_BLOCKING_STATUSES)
+
+
+def _sql_placeholders(statuses: tuple[str, ...]) -> str:
+    return ",".join("?" for _ in statuses)
 
 
 def _candidate_token(kind: str, rows: list[dict[str, Any]]) -> str:
@@ -113,20 +137,20 @@ def preview_metadata_cache_cleanup(
             total = 0
         else:
             total = int(conn.execute("SELECT COUNT(*) FROM metadata_cache").fetchone()[0])
+            protected_placeholders = _sql_placeholders(METADATA_PROTECTED_STATUSES)
             rows = conn.execute(
-                """
+                f"""
                 SELECT mc.rj_id, COALESCE(mc.updated_at, mc.fetched_at) AS cached_at,
                        EXISTS (
                            SELECT 1 FROM downloads d
                            WHERE d.rj_id = mc.rj_id
-                             AND d.status IN ('queued','paused','downloading','resuming',
-                                              'failed','stale','ignored')
+                             AND d.status IN ({protected_placeholders})
                        ) AS protected
                 FROM metadata_cache mc
                 WHERE datetime(COALESCE(mc.updated_at, mc.fetched_at)) < datetime(?)
                 ORDER BY mc.rj_id
                 """,
-                (cutoff_text,),
+                (*METADATA_PROTECTED_STATUSES, cutoff_text),
             ).fetchall()
 
     expired = [dict(row) for row in rows]
@@ -163,6 +187,7 @@ def cleanup_metadata_cache(
         return {"success": True, "deleted_rows": 0, "preview": preview.to_dict()}
 
     placeholders = ",".join("?" for _ in preview.candidate_rj_ids)
+    protected_placeholders = _sql_placeholders(METADATA_PROTECTED_STATUSES)
     with _connection(db_path, read_only=False) as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -173,11 +198,10 @@ def cleanup_metadata_cache(
                   AND NOT EXISTS (
                       SELECT 1 FROM downloads d
                       WHERE d.rj_id = metadata_cache.rj_id
-                        AND d.status IN ('queued','paused','downloading','resuming',
-                                         'failed','stale','ignored')
+                        AND d.status IN ({protected_placeholders})
                   )
                 """,
-                preview.candidate_rj_ids,
+                (*preview.candidate_rj_ids, *METADATA_PROTECTED_STATUSES),
             )
             deleted = max(0, int(cursor.rowcount))
             conn.commit()
@@ -224,15 +248,19 @@ def preview_queue_cleanup(
         queue = {}
     terminal_labels = {
         "已完成",
+        "已取消",
         "completed",
         "registered",
         "metadata_failed",
-        "Metadata failed",
+        "metadata failed",
+        "cancelled",
+        "canceled",
     }
     terminal_queue = sum(
         1
         for item in queue.values()
-        if isinstance(item, dict) and str(item.get("status") or "") in terminal_labels
+        if isinstance(item, dict)
+        and str(item.get("status") or "").strip().casefold() in terminal_labels
     )
     active = _active_count(counts)
     rows = [{"status": key, "count": value} for key, value in sorted(counts.items())]

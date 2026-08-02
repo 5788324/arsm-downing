@@ -438,20 +438,36 @@ class AppController:
             self.orc.pause_job_async(rj_id), "暂停")
 
     def resume_download(self, rj_id: str):
-        """Resume one download and route all UI changes through ui_queue."""
+        """Resume one download and map structured core outcomes to UI states."""
         async def _do_resume():
             result = await self.orc._resume_one(rj_id)
             status = result.get("status", "")
             if status == "already_queued":
-                self._enqueue_snack(f"{rj_id} 已在队列中")
+                self._enqueue_snack(f"{rj_id} 已在队列中或正在恢复")
             elif status == "already_running":
                 self._enqueue_snack(f"{rj_id} 正在下载")
             elif status == "queued":
                 self._enqueue_work_status(rj_id, "Queued")
+                if int(result.get("unrecoverable", 0) or 0):
+                    self._enqueue_snack(
+                        f"{rj_id} 已继续可恢复文件；另有文件需要手动检查"
+                    )
+            elif status == "reconciled_complete":
+                self._enqueue_work_status(rj_id, "Completed")
+            elif status == "metadata_required":
+                self._enqueue_work_status(rj_id, "Metadata required")
+            elif status == "unrecoverable":
+                self._enqueue_work_status(rj_id, "Failed: manual review required")
+                self._enqueue_snack(f"{rj_id} 的本地文件异常，需要手动检查")
+            elif status == "no_pending":
+                self._enqueue_work_status(rj_id, "No pending tracks")
+            elif status == "cancelled":
+                self._enqueue_work_status(rj_id, "Cancelled")
+            elif status == "paused":
+                self._enqueue_work_status(rj_id, "Paused")
             else:
                 self._enqueue_work_status(rj_id, status)
             return result
-
         return self._submit_background(_do_resume(), "恢复")
 
     def reconnect_download(self, rj_id: str):
@@ -471,11 +487,64 @@ class AppController:
 
         return self._submit_background(_do_reconnect(), "重连")
 
+    def pause_and_hide_download(self, rj_id: str):
+        """Pause a task and let the view hide it without changing its semantics."""
+        async def _do_pause_hide():
+            result = self.orc.pause_job(rj_id)
+            self._enqueue_snack(f"{rj_id} 已暂停并隐藏；稍后可以继续")
+            return result
+        return self._submit_background(_do_pause_hide(), "暂停并隐藏")
+
     def cancel_download(self, rj_id: str):
-        """Preserve current legacy behavior: pause while keeping partial files."""
+        """Persist a true cancelled state while preserving partial files."""
         async def _do_cancel():
-            self.orc.cancel_job(rj_id)
-        return self._submit_background(_do_cancel(), "暂停并隐藏")
+            result = self.orc.cancel_job(rj_id)
+            status = result.get("status", "")
+            if status == "cancelled":
+                self._enqueue_work_status(rj_id, "Cancelled")
+                self._enqueue_snack(f"{rj_id} 已取消；断点文件已保留")
+            elif status == "already_terminal":
+                self._enqueue_snack(f"{rj_id} 已完成，未执行取消")
+            else:
+                self._enqueue_snack(f"{rj_id} 取消结果: {status or 'unknown'}")
+            return result
+        return self._submit_background(_do_cancel(), "取消任务")
+
+    def resume_cancelled_download(self, rj_id: str):
+        """Explicitly retry a previously cancelled task."""
+        async def _do_retry():
+            result = await self.orc.retry_cancelled_job(rj_id)
+            status = result.get("status", "")
+            if status == "queued":
+                self._enqueue_work_status(rj_id, "Queued")
+                if int(result.get("unrecoverable", 0) or 0):
+                    self._enqueue_snack(
+                        f"{rj_id} 已继续可恢复断点；另有文件需要手动检查"
+                    )
+                else:
+                    self._enqueue_snack(f"{rj_id} 已从保留断点继续")
+            elif status == "reconciled_complete":
+                self._enqueue_work_status(rj_id, "Completed")
+                self._enqueue_snack(f"{rj_id} 本地文件已完整，无需重新下载")
+            elif status == "metadata_required":
+                self._enqueue_work_status(rj_id, "Metadata required")
+                self._enqueue_snack(f"{rj_id} 需要重新获取元数据")
+            elif status == "unrecoverable":
+                self._enqueue_work_status(rj_id, "Failed: manual review required")
+                self._enqueue_snack(f"{rj_id} 的本地文件异常，需要手动检查")
+            elif status == "no_pending":
+                self._enqueue_work_status(rj_id, "No pending tracks")
+                self._enqueue_snack(f"{rj_id} 没有可继续的文件")
+            elif status == "paused":
+                self._enqueue_work_status(rj_id, "Paused")
+                self._enqueue_snack(f"{rj_id} 在恢复过程中被暂停")
+            else:
+                self._enqueue_work_status(rj_id, status)
+                self._enqueue_snack(
+                    f"{rj_id} 无法继续: {result.get('message', status)}"
+                )
+            return result
+        return self._submit_background(_do_retry(), "继续已取消任务")
 
     def pause_all_downloads(self):
         async def _do_pause_all():
@@ -492,7 +561,8 @@ class AppController:
         async def _do_resume_all():
             stats = await self.orc._resume_all_async()
             resumed = stats.get("resumed_to_queue", 0)
-            failed = stats.get("failed", 0) + stats.get("no_cache", 0)
+            failed = (stats.get("failed", 0) + stats.get("metadata_required", 0)
+                      + stats.get("unrecoverable", 0))
             self._enqueue_snack(
                 f"已恢复 {resumed} 个任务"
                 + (f"，{failed} 个需要手动处理" if failed else ""))

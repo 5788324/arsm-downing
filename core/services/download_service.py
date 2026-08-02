@@ -39,7 +39,7 @@ class DownloadService:
     state.  Mutating operations remain owned by AppController/Orchestrator.
     """
 
-    FILTERS = {"working", "active", "queued", "paused", "failed", "completed", "all"}
+    FILTERS = {"working", "active", "queued", "paused", "failed", "completed", "cancelled", "all"}
 
     def __init__(self, vault: Any, *, output_dir: Path | None = None,
                  library_paths: Iterable[str | Path] = ()) -> None:
@@ -62,6 +62,10 @@ class DownloadService:
             return "active"
         if int(row["queued_files"] or 0):
             return "queued"
+        cancelled_files = int(row["cancelled_files"] or 0)
+        if (work_status == "cancelled" or cancelled_files) and not (
+                int(row["paused_files"] or 0) or int(row["failed_files"] or 0)):
+            return "cancelled"
         if work_status in _TERMINAL_WORK:
             return "completed"
         if int(row["paused_files"] or 0):
@@ -84,6 +88,7 @@ class DownloadService:
             "paused": "已暂停",
             "failed": "下载失败",
             "completed": "已完成",
+            "cancelled": "已取消",
             "preparing": "准备中...",
             "prepared": "已就绪",
             "metadata_failed": "元数据失败",
@@ -111,7 +116,8 @@ class DownloadService:
             "metadata_failed": 6,
             "partial": 7,
             "no_pending": 8,
-            "completed": 9,
+            "cancelled": 9,
+            "completed": 10,
         }.get(item.queue_state, 10)
         return (priority, item.updated_at or "", item.rj_id)
 
@@ -139,6 +145,7 @@ class DownloadService:
                 SUM(CASE WHEN d.status = 'resuming' THEN 1 ELSE 0 END) AS resuming_files,
                 SUM(CASE WHEN d.status = 'paused' THEN 1 ELSE 0 END) AS paused_files,
                 SUM(CASE WHEN d.status = 'failed' THEN 1 ELSE 0 END) AS failed_files,
+                SUM(CASE WHEN d.status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_files,
                 COALESCE(SUM(d.downloaded_bytes), 0) AS downloaded_bytes,
                 COALESCE(SUM(d.total_bytes), 0) AS total_bytes,
                 COALESCE(MAX(CASE WHEN d.status IN ('downloading','resuming')
@@ -158,10 +165,10 @@ class DownloadService:
 
     def _row_to_item(self, row: sqlite3.Row) -> DownloadQueueItem:
         queue_state = self._queue_state(row)
-        terminal = bool(int(row["terminal_work"] or 0)) or queue_state == "completed"
+        terminal = bool(int(row["terminal_work"] or 0)) or queue_state in {"completed", "cancelled"}
         can_pause = queue_state in {"active", "queued", "resuming"}
         can_resume = queue_state in {"paused", "failed", "partial"}
-        can_retry = queue_state in {"failed", "metadata_failed", "no_pending", "prepared"}
+        can_retry = queue_state in {"failed", "metadata_failed", "no_pending", "prepared", "cancelled"}
         # Keep capability rules tied to the explicit policy without changing legacy rows.
         if queue_state == "paused":
             can_resume = WorkStatePolicy.decide("paused", "queued").allowed
@@ -191,6 +198,7 @@ class DownloadService:
             can_resume=can_resume,
             can_retry=can_retry,
             is_terminal=terminal,
+            cancelled_files=int(row["cancelled_files"] or 0),
         )
 
     def fetch_queue_page(self, *, status_filter: str = "working", page: int = 1,
@@ -230,6 +238,7 @@ class DownloadService:
             failed_tasks=sum(item.queue_state == "failed" for item in all_items),
             completed_tasks=sum(item.queue_state == "completed" for item in all_items),
             downloaded_bytes=int(totals[0] or 0),
+            cancelled_tasks=sum(item.queue_state == "cancelled" for item in all_items),
             total_bytes=int(totals[1] or 0),
         )
         return DownloadQueuePage(
@@ -340,6 +349,9 @@ class DownloadService:
             elif states & _ACTIVE_DOWNLOAD:
                 categories["queue"].append(rj_id)
                 reasons[rj_id] = "SQLite 中已有可恢复/活动下载"
+            elif status == "cancelled" or (states and states <= {"cancelled"}):
+                categories["review"].append(rj_id)
+                reasons[rj_id] = "已取消任务，可选择继续保留的断点"
             elif status in _TERMINAL_WORK or (states and states <= {"completed", "registered"}):
                 categories["completed"].append(rj_id)
                 reasons[rj_id] = "下载历史已完成"

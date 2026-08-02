@@ -1,9 +1,23 @@
 # ARSM Suite 当前状态
 
-> 更新时间：2026-08-02
-> 远端基线：`main@3cb48ddd5e9ccd39ebba1e6c24c18e1071ba7080`
-> 当前版本：`0.9.0-rc.3`（候选发布准备中）
-> 当前阶段：`T15 网络与认证验收通过；RC3 候选发布准备中`
+> 更新时间：2026-08-02 22:03 +08:00
+> PR1 修复基线：`main@50346f9da9a5d24dda99f7d8c6c21e2f9210c1a6`
+> 当前版本：`0.9.0-rc.3`（PR1 直接源码候选，未发布）
+> 当前阶段：`PR1 自动门禁待 Windows/Flet 完整复验；NO-GO`
+
+## 0. PR1 直接源码修复状态
+
+- 输入事实源：V6 已应用的完整隔离 worktree 源码快照，原始 ZIP SHA-256 为 `58313ef72b108984714abf8a5aa2fb02bd8a81fcaceb966ed8f1fec16619e3b6`。
+- 不再维护 `apply_fixes.py` 或文本锚点；本轮直接修改真实应用后源码与真实测试。
+- 已将维护安全集合拆分为：
+  - `MAINTENANCE_BLOCKING_STATUSES`：活动或可恢复状态，阻止 VACUUM/队列维护；
+  - `METADATA_PROTECTED_STATUSES`：上述状态加 `cancelled`，保护显式重试所需缓存；
+  - `TERMINAL_QUEUE_STATUSES`：包含 `cancelled`，作为终态统计。
+- 已验证 cancelled 行不会阻止 VACUUM，VACUUM 后 cancelled 下载记录和 metadata cache 均保留。
+- 本地结果：focused `49 passed`；非 Flet 主体 `234 passed`；非 UI import smoke `19 passed`；维护专项 `10 passed`；compileall PASS；`release_check --skip-tests` PASS。
+- 当前容器无法安装锁定的 `flet==0.27.6`，因此完整 pytest、Windows one-folder、GUI/DPI/托盘/退出必须由 Codex 在隔离 Windows 环境执行。
+- 正式 `E:\arsm`、`history.db`、`config.json`、`queue.json`、现有 `.part` 均未接触。
+- 结论：**NO-GO**；全门禁通过前禁止提交、push、PR 和发布。
 
 ## 1. 已确认发布事实
 
@@ -208,3 +222,11 @@ Windows 修复前基线：231 passed，3 skipped
 - 每个完成文件的 SQLite downloaded/total 与计划大小一致；metadata/cover 走 `http://127.0.0.1:7897`，音频日志确认 direct/HTTP 200。
 - 长时观察运行超过 52 分钟，worker CPU 3.97 秒、工作集约 52 MiB，下载完成后无状态漂移或 stderr 错误。自制采样 harness 卡在首个 SQLite 快照，已停止；单独的 RC3 `Orchestrator` 启动/正常 shutdown 验证通过，因此不把 harness 问题定性为产品缺陷。
 - T16：**PASS_WITH_NOTES**。正式 `E:\arsm`、既有 RC2 实例、正式数据库和队列全程零接触。
+
+## 2026-08-02 PR1 直接源码候选：Windows 验收完成（条件 GO）
+
+- 维护语义已拆分为维护阻断、metadata 保护和终态队列三个集合；已取消任务不阻止 VACUUM/队列预览，但继续保护 metadata 以支持显式重试。
+- 在全新隔离 Python 3.12 环境：focused 49 passed，full 294 passed, 3 skipped，elease_check --skip-tests ready=true，PyInstaller one-folder 与 EXE 非空通过。
+- 隔离 EXE：8,320,551 bytes，SHA-256 6c84d11e7b028cbb96ffa5b58cba56c91ae09ceb7fcc2af8abaebd3c928ad580。
+- GUI：四页导航、批量粘贴取消、维护保护可见性和三轮启动/关闭通过；托盘彻底退出后无 ARSM/Flet/Python 残留。
+- 未改变 main、正式 E:\arsm、正式数据库、队列、任务或 .part。高 DPI（125%/150%/200%）视觉检查仍需在用户显示缩放下完成。

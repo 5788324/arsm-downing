@@ -8,11 +8,12 @@ Python + Flet 0.27.6 + SQLite + asyncio + aiohttp
 
 ## 当前状态
 
-- 当前远端基线：`main@3cb48ddd5e9ccd39ebba1e6c24c18e1071ba7080`
-- 当前版本：`0.9.0-rc.3`（候选发布准备中）
-- RC2 已修复下载页汇总、全局/作品网速、完成项移出队列，并删除“统计与成就”页。
-- T10～T15 已进入 main；RC3 仅包含已通过 CI 的网络错误提示与验收收口。
-- 旧 Draft PR #6 基于 RC1，不能直接合并；其中有效设计已经重新移植到 RC2。
+- PR1 直接源码候选基线：`main@50346f9da9a5d24dda99f7d8c6c21e2f9210c1a6`。
+- 当前版本仍为 `0.9.0-rc.3`；本候选尚未提交、推送、创建 PR 或发布。
+- V6 已在真实 Windows detached worktree 成功应用；随后改为直接维护完整源码，不再使用补丁应用器。
+- 已修复维护状态语义冲突：`cancelled` 是终态，不阻止 VACUUM 或队列清理预览，但继续保护显式重试所需的 metadata cache。
+- 当前便携环境验证：PR1 聚焦回归 `49 passed`，非 Flet 主体回归 `234 passed`，非 UI 导入烟测 `19 passed`，维护专项 `10 passed`，compileall 与 release_check 静态门禁通过。
+- 完整 Windows/Flet pytest、PyInstaller、GUI、DPI、托盘与退出生命周期仍是发布硬门禁；当前结论为 **NO-GO**。
 
 ## T10 已完成
 
@@ -172,3 +173,7 @@ Windows 下点击标题栏关闭会隐藏到系统托盘。右键托盘图标可
 - 修复 metadata 失败原因被降级为 `empty response`：401 和断网现在会把具体 HTTP/连接错误传到下载器状态；受控真实 HTTP 401、断网和恢复均已验证，失败时 SQLite 零新增。
 - 最终自动回归：`245 passed, 3 skipped`；3 项 skipped 是当前 Windows 无法创建 symbolic link。
 - 正式 `E:\arsm`、history/config/queue、正式任务与 `.part` 全程零接触；本轮未创建标签或发布。
+
+## PR1 维护安全候选（2026-08-02）
+
+已取消任务是可显式恢复的终态：它不阻止数据库 VACUUM 或队列清理预览，但会保护 metadata cache，避免重试前丢失元数据。该候选已在隔离 Windows 环境通过 294 项自动测试、PyInstaller 与基础 GUI/托盘退出验收；仍需在用户实际高 DPI 缩放下做视觉复核，当前不是正式 Release。

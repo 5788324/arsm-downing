@@ -2,6 +2,10 @@ import flet as ft
 from pathlib import Path
 
 from ui.theme import ACCENT_PRIMARY, ERROR
+from core.settings_validation import (
+    normalize_library_paths, validate_proxy_uri,
+    validate_writable_directory,
+)
 
 
 class SettingsView(ft.Container):
@@ -53,6 +57,11 @@ class SettingsView(ft.Container):
         self.download_fallback_switch = ft.Switch(
             label="下载直连失败后回退到代理",
             value=getattr(config, "download_fallback_to_proxy", False),
+        )
+        self.cover_fallback_switch = ft.Switch(
+            label="封面代理失败时允许直连回退",
+            value=getattr(config, "cover_fallback_to_direct", False),
+            tooltip="默认关闭；开启后仅封面请求可进行一次受控直连回退。",
         )
         self.work_concurrency_slider = ft.Slider(
             min=1, max=4, divisions=3,
@@ -111,6 +120,7 @@ class SettingsView(ft.Container):
                 ft.Row([self.cover_proxy_input]),
                 ft.Row([self.download_proxy_input]),
                 ft.Row([self.download_fallback_switch]),
+                ft.Row([self.cover_fallback_switch]),
                 ft.Text("同时下载的作品数"),
                 self.work_concurrency_slider,
                 ft.Text("同时准备元数据的作品数"),
@@ -167,64 +177,110 @@ class SettingsView(ft.Container):
             pass
 
     def on_save(self, e):
+        del e
         config = self.app_controller.config
-        output_value = self.dir_input.value.strip()
-        if not output_value:
-            self.app_controller.show_snack("下载保存目录不能为空")
-            return
-        config.output_dir = Path(output_value).expanduser()
-
-        metadata_proxy = self.metadata_proxy_input.value.strip()
-        cover_proxy = self.cover_proxy_input.value.strip()
-        download_proxy = self.download_proxy_input.value.strip()
-
-        external_intake_root = self.external_intake_root_input.value.strip()
-        external_quarantine_root = self.external_quarantine_root_input.value.strip()
-        for label, value in (
-            ("外部资源扫描目录", external_intake_root),
-            ("外部资源隔离目录", external_quarantine_root),
-        ):
-            if value and not Path(value).is_absolute():
-                self.app_controller.show_snack(f"{label}必须使用绝对路径")
-                return
-        if external_intake_root and external_quarantine_root:
-            root_path = Path(external_intake_root).resolve(strict=False)
-            quarantine_path = Path(external_quarantine_root).resolve(strict=False)
-            try:
-                quarantine_path.relative_to(root_path)
-                self.app_controller.show_snack("隔离目录必须位于扫描目录之外")
-                return
-            except ValueError:
-                pass
-            if root_path == quarantine_path:
-                self.app_controller.show_snack("扫描目录和隔离目录不能相同")
-                return
-
-        config.external_intake_root = external_intake_root or None
-        config.external_quarantine_root = external_quarantine_root or None
-
-        config.metadata_proxy = metadata_proxy or None
-        config.cover_proxy = cover_proxy or None
-        config.download_proxy = download_proxy or None
-        config.download_fallback_to_proxy = self.download_fallback_switch.value
-        config.proxy = config.metadata_proxy
-        config.work_concurrency = int(self.work_concurrency_slider.value)
-        config.metadata_concurrency = int(self.metadata_concurrency_slider.value)
-        config.file_concurrency = int(self.file_concurrency_slider.value)
-        config.max_concurrent = config.file_concurrency  # legacy compatibility
-        config.tag_audio = self.tag_audio_switch.value
-        config.sort_files = self.sort_files_switch.value
-
-        new_paths = []
-        for row in self.lib_path_list.controls:
-            value = row.controls[0].value.strip()
-            if value:
-                new_paths.append(value)
-        config.library_paths = new_paths if new_paths else [str(config.output_dir)]
+        attrs = (
+            "output_dir", "library_paths", "external_intake_root",
+            "external_quarantine_root", "metadata_proxy", "cover_proxy",
+            "download_proxy", "cover_fallback_to_direct",
+            "download_fallback_to_proxy", "proxy", "work_concurrency",
+            "metadata_concurrency", "file_concurrency", "max_concurrent",
+            "tag_audio", "sort_files",
+        )
+        previous = {name: getattr(config, name, None) for name in attrs}
+        download_view = getattr(self.app_controller, "views", {}).get(0)
+        service = getattr(download_view, "download_service", None)
+        service_previous = (
+            getattr(service, "output_dir", None),
+            getattr(service, "library_paths", ()),
+        ) if service is not None else None
+        created_output_dir = None
         try:
-            config.save()
-        except OSError as exc:
-            self.app_controller.show_snack(f"设置保存失败: {exc}")
-            return
+            raw_output = str(self.dir_input.value or "").strip()
+            if not raw_output:
+                raise ValueError("下载保存目录不能为空")
+            output_candidate = Path(raw_output).expanduser().resolve(strict=False)
+            output_existed = output_candidate.exists()
+            if output_existed and not output_candidate.is_dir():
+                raise ValueError(f"路径不是目录: {output_candidate}")
 
-        self.app_controller.show_snack("设置已保存")
+            # Complete all pure validation before creating a new output directory.
+            metadata_proxy = validate_proxy_uri(self.metadata_proxy_input.value)
+            cover_proxy = validate_proxy_uri(self.cover_proxy_input.value)
+            download_proxy = validate_proxy_uri(self.download_proxy_input.value)
+
+            external_intake_root = self.external_intake_root_input.value.strip()
+            external_quarantine_root = self.external_quarantine_root_input.value.strip()
+            for label, value in (
+                ("外部资源扫描目录", external_intake_root),
+                ("外部资源隔离目录", external_quarantine_root),
+            ):
+                if value and not Path(value).is_absolute():
+                    raise ValueError(f"{label}必须使用绝对路径")
+            if external_intake_root and external_quarantine_root:
+                root_path = Path(external_intake_root).resolve(strict=False)
+                quarantine_path = Path(external_quarantine_root).resolve(strict=False)
+                if root_path == quarantine_path:
+                    raise ValueError("扫描目录和隔离目录不能相同")
+                try:
+                    quarantine_path.relative_to(root_path)
+                except ValueError:
+                    pass
+                else:
+                    raise ValueError("隔离目录必须位于扫描目录之外")
+
+            raw_library_paths = [
+                row.controls[0].value for row in self.lib_path_list.controls
+                if getattr(row, "controls", None)
+            ]
+            library_paths = normalize_library_paths(raw_library_paths)
+            output_dir = validate_writable_directory(raw_output)
+            if not output_existed:
+                created_output_dir = output_dir
+            if not library_paths:
+                library_paths = [str(output_dir)]
+
+            config.output_dir = output_dir
+            config.library_paths = library_paths
+            config.external_intake_root = external_intake_root or None
+            config.external_quarantine_root = external_quarantine_root or None
+            config.metadata_proxy = metadata_proxy
+            config.cover_proxy = cover_proxy
+            config.download_proxy = download_proxy
+            config.cover_fallback_to_direct = bool(self.cover_fallback_switch.value)
+            config.download_fallback_to_proxy = bool(self.download_fallback_switch.value)
+            config.proxy = metadata_proxy
+            config.work_concurrency = int(self.work_concurrency_slider.value)
+            config.metadata_concurrency = int(self.metadata_concurrency_slider.value)
+            config.file_concurrency = int(self.file_concurrency_slider.value)
+            config.max_concurrent = config.file_concurrency
+            config.tag_audio = bool(self.tag_audio_switch.value)
+            config.sort_files = bool(self.sort_files_switch.value)
+            config.save()
+
+            # The service is read-only, but it snapshots paths for duplicate scans.
+            # Refresh those snapshots immediately; existing active targets stay fixed.
+            if service is not None:
+                service.output_dir = Path(config.output_dir)
+                service.library_paths = tuple(Path(value) for value in config.library_paths)
+            self.app_controller.show_snack(
+                "设置已保存；路径与代理对后续任务生效，并发线程数重启后完整生效"
+            )
+        except Exception as exc:
+            for name, value in previous.items():
+                setattr(config, name, value)
+            if service is not None and service_previous is not None:
+                service.output_dir, service.library_paths = service_previous
+            # If persistence succeeded but a later runtime update failed, restore the
+            # previous durable file as well.  A second failure is reported but never
+            # hidden behind a false success toast.
+            try:
+                config.save()
+            except Exception:
+                pass
+            if created_output_dir is not None:
+                try:
+                    created_output_dir.rmdir()
+                except OSError:
+                    pass
+            self.app_controller.show_snack(f"设置未保存: {exc}")

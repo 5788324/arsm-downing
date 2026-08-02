@@ -464,7 +464,7 @@ class DownloadView(ft.Container):
         return None
 
     def _resolve_cover_source(self, rj_id: str) -> Optional[str]:
-        # 1. Local disk scan (best quality, no proxy)
+        """Return only a local cover path; remote URLs must use NetworkKernel."""
         work_dir = self._find_work_dir(rj_id)
         if work_dir and work_dir.exists():
             for name in self.COVER_CANDIDATES:
@@ -473,20 +473,14 @@ class DownloadView(ft.Container):
                     return str(candidate)
             try:
                 for child in work_dir.iterdir():
-                    if child.is_file() and child.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}:
+                    if child.is_file() and child.suffix.lower() in {
+                        ".jpg", ".jpeg", ".png", ".webp",
+                    }:
                         lower_name = child.name.lower()
-                        if "cover" in lower_name or "package" in lower_name or "main" in lower_name:
+                        if any(token in lower_name for token in ("cover", "package", "main")):
                             return str(child)
-            except Exception:
+            except OSError:
                 pass
-
-        # 2. Metadata cache (works for new downloads with no local files yet)
-        try:
-            cached = self.app_controller.db.get_metadata_cache(rj_id, allow_stale=True)
-            if cached and cached.get("cover_url"):
-                return cached["cover_url"]
-        except Exception:
-            pass
         return None
 
     def _build_cover(self, rj_id: str, width: int = 72, height: int = 72):
@@ -533,7 +527,7 @@ class DownloadView(ft.Container):
 
         cache_label = " [缓存]" if item_data.get("cache_hit") else ""
         status_colors = {"downloading": SUCCESS, "queued": ACCENT_SECONDARY, "paused": WARNING,
-                         "failed": ERROR, "completed": SUCCESS, "metadata_failed": ERROR,
+                         "failed": ERROR, "cancelled": WARNING, "completed": SUCCESS, "metadata_failed": ERROR,
                          "no_pending": WARNING, "duplicate": "grey"}
         status_color = status_colors.get(ns, ACCENT_PRIMARY)
         status_text = ft.Text(status + cache_label, color=status_color, size=12, weight=ft.FontWeight.W_600)
@@ -549,7 +543,7 @@ class DownloadView(ft.Container):
 
         prog = self._get_progress_value(item_data)
         total = sum(t.get("total", 0) for t in item_data.get("tracks", {}).values())
-        if self._is_terminal(status):
+        if ns in {"completed", "registered", "verified"}:
             prog = 1.0
         elif ns in ("queued", "resuming") and total <= 0:
             prog = 0.0
@@ -601,40 +595,62 @@ class DownloadView(ft.Container):
                 tooltip="\u6253\u5f00\u4e0b\u8f7d\u76ee\u5f55",
                 on_click=lambda e, r=rj_id: self._open_work_dir(r))
             actions.extend([btn_retry, btn_clear, btn_open])
+        elif ns == "cancelled":
+            btn_resume_cancelled = ft.IconButton(
+                icon=ft.Icons.REPLAY, icon_color=SUCCESS,
+                tooltip="继续已取消任务",
+                on_click=lambda e, r=rj_id: self.app_controller.resume_cancelled_download(r))
+            btn_open = ft.IconButton(
+                icon=ft.Icons.FOLDER_OPEN, icon_color=ACCENT_SECONDARY,
+                tooltip="打开目录",
+                on_click=lambda e, r=rj_id: self._open_work_dir(r))
+            actions.extend([btn_resume_cancelled, btn_open])
         elif ns == "paused":
             btn_resume = ft.IconButton(
                 icon=ft.Icons.PLAY_ARROW, icon_color=SUCCESS,
                 tooltip="\u7ee7\u7eed\u4e0b\u8f7d",
                 on_click=lambda e, r=rj_id: self.toggle_pause(r))
+            btn_hide = ft.IconButton(
+                icon=ft.Icons.VISIBILITY_OFF, icon_color=WARNING,
+                tooltip="暂停并隐藏（保留断点）",
+                on_click=lambda e, r=rj_id: self.pause_and_hide_item(r))
             btn_cancel = ft.IconButton(
                 icon=ft.Icons.CANCEL, icon_color=ERROR,
-                tooltip="暂停并从本次列表隐藏（保留断点）",
+                tooltip="取消任务（保留断点）",
                 on_click=lambda e, r=rj_id: self.cancel_item(r))
-            actions.extend([btn_resume, btn_cancel])
+            actions.extend([btn_resume, btn_hide, btn_cancel])
         elif ns == "queued" or ns == "resuming":
             btn_pause = ft.IconButton(
                 icon=ft.Icons.PAUSE, icon_color=ACCENT_PRIMARY,
                 tooltip="\u6682\u505c",
                 on_click=lambda e, r=rj_id: self.toggle_pause(r))
+            btn_hide = ft.IconButton(
+                icon=ft.Icons.VISIBILITY_OFF, icon_color=WARNING,
+                tooltip="暂停并隐藏（保留断点）",
+                on_click=lambda e, r=rj_id: self.pause_and_hide_item(r))
             btn_cancel = ft.IconButton(
                 icon=ft.Icons.CANCEL, icon_color=ERROR,
-                tooltip="暂停并从本次列表隐藏（保留断点）",
+                tooltip="取消任务（保留断点）",
                 on_click=lambda e, r=rj_id: self.cancel_item(r))
-            actions.extend([btn_pause, btn_cancel])
+            actions.extend([btn_pause, btn_hide, btn_cancel])
         elif ns == "downloading":
             btn_pause = ft.IconButton(
                 icon=ft.Icons.PAUSE, icon_color=ACCENT_PRIMARY,
                 tooltip="\u6682\u505c",
                 on_click=lambda e, r=rj_id: self.toggle_pause(r))
+            btn_hide = ft.IconButton(
+                icon=ft.Icons.VISIBILITY_OFF, icon_color=WARNING,
+                tooltip="暂停并隐藏（保留断点）",
+                on_click=lambda e, r=rj_id: self.pause_and_hide_item(r))
             btn_cancel = ft.IconButton(
                 icon=ft.Icons.CANCEL, icon_color=ERROR,
-                tooltip="暂停并从本次列表隐藏（保留断点）",
+                tooltip="取消任务（保留断点）",
                 on_click=lambda e, r=rj_id: self.cancel_item(r))
             btn_reconnect = ft.IconButton(
                 icon=ft.Icons.REFRESH, icon_color=ACCENT_SECONDARY,
                 tooltip="\u91cd\u8fde\uff08\u6682\u505c\u540e\u91cd\u65b0\u8fde\u63a5\uff09",
                 on_click=lambda e, r=rj_id: self._reconnect_job(r))
-            actions.extend([btn_pause, btn_cancel, btn_reconnect])
+            actions.extend([btn_pause, btn_hide, btn_cancel, btn_reconnect])
 
         actions_row = ft.Row(actions, spacing=0, alignment=ft.MainAxisAlignment.END)
 
@@ -727,6 +743,8 @@ class DownloadView(ft.Container):
             "Completed": "已完成",
             "Resuming...": "恢复中...",
             "No pending tracks": "无可恢复文件",
+            "Cancelled": "已取消",
+            "Metadata required": "需要重新获取元数据",
         }
 
         # RC4: metadata_failed detection
@@ -851,14 +869,11 @@ class DownloadView(ft.Container):
             self.update_work_status(rj_id, "Paused")
 
     def _retry_failed(self, rj_id: str):
-        """Retry a failed download."""
-        data = self.active_downloads.get(rj_id)
-        if not data:
+        """Ask the core to reconcile the failure before changing card state."""
+        if rj_id not in self.active_downloads:
             return
-        data["status"] = "队列中"
-        data["cache_hit"] = False
-        self.build_queue_item(rj_id)
         self.app_controller.resume_download(rj_id)
+        self.app_controller.show_snack(f"{rj_id} 正在检查断点与失败状态…")
 
     def _force_download(self, rj_id: str):
         """Force download a duplicate work."""
@@ -917,19 +932,35 @@ class DownloadView(ft.Container):
         except Exception as exc:
             self.app_controller.show_snack(f"打开目录失败: {exc}")
 
+    def pause_and_hide_item(self, rj_id: str):
+        """Pause without converting the task into a cancelled terminal state."""
+        data = self.active_downloads.get(rj_id)
+        if not data:
+            return
+        self.app_controller.pause_and_hide_download(rj_id)
+        if data.get("control") and data["control"] in self.queue_list.controls:
+            self.queue_list.controls.remove(data["control"])
+        self.active_downloads.pop(rj_id, None)
+        try:
+            if self.queue_list.page:
+                self.queue_list.update()
+        except Exception:
+            pass
+        self.save_queue()
+
     def cancel_item(self, rj_id: str):
+        """Cancel durably, remove the card, and preserve partial bytes."""
         data = self.active_downloads.get(rj_id)
         if not data:
             return
         if not self._is_terminal(data["status"]):
             self.app_controller.cancel_download(rj_id)
-            self.app_controller.show_snack(
-                f"{rj_id} 已暂停并从本次列表隐藏；重启后仍可恢复")
         if data.get("control") and data["control"] in self.queue_list.controls:
             self.queue_list.controls.remove(data["control"])
         self.active_downloads.pop(rj_id, None)
         try:
-            if self.queue_list.page: self.queue_list.update()
+            if self.queue_list.page:
+                self.queue_list.update()
         except Exception:
             pass
         self.save_queue()
