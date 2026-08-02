@@ -7,6 +7,7 @@
     "metadata_proxy": null,
     "download_proxy": null,
     "cover_proxy": null,
+    "cover_fallback_to_direct": false,
     "download_fallback_to_proxy": false,
     "proxy": null,
     "proxy_download": false,

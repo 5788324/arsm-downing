@@ -210,3 +210,21 @@ Git 远端写入：无
 - 7/7 metadata 成功，5/5 受控音频完成并校验 SQLite 大小；总受控计划 43,557,391 bytes。
 - 长时观察超过 52 分钟，CPU 3.97 秒、工作集约 52 MiB、无 stderr 错误；采样 harness 的 SQLite 快照卡住已隔离停止。
 - 最小 RC3 `Orchestrator` 正常 shutdown 复核通过；T16 结论 PASS_WITH_NOTES，未发现可归因的产品缺陷。
+
+## 2026-08-02 PR1：停止补丁应用器，转为完整源码直接修复
+
+- 接收并核验 V6 已应用 worktree 源码 ZIP：SHA-256 `58313ef72b108984714abf8a5aa2fb02bd8a81fcaceb966ed8f1fec16619e3b6`。
+- 在真实应用后源码复现聚焦结果：`48 passed, 1 failed`。
+- 根因：单一 `ACTIVE_STATUSES` 同时承担“维护阻断”和“metadata 保留”两种不同语义，导致 cancelled 错误阻止 VACUUM。
+- 直接修改 `core/tools_maintenance.py`：拆分维护阻断、缓存保护和终态队列集合；cancelled 不阻止 VACUUM/队列预览，但保护 metadata。
+- 更新真实行为测试：VACUUM 实际执行成功，cancelled 下载行和 metadata 行均保留；queue cancelled 作为终态计数。
+- 回归：focused `49 passed`；非 Flet 主体 `234 passed`；非 UI import smoke `19 passed`；维护专项 `10 passed`；compileall PASS；release_check 静态 PASS。
+- 当前容器无可安装的 Flet 0.27.6，完整 Windows/Flet/PyInstaller/GUI 门禁待 Codex。
+- 正式数据零接触；未执行 Git 写入。状态：NO-GO。
+
+## 2026-08-02 PR1 直接源码候选：Windows 实机验收
+
+- Git 隔离分支从 main@50346f9da9a5d24dda99f7d8c6c21e2f9210c1a6 导入完整候选源码；git diff --check 与 compileall 通过。
+- 完整 Windows pytest：294 passed, 3 skipped；focused：49 passed；跳过项均为本机不可用 symbolic link。
+- release check、PyInstaller one-folder、EXE 校验通过。四页、批量粘贴取消、工具页冻结与三轮启动/关闭实机通过；托盘彻底退出后无残留。
+- 未提交、未推送、未创建 PR 或 Release。高 DPI 视觉复核仍待用户实际显示缩放环境。

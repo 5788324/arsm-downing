@@ -1,5 +1,21 @@
 # ARSM Suite 当前任务路线图
 
+
+## PR1：直接源码 Windows 发布阻断验收
+
+状态：`NO-GO / WAITING_WINDOWS_FULL_GATE`
+
+- [x] 使用 V6 已应用完整源码替代补丁应用器；
+- [x] 修复 cancelled 维护语义冲突；
+- [x] focused pytest：49 passed；
+- [x] 当前环境非 Flet 主体回归、导入烟测、维护专项、compileall、静态 release_check；
+- [ ] Windows Python 3.12 + requirements-build；
+- [ ] 完整 pytest（独立 basetemp）；
+- [ ] release_check；
+- [ ] PyInstaller one-folder + EXE 存在性；
+- [ ] Flet 四页、按钮、DPI、托盘、关闭/退出实机验收；
+- [ ] 自动和 GUI 门禁全绿后再决定 Git/PR。
+
 > 更新时间：2026-07-30
 
 ## T10：Queue Service 与大队列优化
@@ -188,3 +204,9 @@ RC2 网速/完成移除/全部暂停继续无回归
 - 真实 metadata、代理边界、直连音频、受控多作品文件完成和长时稳定性均已取得证据。
 - 不再把 T16 作为 RC3 使用门槛；后续仅在用户反馈真实异常时建立最小复现和修复任务。
 - 采样 harness 的 SQLite 快照阻塞属于验收工具改进项，不进入 RC3 产品回归范围。
+
+## PR1 直接源码候选：下一门槛
+
+- 已完成：维护语义修复、Windows 自动门禁、PyInstaller、基础 GUI 与托盘退出生命周期。
+- 待完成：在用户实际 125%/150%/200% 显示缩放下复核界面裁切与重叠。
+- 通过后：在 codex/pr1-release-blocker-direct-source 创建一个提交、一次 push、一个 Draft PR；CI 与人工审查通过前不合并、不打标签、不发布。

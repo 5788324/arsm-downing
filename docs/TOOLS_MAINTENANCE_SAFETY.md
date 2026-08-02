@@ -11,6 +11,7 @@ Tools 页的数据库与队列维护不能在活跃下载期间做“顺手清�
 - 统计 SQLite 中的终态记录；
 - 统计 `queue.json` 中的终态项；
 - 发现 queued/paused/downloading/resuming/failed/stale/ignored 时标记 blocked；
+- cancelled 作为终态计数，不标记 blocked；
 - 不执行 `DELETE FROM downloads`；
 - 不改写 `queue.json`；
 - 不顺带执行 VACUUM。
@@ -29,7 +30,10 @@ resuming
 failed
 stale
 ignored
+cancelled
 ```
+
+`cancelled` 是持久终态，但用户可以显式重试，因此其 metadata cache 仍受保护。
 
 删除采用两阶段校验：
 
@@ -45,6 +49,8 @@ preview 变化时不删除。
 ## VACUUM
 
 VACUUM 使用独立 SQLite 连接并放到后台线程。只要存在任何活动或可恢复下载记录，就返回 blocked，不修改数据库。
+
+`cancelled` 不代表活动 I/O，也不是自动恢复状态，因此不阻止 VACUUM。VACUUM 只重建 SQLite 文件，不删除 cancelled 下载记录或 metadata cache。
 
 ## 历史任务恢复
 

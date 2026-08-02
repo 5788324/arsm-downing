@@ -33,6 +33,7 @@ class DownloadQueueItem:
     can_resume: bool
     can_retry: bool
     is_terminal: bool
+    cancelled_files: int = 0
 
     @property
     def progress(self) -> float:
@@ -53,6 +54,7 @@ class DownloadQueueSummary:
     completed_tasks: int = 0
     downloaded_bytes: int = 0
     total_bytes: int = 0
+    cancelled_tasks: int = 0
 
 
 @dataclass(frozen=True)

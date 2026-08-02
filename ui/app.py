@@ -83,13 +83,17 @@ class AppController(BaseAppController):
         async def _do_resume_all():
             stats = await self.orc._resume_all_async()
             resumed = stats.get("resumed_to_queue", 0)
-            failed = stats.get("failed", 0) + stats.get("no_cache", 0)
+            failed = (
+                stats.get("failed", 0)
+                + stats.get("metadata_required", 0)
+                + stats.get("unrecoverable", 0)
+            )
             self._enqueue_snack(
                 f"已恢复 {resumed} 个任务"
-                + (f"，{failed} 个需要手动处理" if failed else ""))
+                + (f"，{failed} 个需要手动处理" if failed else "")
+            )
             self._queue_download_view_refresh(reset_speed=False)
             return stats
-
         return self._submit_background(_do_resume_all(), "全部恢复")
 
     def check_achievements(self):

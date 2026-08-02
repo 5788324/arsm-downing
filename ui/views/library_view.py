@@ -435,8 +435,8 @@ class LibraryView(ft.Container):
             folder_name = item.get("folder_name", rj_id) or rj_id
             display_name = folder_name if len(folder_name) <= 44 else folder_name[:41] + "…"
             cover_src = _resolve_local_cover(folder_path, bool(item.get("has_cover")))
-            if not cover_src:
-                cover_src = item.get("metadata_cover_url") or None
+            # Remote covers are downloaded only by NetworkKernel and shown
+            # after they exist in the local cache. Flet never receives URLs.
             cover = _cover_widget(cover_src, 180) if cover_src else _no_cover_widget(180)
 
             badges: list[ft.Control] = [
@@ -511,8 +511,7 @@ class LibraryView(ft.Container):
         title = str(detail.get("metadata_title") or detail.get("work_title") or detail.get("folder_name") or rj_id)
         circle = str(detail.get("metadata_circle") or detail.get("work_circle") or "未知社团")
         cover_source = _resolve_local_cover(folder_path, bool(detail.get("has_cover")))
-        if not cover_source:
-            cover_source = detail.get("metadata_cover_url") or detail.get("work_cover_url") or None
+        # Keep the detail panel on the local-cover-only boundary.
         cover = _cover_widget(cover_source, 156) if cover_source else _no_cover_widget(156)
         metadata = detail.get("metadata_json") if isinstance(detail.get("metadata_json"), dict) else {}
         tags = _metadata_tags(metadata)
@@ -596,7 +595,6 @@ class LibraryView(ft.Container):
         self.page_info.value = (
             f"共 {len(selected)} 项异常{suffix}"
             + (f" · 搜索“{search}”" if search else "")
-            + (f" · {category_label} · 按{sort_label}" if category != "all" or sort != "size_desc" else "")
         )
         self.btn_prev.disabled = True
         self.btn_next.disabled = True
