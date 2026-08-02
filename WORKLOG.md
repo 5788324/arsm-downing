@@ -194,3 +194,19 @@ Git 远端写入：无
 - ZIP：64,735,175 bytes、203 个条目，包含 `ARSM-Suite.exe`。
 - SHA-256：`d06a4ddb2ae9642526563ef27a26f429418c0cb713dd7728e615d0bca108964e`，与 `.sha256` 一致。
 - EXE FileVersion/ProductVersion：`0.9.0-rc.3`。现有 RC2 Pre-release 未修改。
+## 2026-08-02 RC3 发布与 T16 收口
+
+- PR #12 与 RC3 准备 PR #13 已合并，发布基线为 `main@894347bf917b317e3eb0e5555afb12b68b9d2210`。
+- `v0.9.0-rc.3` 已创建为 Pre-release；Windows 构建工作流成功，正式附件的 ZIP、SHA-256、条目数及 `ARSM-Suite.exe` 均已独立核验。
+- 发布资产：65,208,001 bytes、212 项、SHA-256 `b1bdee2ac5c3fa792d4747808a0d478d78b92319ae5b49de647d2837e7b87f33`。
+- 启动 T16 小范围真实使用观察，样本：`RJ01589930`、`RJ01616587`、`RJ01606670`、`RJ01555813`、`RJ01533932`、`RJ01632789`、`RJ01627434`。
+### T16 中期观察
+
+- 7 个样本的 metadata 真实成功；5 个最小音频受 64 MiB 总量上限控制。
+- 已完成 4 个直连文件：RJ01616587、RJ01606670、RJ01632789、RJ01627434；所有完成项的 SQLite downloaded/total 字节一致。
+- RJ01589930 首项取消仍待复测；当前只记录事实，不创建产品缺陷结论。
+### T16 最终收口
+
+- 7/7 metadata 成功，5/5 受控音频完成并校验 SQLite 大小；总受控计划 43,557,391 bytes。
+- 长时观察超过 52 分钟，CPU 3.97 秒、工作集约 52 MiB、无 stderr 错误；采样 harness 的 SQLite 快照卡住已隔离停止。
+- 最小 RC3 `Orchestrator` 正常 shutdown 复核通过；T16 结论 PASS_WITH_NOTES，未发现可归因的产品缺陷。

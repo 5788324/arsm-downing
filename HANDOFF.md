@@ -151,3 +151,18 @@
 - ZIP：64,735,175 bytes、203 个条目，包含 `ARSM-Suite.exe`。
 - SHA-256：`d06a4ddb2ae9642526563ef27a26f429418c0cb713dd7728e615d0bca108964e`，与 `.sha256` 一致。
 - EXE FileVersion/ProductVersion：`0.9.0-rc.3`。现有 RC2 Pre-release 未修改。
+## 2026-08-02 RC3 已发布；T16 已完成
+
+- 正式 Release：`https://github.com/5788324/arsm-downing/releases/tag/v0.9.0-rc.3`（Pre-release）。标签和 main 均为 `894347bf917b317e3eb0e5555afb12b68b9d2210`。
+- 官方 ZIP 已核验：65,208,001 bytes、212 项、包含 `ARSM-Suite.exe`；SHA-256 `b1bdee2ac5c3fa792d4747808a0d478d78b92319ae5b49de647d2837e7b87f33`。
+- 当前任务：以用户指定的 7 个 RJ 做小范围真实下载观察。记录真实状态，不伪造网络通过；禁止扩展到全库或既有任务。
+### T16 中期证据
+
+- 隔离目录 `C:\tmp\ARSM-T16-RC3\ControlledRuntimeDataV2`：7 个 RJ metadata 成功，5 个受控音频总上限 43,557,391 bytes。
+- 已注册完成：RJ01616587 9,843,959 bytes、RJ01606670 9,654,848 bytes、RJ01632789 209,715 bytes、RJ01627434 19,008,630 bytes；音频日志为 direct/HTTP 200。
+- RJ01589930 queued，曾发生一次取消，需在本轮结束前单项复核。
+### T16 最终交接
+
+- 7/7 metadata、5 个最小音频已完成；文件大小：RJ01589930 4,840,239、RJ01616587 9,843,959、RJ01606670 9,654,848、RJ01632789 209,715、RJ01627434 19,008,630 bytes。
+- metadata/cover=`127.0.0.1:7897`，audio=direct，所有完成文件均 HTTP 200/SQLite registered。
+- 长时观察超过 52 分钟稳定；harness SQLite 快照卡住，隔离停止后数据库锁释放。独立 Orchestrator shutdown PASS，因此 T16 结论为 PASS_WITH_NOTES。

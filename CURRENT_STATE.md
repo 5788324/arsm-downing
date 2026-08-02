@@ -190,3 +190,21 @@ Windows 修复前基线：231 passed，3 skipped
 - ZIP：64,735,175 bytes、203 个条目，包含 `ARSM-Suite.exe`。
 - SHA-256：`d06a4ddb2ae9642526563ef27a26f429418c0cb713dd7728e615d0bca108964e`，与 `.sha256` 一致。
 - EXE FileVersion/ProductVersion：`0.9.0-rc.3`。现有 RC2 Pre-release 未修改。
+## 2026-08-02 RC3 已发布；T16 已完成
+
+- RC3 已作为 GitHub Pre-release 发布：`v0.9.0-rc.3` 精确指向 `main@894347bf917b317e3eb0e5555afb12b68b9d2210`；未改动 RC2 标签或 Release。
+- 标签工作流 `release-build.yml` 成功：`https://github.com/5788324/arsm-downing/actions/runs/30730199281`。
+- 官方 Windows ZIP：`ARSM-Suite-0.9.0-rc.3-windows-x64.zip`，65,208,001 bytes、212 项，含 `ARSM-Suite.exe`；SHA-256 `b1bdee2ac5c3fa792d4747808a0d478d78b92319ae5b49de647d2837e7b87f33`，与发布校验文件及 GitHub 资产摘要一致。
+- T16 已使用 7 个用户指定 RJ 启动小范围真实使用观察；本轮只观察明确提交的任务，不扫描、移动或整理 `E:\arsm`。
+### T16 中期真实观察（2026-08-02 16:06）
+
+- 7 个用户指定 RJ 均完成真实 metadata；受控计划只下载 5 个最小音频，合计 43,557,391 bytes，另外 2 个仅保留 metadata，避免超出小范围上限。
+- 音频直连日志已确认 HTTP 200；`RJ01616587`（9,843,959 bytes）、`RJ01606670`（9,654,848 bytes）、`RJ01632789`（209,715 bytes）和 `RJ01627434`（19,008,630 bytes）均完成并注册。
+- `RJ01589930` 在受控队列首项出现一次取消，保留 queued 以待单独复测；不把验收脚本并发筛选问题定性为正式程序缺陷。
+- 45 分钟 worker 继续在 `C:\tmp\ARSM-T16-RC3\ControlledRuntimeDataV2` 采样；正式 `E:\arsm` 与既有任务零接触。
+### T16 最终结论（2026-08-02）
+
+- 7/7 指定 RJ 的真实 metadata 成功；5 个受控最小音频完成并注册：RJ01589930 4,840,239 bytes、RJ01616587 9,843,959 bytes、RJ01606670 9,654,848 bytes、RJ01632789 209,715 bytes、RJ01627434 19,008,630 bytes。
+- 每个完成文件的 SQLite downloaded/total 与计划大小一致；metadata/cover 走 `http://127.0.0.1:7897`，音频日志确认 direct/HTTP 200。
+- 长时观察运行超过 52 分钟，worker CPU 3.97 秒、工作集约 52 MiB，下载完成后无状态漂移或 stderr 错误。自制采样 harness 卡在首个 SQLite 快照，已停止；单独的 RC3 `Orchestrator` 启动/正常 shutdown 验证通过，因此不把 harness 问题定性为产品缺陷。
+- T16：**PASS_WITH_NOTES**。正式 `E:\arsm`、既有 RC2 实例、正式数据库和队列全程零接触。
