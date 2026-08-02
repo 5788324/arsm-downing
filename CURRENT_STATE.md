@@ -1,9 +1,9 @@
 # ARSM Suite 当前状态
 
-> 更新时间：2026-08-01
-> 远端基线：`main@9f292e7947804f2e4d53290039501f79c6d1805d`
-> 当前版本：`0.9.0-rc.2`
-> 当前阶段：`T10 Windows 验收通过；T11/T12 隔离多文件与长期运行通过（保留 GUI 长时观察备注）`
+> 更新时间：2026-08-02
+> 远端基线：`main@3cb48ddd5e9ccd39ebba1e6c24c18e1071ba7080`
+> 当前版本：`0.9.0-rc.3`（候选发布准备中）
+> 当前阶段：`T15 网络与认证验收通过；RC3 候选发布准备中`
 
 ## 1. 已确认发布事实
 
@@ -183,3 +183,10 @@ Windows 修复前基线：231 passed，3 skipped
 - 正式 `E:\arsm`、history/config/queue、正式任务与 `.part` 全程零接触；本轮未创建标签或发布。
 
 - T15 候选 one-folder 已在独立 `C:\tmp` 构建：64,734,852 bytes、203 条目、SHA-256 `bc680bc1d1b95aa6a9f5270901767d936994fe1ee9a7d7483b8d46f7f135a648`；未替换既有 GitHub Pre-release。
+## 2026-08-02 RC3 候选构建验收
+
+- 全量自动回归：`245 passed, 3 skipped`；3 项 skipped 均为当前 Windows 无法创建 symbolic link。
+- 独立 one-folder：`C:\tmp\arsm-rc3-onefolder-20260802\ARSM-Suite-0.9.0-rc.3-windows-x64.zip`。
+- ZIP：64,735,175 bytes、203 个条目，包含 `ARSM-Suite.exe`。
+- SHA-256：`d06a4ddb2ae9642526563ef27a26f429418c0cb713dd7728e615d0bca108964e`，与 `.sha256` 一致。
+- EXE FileVersion/ProductVersion：`0.9.0-rc.3`。现有 RC2 Pre-release 未修改。

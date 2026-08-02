@@ -1,6 +1,6 @@
 # ARSM Suite 构建与发布
 
-当前发布候选版本：`0.9.0-rc.2`（尚未放行发布）。
+当前发布候选版本：`0.9.0-rc.3`（候选发布准备中）。
 
 ## Windows 便携版
 
@@ -21,8 +21,8 @@
 产物：
 
 ```text
-release/ARSM-Suite-0.9.0-rc.2-windows-x64.zip
-release/ARSM-Suite-0.9.0-rc.2-windows-x64.zip.sha256
+release/ARSM-Suite-0.9.0-rc.3-windows-x64.zip
+release/ARSM-Suite-0.9.0-rc.3-windows-x64.zip.sha256
 ```
 
 ## 运行数据位置
@@ -85,3 +85,10 @@ Linux 已完成 PyInstaller Analysis、EXE 和 COLLECT 构建验证。Windows EX
 - 正式 Artifact/Pre-release ZIP：`ARSM-Suite-0.9.0-rc.2-windows-x64.zip`，65,206,571 bytes、212 项、SHA-256 `5a6179098faf4e44ca410e87b518c71a418ee7ae09227e236af05e7c51494061`；校验文件一致并含 `ARSM-Suite.exe`。
 - Release：`https://github.com/5788324/arsm-downing/releases/tag/v0.9.0-rc.2`（Pre-release）。
 - 正式 `E:\arsm`、正式数据库、队列、下载任务与 `.part`：全流程零接触。
+## 2026-08-02 RC3 候选构建验收
+
+- 全量自动回归：`245 passed, 3 skipped`；3 项 skipped 均为当前 Windows 无法创建 symbolic link。
+- 独立 one-folder：`C:\tmp\arsm-rc3-onefolder-20260802\ARSM-Suite-0.9.0-rc.3-windows-x64.zip`。
+- ZIP：64,735,175 bytes、203 个条目，包含 `ARSM-Suite.exe`。
+- SHA-256：`d06a4ddb2ae9642526563ef27a26f429418c0cb713dd7728e615d0bca108964e`，与 `.sha256` 一致。
+- EXE FileVersion/ProductVersion：`0.9.0-rc.3`。现有 RC2 Pre-release 未修改。
