@@ -161,3 +161,10 @@ RC2 网速/完成移除/全部暂停继续无回归
 - 正式 Artifact/Pre-release ZIP：`ARSM-Suite-0.9.0-rc.2-windows-x64.zip`，65,206,571 bytes、212 项、SHA-256 `5a6179098faf4e44ca410e87b518c71a418ee7ae09227e236af05e7c51494061`；校验文件一致并含 `ARSM-Suite.exe`。
 - Release：`https://github.com/5788324/arsm-downing/releases/tag/v0.9.0-rc.2`（Pre-release）。
 - 正式 `E:\arsm`、正式数据库、队列、下载任务与 `.part`：全流程零接触。
+## T15：真实网络与认证验收（2026-08-02，完成）
+
+- 真实小作品已覆盖 metadata/cover 代理、音频直连、非空 `.part`、暂停稳定、206 续传、最终大小与 SHA-256。
+- 401 与断网提示通过隔离本机 HTTP socket 验证；认证/网络恢复均能重新进入准备状态，失败路径零写入。
+- 后续不再把 T15 当作 RC2 发布阻塞项；下一项为 T16：发布后小范围真实使用观察（保留正式数据边界）。
+
+- T15 候选 one-folder 已在独立 `C:\tmp` 构建：64,734,852 bytes、203 条目、SHA-256 `bc680bc1d1b95aa6a9f5270901767d936994fe1ee9a7d7483b8d46f7f135a648`；未替换既有 GitHub Pre-release。

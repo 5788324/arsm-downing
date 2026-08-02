@@ -875,10 +875,12 @@ class Orchestrator:
             )
             meta_raw = await self.kernel.fetch(f"/api/workInfo/{rj_numeric}")
             if not meta_raw:
-                return None, None
+                detail = self.kernel.last_fetch_error or "empty response"
+                raise RuntimeError(f"metadata request failed: {detail}")
             tracks_raw = await self.kernel.fetch(f"/api/tracks/{rj_numeric}?v=2")
             if not tracks_raw:
-                return meta_raw, None
+                detail = self.kernel.last_fetch_error or "empty response"
+                raise RuntimeError(f"track request failed: {detail}")
             circle_name = meta_raw.get('circle', {}).get('name', 'Unknown')
             self.db.set_metadata_cache(
                 rj_id=rj_id, title=meta_raw.get('title', ''),

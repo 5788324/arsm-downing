@@ -152,9 +152,19 @@ async def run(args: argparse.Namespace) -> dict:
             if not task.done():
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        # The cancellation request may race with one already-buffered chunk. Use
+        # the size after all tasks have been reaped as the pause baseline.
+        settled_size = part.stat().st_size if part.exists() else 0
         await asyncio.sleep(2)
         paused_size = part.stat().st_size if part.exists() else 0
-        report["pause"] = {"part_path": str(part), "before_bytes": before_pause, "after_bytes": paused_size, "stable": before_pause == paused_size, "db": snapshot(db, meta.rj_id, started)}
+        report["pause"] = {
+            "part_path": str(part),
+            "before_bytes": before_pause,
+            "settled_bytes": settled_size,
+            "after_bytes": paused_size,
+            "stable": settled_size == paused_size,
+            "db": snapshot(db, meta.rj_id, started),
+        }
         await orchestrator.shutdown()
         db.close()
 
