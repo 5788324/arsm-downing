@@ -168,3 +168,8 @@ RC2 网速/完成移除/全部暂停继续无回归
 - 后续不再把 T15 当作 RC2 发布阻塞项；下一项为 T16：发布后小范围真实使用观察（保留正式数据边界）。
 
 - T15 候选 one-folder 已在独立 `C:\tmp` 构建：64,734,852 bytes、203 条目、SHA-256 `bc680bc1d1b95aa6a9f5270901767d936994fe1ee9a7d7483b8d46f7f135a648`；未替换既有 GitHub Pre-release。
+## 2026-08-02：RC3 候选发布准备
+
+- PR #12（metadata 401/断网错误提示与 T15 验收）已通过 Ubuntu/Windows CI 并 squash merge 到 `main@3cb48ddd5e9ccd39ebba1e6c24c18e1071ba7080`。
+- 新候选版本统一为 `0.9.0-rc.3`；不覆盖既有 `v0.9.0-rc.2` 标签或 Pre-release。
+- 发布前仍需完成 RC3 全量测试、Windows one-folder 构建、标签工作流与附件 SHA-256 核验。

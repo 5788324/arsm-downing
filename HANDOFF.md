@@ -4,8 +4,8 @@
 
 ```text
 仓库：5788324/arsm-downing
-必须拉取：main@9f292e7947804f2e4d53290039501f79c6d1805d
-目标版本：0.9.0-rc.2
+当前基线：main@3cb48ddd5e9ccd39ebba1e6c24c18e1071ba7080
+当前候选版本：0.9.0-rc.3
 交付方式：本地 overlay，不由 ChatGPT 推送
 ```
 
@@ -139,3 +139,15 @@
 - 正式 `E:\arsm`、history/config/queue、正式任务与 `.part` 全程零接触；本轮未创建标签或发布。
 
 - T15 候选 one-folder 已在独立 `C:\tmp` 构建：64,734,852 bytes、203 条目、SHA-256 `bc680bc1d1b95aa6a9f5270901767d936994fe1ee9a7d7483b8d46f7f135a648`；未替换既有 GitHub Pre-release。
+## 2026-08-02：RC3 候选发布准备
+
+- PR #12（metadata 401/断网错误提示与 T15 验收）已通过 Ubuntu/Windows CI 并 squash merge 到 `main@3cb48ddd5e9ccd39ebba1e6c24c18e1071ba7080`。
+- 新候选版本统一为 `0.9.0-rc.3`；不覆盖既有 `v0.9.0-rc.2` 标签或 Pre-release。
+- 发布前仍需完成 RC3 全量测试、Windows one-folder 构建、标签工作流与附件 SHA-256 核验。
+## 2026-08-02 RC3 候选构建验收
+
+- 全量自动回归：`245 passed, 3 skipped`；3 项 skipped 均为当前 Windows 无法创建 symbolic link。
+- 独立 one-folder：`C:\tmp\arsm-rc3-onefolder-20260802\ARSM-Suite-0.9.0-rc.3-windows-x64.zip`。
+- ZIP：64,735,175 bytes、203 个条目，包含 `ARSM-Suite.exe`。
+- SHA-256：`d06a4ddb2ae9642526563ef27a26f429418c0cb713dd7728e615d0bca108964e`，与 `.sha256` 一致。
+- EXE FileVersion/ProductVersion：`0.9.0-rc.3`。现有 RC2 Pre-release 未修改。
