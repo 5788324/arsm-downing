@@ -1,5 +1,6 @@
 import aiohttp
 import asyncio
+import contextvars
 import time
 import logging
 import random
@@ -22,6 +23,16 @@ class NetworkKernel:
         self.session: Optional[aiohttp.ClientSession] = None
         self._last_req = 0.0
         self._rate_limit_lock: Optional[asyncio.Lock] = None
+        # Metadata jobs can run concurrently. Keep failures task-local so one job
+        # never renders another job's error message.
+        self._fetch_error: contextvars.ContextVar[Optional[str]] = (
+            contextvars.ContextVar("arsm_fetch_error", default=None)
+        )
+
+    @property
+    def last_fetch_error(self) -> Optional[str]:
+        """Return the current task's most recent metadata fetch failure."""
+        return self._fetch_error.get()
 
     async def boot(self) -> None:
         """Initialize HTTP session."""
@@ -61,6 +72,7 @@ class NetworkKernel:
 
     async def fetch(self, endpoint: str, params: dict = None) -> Optional[dict]:
         """Fetch JSON metadata with bounded mirror failover."""
+        self._fetch_error.set(None)
         await self.boot()
 
         if self._rate_limit_lock is None:
@@ -92,12 +104,14 @@ class NetworkKernel:
                             await asyncio.sleep(2 ** (attempt + 1))
                             continue
                         if resp.status == 404:
+                            self._fetch_error.set(f"HTTP 404 from {mirror}")
                             return None
                         resp.raise_for_status()
                         payload = await resp.json()
                         if mirror_index > 0:
                             logger.info(
                                 f"METADATA_MIRROR_RECOVERED mirror={mirror}")
+                        self._fetch_error.set(None)
                         return payload
                 except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
                     last_error = exc
@@ -111,6 +125,8 @@ class NetworkKernel:
 
         logging.error(
             f"API request failed on all mirrors for {endpoint}: {last_error}")
+        self._fetch_error.set(
+            str(last_error) if last_error else "metadata request failed")
         return None
 
     async def stream(self, url: str, headers: dict = None,
