@@ -63,6 +63,7 @@ jobs:
           path: |
             ${{ env.RELEASE_ZIP }}
             ${{ env.RELEASE_ZIP }}.sha256
-            ARSM-Suite-*-setup.exe
-            ARSM-Suite-*-setup.exe.sha256
+            release/ARSM-Suite-*-setup.exe
+            release/ARSM-Suite-*-setup.exe.sha256
           if-no-files-found: error
+
