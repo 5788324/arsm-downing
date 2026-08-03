@@ -55,7 +55,7 @@ jobs:
 
       - name: Build Windows installer
         shell: pwsh
-        run: .\scripts\build_installer.ps1 -SkipPortableBuild
+        run: .\scripts\build_installer.ps1 -SkipPortableBuild -Python python
 
       - uses: actions/upload-artifact@v6
         with:
