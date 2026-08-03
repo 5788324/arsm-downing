@@ -49,10 +49,20 @@ jobs:
           "$Hash  $Zip" | Set-Content -Encoding ascii "$Zip.sha256"
           "RELEASE_ZIP=$Zip" | Out-File -FilePath $env:GITHUB_ENV -Append
 
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: .\scripts\build_installer.ps1 -SkipPortableBuild
+
       - uses: actions/upload-artifact@v6
         with:
           name: ARSM-Suite-Windows
           path: |
             ${{ env.RELEASE_ZIP }}
             ${{ env.RELEASE_ZIP }}.sha256
+            ARSM-Suite-*-setup.exe
+            ARSM-Suite-*-setup.exe.sha256
           if-no-files-found: error

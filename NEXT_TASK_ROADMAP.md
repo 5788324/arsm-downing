@@ -210,3 +210,11 @@ RC2 网速/完成移除/全部暂停继续无回归
 - 已完成：维护语义修复、Windows 自动门禁、PyInstaller、基础 GUI 与托盘退出生命周期。
 - 待完成：在用户实际 125%/150%/200% 显示缩放下复核界面裁切与重叠。
 - 通过后：在 codex/pr1-release-blocker-direct-source 创建一个提交、一次 push、一个 Draft PR；CI 与人工审查通过前不合并、不打标签、不发布。
+## 2026-08-03：1.0.0 正式发布候选
+
+- 版本统一为 1.0.0，新增 Inno Setup x64 安装器、固定 AppId 和 SHA-256 输出。
+- 运行数据与安装目录分离：安装版位于 %LOCALAPPDATA%\Programs\ARSM Suite，数据位于 %LOCALAPPDATA%\ARSM Suite；便携版保持同目录数据行为。
+- 最终回归：299 passed, 3 skipped；跳过项均为 Windows 环境无法创建符号链接。
+- Windows 隔离验收：安装、启动、--shutdown 协作退出、运行中卸载、用户数据保留及零残留进程均通过。
+- 最终安装器 SHA-256：2a7df244d6c07d289c7dea3a9788a271c48b6eb33f296b4a5de81e8c27b171e6。
+- 当前状态：等待 Git PR、CI、合并、v1.0.0 标签和正式 GitHub Release；正式 E:\arsm 与既有运行数据零接触。
