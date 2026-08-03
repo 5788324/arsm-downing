@@ -14,7 +14,8 @@ if (-not $SkipPortableBuild) {
 
 $VenvPython = Join-Path $RepoRoot ".venv-build\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $VenvPython)) {
-    throw "Build virtual environment is missing. Run build_windows.ps1 first."
+    # CI already provides the locked Python through actions/setup-python.
+    $VenvPython = (Get-Command $Python.Split(" ")[0] -ErrorAction Stop).Source
 }
 
 $SourceDir = Join-Path $RepoRoot "dist\ARSM-Suite"
