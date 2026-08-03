@@ -45,6 +45,8 @@ class LibraryVault:
         self.db_path = str(Path(selected_path))
         self.read_only = read_only
         self._lock = threading.RLock()
+        if not read_only:
+            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         with self._lock:
             if read_only:
                 resolved = Path(self.db_path).expanduser().resolve(strict=True)

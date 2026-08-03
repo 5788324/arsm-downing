@@ -9,11 +9,11 @@ Python + Flet 0.27.6 + SQLite + asyncio + aiohttp
 ## 当前状态
 
 - PR1 直接源码候选基线：`main@50346f9da9a5d24dda99f7d8c6c21e2f9210c1a6`。
-- 当前版本仍为 `0.9.0-rc.3`；本候选尚未提交、推送、创建 PR 或发布。
+- 当前发布候选为 `1.0.0`；已完成 Windows 构建与隔离安装/卸载验收，等待 Git PR、CI、合并和正式 Release。
 - V6 已在真实 Windows detached worktree 成功应用；随后改为直接维护完整源码，不再使用补丁应用器。
 - 已修复维护状态语义冲突：`cancelled` 是终态，不阻止 VACUUM 或队列清理预览，但继续保护显式重试所需的 metadata cache。
 - 当前便携环境验证：PR1 聚焦回归 `49 passed`，非 Flet 主体回归 `234 passed`，非 UI 导入烟测 `19 passed`，维护专项 `10 passed`，compileall 与 release_check 静态门禁通过。
-- 完整 Windows/Flet pytest、PyInstaller、GUI、DPI、托盘与退出生命周期仍是发布硬门禁；当前结论为 **NO-GO**。
+- 完整 Windows/Flet pytest、PyInstaller、GUI、DPI、托盘与退出生命周期仍是发布硬门禁；当前结论为 **发布候选通过，等待远端 CI**。
 
 ## T10 已完成
 

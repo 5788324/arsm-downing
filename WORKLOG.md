@@ -228,3 +228,11 @@ Git 远端写入：无
 - 完整 Windows pytest：294 passed, 3 skipped；focused：49 passed；跳过项均为本机不可用 symbolic link。
 - release check、PyInstaller one-folder、EXE 校验通过。四页、批量粘贴取消、工具页冻结与三轮启动/关闭实机通过；托盘彻底退出后无残留。
 - 未提交、未推送、未创建 PR 或 Release。高 DPI 视觉复核仍待用户实际显示缩放环境。
+## 2026-08-03：1.0.0 正式发布候选
+
+- 版本统一为 1.0.0，新增 Inno Setup x64 安装器、固定 AppId 和 SHA-256 输出。
+- 运行数据与安装目录分离：安装版位于 %LOCALAPPDATA%\Programs\ARSM Suite，数据位于 %LOCALAPPDATA%\ARSM Suite；便携版保持同目录数据行为。
+- 最终回归：299 passed, 3 skipped；跳过项均为 Windows 环境无法创建符号链接。
+- Windows 隔离验收：安装、启动、--shutdown 协作退出、运行中卸载、用户数据保留及零残留进程均通过。
+- 最终安装器 SHA-256：2a7df244d6c07d289c7dea3a9788a271c48b6eb33f296b4a5de81e8c27b171e6。
+- 当前状态：等待 Git PR、CI、合并、v1.0.0 标签和正式 GitHub Release；正式 E:\arsm 与既有运行数据零接触。

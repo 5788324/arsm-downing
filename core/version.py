@@ -1,7 +1,7 @@
 """Application version metadata shared by UI, packaging, and diagnostics."""
 
 APP_NAME = "ARSM Suite"
-APP_VERSION = "0.9.0-rc.3"
+APP_VERSION = "1.0.0"
 APP_USER_AGENT = f"{APP_NAME}/{APP_VERSION}"
 
 

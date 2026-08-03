@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 
 from core.paths import app_path
+from core.shutdown_signal import ShutdownSignal
 from core.version import display_title
 from core.tray import SystemTray
 
@@ -72,6 +73,10 @@ class AppController:
 
         # ── UI message queue for thread-safe cross-thread updates ──
         self.ui_queue: queue.Queue = queue.Queue()
+        self.shutdown_signal = ShutdownSignal(
+            lambda: self.ui_queue.put(("installer_shutdown",))
+        )
+        self.shutdown_signal.start()
         self.tray = SystemTray(
             on_show=lambda: self.ui_queue.put(("tray_show_window",)),
             on_pause_all=lambda: self.ui_queue.put(("tray_pause_all",)),
@@ -300,6 +305,10 @@ class AppController:
                     elif msg_type == "tray_exit":
                         self._exit_from_tray()
 
+                    elif msg_type == "installer_shutdown":
+                        self._exit_requested = True
+                        self._begin_shutdown()
+
                     elif msg_type == "close_window":
                         self._ui_poller_stop.set()
                         tray = getattr(self, "tray", None)
@@ -315,6 +324,8 @@ class AppController:
                                 self.page.window.close()
                             except Exception:
                                 logger.debug("Unable to close Flet window", exc_info=True)
+                        self.shutdown_signal.mark_stopped()
+                        self.shutdown_signal.close()
 
                     processed = True
                 except queue.Empty:
