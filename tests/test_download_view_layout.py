@@ -278,6 +278,74 @@ def test_duplicate_titles_get_distinct_tree_rows(view_controller) -> None:
     assert any(r["rel"] == ["b", "same.mp3"] for r in rows)
 
 
+def test_duplicate_titles_live_updates_resolve_by_track_id(view_controller) -> None:
+    """Review #3: same filename in different dirs — each progress event updates
+    its OWN row (track_id), and a redraw does not add a duplicate top node."""
+    from core.orchestrator import Orchestrator
+    view, controller = view_controller
+    rj = "RJ00000001"
+    work_path = Path(view.active_downloads[rj]["snapshot"].local_path)
+    (work_path / "本篇").mkdir(parents=True, exist_ok=True)
+    (work_path / "特典").mkdir(parents=True, exist_ok=True)
+
+    def dlid(track_id: str) -> str:
+        return Orchestrator._make_dl_id(rj, track_id, Path("same.mp3"), "same.mp3")
+
+    id1, id2 = dlid("t1"), dlid("t2")
+    controller.db.upsert_download(
+        id1, rj, "same.mp3", str(work_path / "本篇" / "same.mp3"),
+        "downloading", 2, 10)
+    controller.db.upsert_download(
+        id2, rj, "same.mp3", str(work_path / "特典" / "same.mp3"),
+        "downloading", 3, 10)
+    controller.db.conn.commit()
+
+    data = view.active_downloads[rj]
+    data["_live_tracks"] = {
+        "t1": {"track_id": "t1", "title": "same.mp3",
+               "downloaded": 2, "total": 10, "status": "downloading"},
+        "t2": {"track_id": "t2", "title": "same.mp3",
+               "downloaded": 3, "total": 10, "status": "downloading"},
+    }
+    view._select_rj(rj)
+
+    key1 = view._detail_key_by_track[rj]["t1"]
+    key2 = view._detail_key_by_track[rj]["t2"]
+    assert key1 != key2
+    assert key1 == "本篇/same.mp3"
+    assert key2 == "特典/same.mp3"
+    # Exactly two rows for same.mp3 (one per directory) — never a top-level dup.
+    same_keys = [k for k in view._detail_rows
+                 if view._detail_rows[k].controls[1].value == "same.mp3"]
+    assert len(same_keys) == 2
+    assert "same.mp3" not in view._detail_rows  # no bare-title top-level node
+
+    def progress(track_id: str, downloaded: int):
+        return ProgressEvent(
+            rj_id=rj, track_id=track_id, track_title="same.mp3",
+            downloaded_bytes=downloaded, total_bytes=10, percent=float(downloaded) * 10,
+            work_speed_bps=0.0, track_speed_bps=0.0, global_speed_bps=0.0,
+            eta_seconds=None, status="downloading",
+        )
+
+    view.update_track_progress(progress("t1", 6))
+    view.update_track_progress(progress("t2", 7))
+
+    assert view._detail_rows[key1].controls[3].value == 0.6
+    assert view._detail_rows[key2].controls[3].value == 0.7
+
+    # A redraw must not create a third "same.mp3" node.
+    view._render_detail_panel(rj)
+    same_keys = [k for k in view._detail_rows
+                 if view._detail_rows[k].controls[1].value == "same.mp3"]
+    assert len(same_keys) == 2
+    assert view._detail_key_by_track[rj]["t1"] == key1
+    assert view._detail_key_by_track[rj]["t2"] == key2
+    # Live progress must survive the redraw (each row keeps its own value).
+    assert view._detail_rows[key1].controls[3].value == 0.6
+    assert view._detail_rows[key2].controls[3].value == 0.7
+
+
 def test_detail_panel_renders_folder_hierarchy(view_controller) -> None:
     view, controller = view_controller
     work_path = Path(view.active_downloads["RJ00000001"]["snapshot"].local_path)
@@ -292,7 +360,9 @@ def test_detail_panel_renders_folder_hierarchy(view_controller) -> None:
 
     folder_keys = [k for k in view._detail_rows if k.startswith("folder:")]
     assert folder_keys
-    assert view._detail_rows_by_title.get("nested.mp3") is not None
+    nested_key = view._detail_key_by_title.get("nested.mp3")
+    assert nested_key is not None
+    assert view._detail_rows[nested_key] is not None
 
 
 def test_detail_row_shows_error_and_part_state(view_controller) -> None:
@@ -308,9 +378,9 @@ def test_detail_row_shows_error_and_part_state(view_controller) -> None:
 
     view._select_rj("RJ00000001")
 
-    broken = view._detail_rows_by_title["broken.mp3"]
+    broken = view._detail_rows[view._detail_key_by_title["broken.mp3"]]
     assert "signed url expired" in broken.controls[2].value
-    partial = view._detail_rows_by_title["partial.mp3"]
+    partial = view._detail_rows[view._detail_key_by_title["partial.mp3"]]
     assert ".part" in partial.controls[2].value
 
 
@@ -334,17 +404,17 @@ def _deferred_view(tmp_path: Path):
     return view, controller
 
 
-def test_queue_query_is_deferred_off_the_calling_thread(tmp_path) -> None:
-    """Review #3: fetch + stat must be handed to run_blocking, not executed
-    inline on the UI thread."""
+def test_startup_issues_exactly_one_deferred_query(tmp_path) -> None:
+    """Review #2: startup runs ONE fetch + disk-verification query through the
+    same pipeline (load_queue coalesces any reload instead of starting a second
+    full query)."""
     view, controller = _deferred_view(tmp_path)
     try:
-        # __init__ runs load_queue + reload_queue_from_database, both deferred.
-        assert len(controller.pending) == 2
+        assert len(controller.pending) == 1  # exactly one startup query
         assert view.active_downloads == {}
-        # A refresh while one is in flight is coalesced, never blocking inline.
+        # A refresh while that query is in flight is coalesced, not a 2nd query.
         view.refresh_queue_async(force=True)
-        assert len(controller.pending) == 2
+        assert len(controller.pending) == 1
     finally:
         controller.db.close()
 
@@ -354,21 +424,21 @@ def test_generation_token_drops_stale_snapshot(tmp_path) -> None:
     request relaunches with the newest filter/page."""
     view, controller = _deferred_view(tmp_path)
     try:
-        # init: pending[0]=load(gen1), pending[1]=reload(gen2); in-flight=True
+        # init: pending[0] = the single startup query (gen1); in-flight=True
         view._on_filter_change(
             SimpleNamespace(control=SimpleNamespace(value="all")))  # supersede
-        assert len(controller.pending) == 2  # marked pending, no new query yet
+        assert len(controller.pending) == 1  # marked pending, no new query yet
 
-        _, render_reload = controller.pending[1]   # gen2 — now stale
-        render_reload(view.download_service.apply_disk_verification(
+        _, render_startup = controller.pending[0]   # gen1 — now stale
+        render_startup(view.download_service.apply_disk_verification(
             view.download_service.fetch_queue_page(
                 status_filter="working", page=1, page_size=24)))
         # The stale "working" snapshot must NOT be applied.
         assert view.queue_model is None
 
         # The pending flag relaunched a fresh query with the new filter.
-        assert len(controller.pending) == 3
-        query_b, render_b = controller.pending[2]
+        assert len(controller.pending) == 2
+        query_b, render_b = controller.pending[1]
         render_b(query_b())
 
         assert view.queue_model is not None

@@ -38,9 +38,19 @@ class DownloadQueueItem:
     verified_bytes: int | None = None
     verified_files: int | None = None
     overage_file_count: int = 0
+    # Known-size byte totals: unknown-size files are excluded from both
+    # numerator and denominator so they can never push the ratio to 100%.
+    verified_known_bytes: int | None = None
+    verified_expected_bytes: int | None = None
+    # The final known-size-only ratio from the disk verification.
+    verified_progress: float | None = None
 
     @property
     def progress(self) -> float:
+        # The disk-verified ratio is the single source of truth when present;
+        # it is computed from known-size files only and can never exceed 1.0.
+        if self.verified_progress is not None:
+            return max(0.0, min(1.0, self.verified_progress))
         expected = max(0, self.total_bytes)
         if expected <= 0:
             if self.verified_files is not None:

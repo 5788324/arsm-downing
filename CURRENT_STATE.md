@@ -1,9 +1,11 @@
 # ARSM Suite 当前状态
 
-> 更新时间：2026-08-02 22:03 +08:00
-> PR1 修复基线：`main@50346f9da9a5d24dda99f7d8c6c21e2f9210c1a6`
-> 当前版本：`0.9.0-rc.3`（PR1 直接源码候选，未发布）
-> 当前阶段：`PR1 自动门禁待 Windows/Flet 完整复验；NO-GO`
+> 更新时间：2026-08-06
+> v1.0.1 修复分支：`fix/v1.0.1-download-freeze-ui`（PR #21，Draft，Fixes #19 #20）
+> 当前版本：`1.0.1`（Draft，未转 Ready，未合并，未发布）
+> 当前阶段：`PR #21 第二轮审查 4 项已修复；待真实 GUI/压力验收；NO-GO`
+
+> 历史记录见下文各章节；本文件顶部为当前事实源。
 
 ## 0. PR1 直接源码修复状态
 
@@ -242,25 +244,33 @@ Windows 修复前基线：231 passed，3 skipped
 ## 2026-08-06：v1.0.1 P0 修复（Issue #20 / #19）——PR #21 Draft
 
 > 更新时间：2026-08-06
-> 分支：`fix/v1.0.1-download-freeze-ui`（head `98e3b07` 之前，修复后已新增提交）
+> 分支：`fix/v1.0.1-download-freeze-ui`
 > 当前版本：`1.0.1`（Draft，未转 Ready，未发布）
-> 当前阶段：`PR #21 代码审查 NO-GO 已修复，待真实 GUI/压力验收；NO-GO`
+> 当前阶段：`PR #21 第二轮审查 4 项已修复；待真实 GUI/压力验收；NO-GO`
 
-### 已修复的 7 个审查阻塞
+### 第一轮审查 7 项（已修复）
 
 1. **Signed URL 竞态**：`SignedUrlRefresher.ensure_refreshed_once()` 真正单飞——in-flight 共用同一 future，成功结果复用，失败返回同一失败；并发 403 文件不再因计数猜测误判失败。
 2. **二次签名失效**：refresh budget 与 transport retry budget 分离，每文件 `refresh_used`；新 URL 至少尝试一次，二次 400/401/403 立即 fail-closed；`retry_count=1` 下新 URL 仍被尝试；日志不再泄漏 `fresh_url` 签名参数。
 3. **磁盘核验离开 UI 线程**：`load_queue`/`refresh_queue_async` 经 `run_blocking`（`asyncio.to_thread`）执行；generation token 丢弃过期快照，多余请求合并为一次重拉。
-4. **真实进度**：UI 容量/摘要使用 `verified_bytes`；`registered` 不再当作终态 100%/绿色；orchestrator 成功保持 `completed`；`verified_download_progress` 的 unknown-size 字节不再污染已知文件进度分母。
+4. **真实进度**：UI 容量/摘要使用 verified 字节；`registered` 不再当作终态 100%/绿色；orchestrator 成功保持 `completed`；`verified_download_progress` 的 unknown-size 字节不再污染已知文件进度分母。
 5. **UI 调度**：`_ui_schedule_lock` 单调度器守卫 + 数量/时间双预算 + `await asyncio.sleep(0)`；真实 asyncio 测试证明任意时刻最多一个 drain、backlog 归零。
 6. **#19 详情面板**：相对路径 key 的文件树（目录缩进）、失败原因、`.part` 状态；重复文件名不碰撞；每状态唯一操作按钮。
-7. **交付记录**：本文档、WORKLOG、DECISIONS、ROADMAP、HANDOFF、README 已同步；PR 描述测试数更新。
+7. **交付记录**：本文档、WORKLOG、DECISIONS、ROADMAP、HANDOFF、README 已同步。
+
+### 第二轮审查 4 项（已修复）
+
+1. **unknown-size 进度贯通到 read model**：`VerifiedDownloadSummary` 新增 `known_verified_bytes/known_expected_bytes`；`DownloadQueueItem` 新增 `verified_known_bytes/verified_expected_bytes/verified_progress`，`progress` 属性优先返回磁盘核验的 known-size 比率。卡片与详情的进度条/容量均使用该值；`completed/registered` 展示完成态也服从磁盘核验，不再无条件强制 100%。
+2. **启动只执行一次磁盘核验**：`load_queue()` 并入 `refresh_queue_async` 的同一 `_queue_refreshing`/generation 管道；子类构造末尾不再二次调用 `reload_queue_from_database`。测试断言初始化后 pending query 恰为 1，后续请求被合并而非再开一轮 I/O。
+3. **重复文件名的实时更新**：`update_track_progress` 维护 track_id 键控的 `_live_tracks`；`_file_details` 用 download id（`_make_dl_id` 关联）优先、basename 回退把 live 进度映射到正确的树节点；实时更新经 `_detail_key_by_track` 按 track_id 解析。同名不同目录各自更新自己的行，重绘不产生重复顶层节点。
+4. **文档事实源**：本文件顶部状态、head SHA、远端 Windows CI `370 passed`、最新构建完整 SHA 已同步。
 
 ### 当前验证
 
-- 全量回归：`367 passed, 3 skipped`（3 项为 Windows 符号链接不可用）。
-- 新增测试：并发单飞刷新、`retry_count=1`、二次 403 fail-closed、日志脱敏、unknown+known 混合进度、非阻塞队列刷新 + generation、单调度器真实 asyncio、文件树与按钮。
-- 已构建 `ARSM-Suite-1.0.1-windows-x64.zip`（SHA-256 `3138b86b2cbd9b790d78b1c2519bf44271c0227791171238056a3b324a1a3172`）。
+- 全量回归：`368 passed, 3 skipped`（3 项为 Windows 符号链接不可用）。
+- 远端 CI：Ubuntu pass；Windows **370 passed**（head `fabe5f2`）。
+- release_check：`ready: true`，`failures: []`。
+- PyInstaller：`ARSM-Suite-1.0.1-windows-x64.zip`，SHA-256 `dfa29fc1adafcdf0476c6f00a98ce97f368774b8734591ac33955528ed1e7d0f`。
 
 ### 待验收（通过前 NO-GO）
 

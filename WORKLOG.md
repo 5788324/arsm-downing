@@ -260,3 +260,12 @@ Git 远端写入：无
 - 新增回归：多文件并发 403 共享单次刷新、`retry_count=1` 新 URL 尝试、二次 403 fail-closed、日志脱敏、unknown+known 混合进度、非阻塞队列刷新 + generation、单调度器真实 asyncio、文件树重复名/错误/.part、每状态唯一按钮。
 - 全量回归：`367 passed, 3 skipped`；3 项 skipped 均为 Windows 无法创建符号链接。
 - 仍保持 Draft；真实 GUI/DPI/托盘验收、9 任务约 2700 文件 30 分钟压力与 300 个集中 400 场景在通过前保持 NO-GO。
+
+## 2026-08-06：PR #21 第二轮审查 4 项修复
+
+- **unknown-size 进度贯通**：`VerifiedDownloadSummary` 新增 `known_verified_bytes/known_expected_bytes`；`DownloadQueueItem` 新增 `verified_known_bytes/verified_expected_bytes/verified_progress`，`progress` 属性优先返回磁盘核验的 known-size 比率。卡片与详情的进度条/容量都使用该值；`completed/registered` 展示完成态服从磁盘核验，不再无条件强制 100%。
+- **启动单次磁盘核验**：`load_queue()` 并入 `refresh_queue_async` 同一管道，子类构造末尾不再二次调用 `reload_queue_from_database`；初始化后 pending query 恰为 1，后续请求合并而非再开一轮 SQLite+stat I/O。
+- **重复文件名实时更新**：`update_track_progress` 维护 track_id 键控 `_live_tracks`；`_file_details` 以 download id（`_make_dl_id`）优先、basename 回退映射 live 进度；实时更新经 `_detail_key_by_track` 按 track_id 解析，同名不同目录各自更新自己的行，重绘不产生重复顶层节点。
+- **文档事实源**：CURRENT_STATE 顶部状态、head SHA、远端 Windows CI `370 passed`、最新构建 SHA 已同步。
+- 全量回归：`368 passed, 3 skipped`；release_check `ready: true`；PyInstaller `ARSM-Suite-1.0.1-windows-x64.zip` SHA-256 `dfa29fc1adafcdf0476c6f00a98ce97f368774b8734591ac33955528ed1e7d0f`。
+- 保持 Draft；真实 GUI/DPI/托盘、9 任务约 2700 文件 30 分钟压力、300 个集中 400 场景通过前保持 NO-GO。

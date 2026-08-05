@@ -209,6 +209,14 @@
 - 详情面板：文件树（相对路径 key、目录缩进）、失败原因、`.part` 状态、重复名不碰撞、每状态唯一按钮。
 - 全量回归：`367 passed, 3 skipped`。
 
+### 第二轮审查 4 项（2026-08-06 已修复）
+
+1. **unknown-size 进度贯通 read model**：`DownloadQueueItem` 新增 `verified_known_bytes/verified_expected_bytes/verified_progress`，`progress` 优先返回磁盘核验的 known-size 比率；卡片/详情的进度条与容量都用该值；`completed/registered` 展示完成态服从磁盘核验，不再无条件强制 100%。
+2. **启动单次磁盘核验**：`load_queue()` 并入 `refresh_queue_async` 同一管道；子类构造末尾不再二次 `reload_queue_from_database`。初始化后 pending query 恰为 1，后续请求合并。
+3. **同名文件实时更新**：`update_track_progress` 维护 track_id 键控 `_live_tracks`；`_file_details` 以 download id 优先映射；实时更新按 track_id 解析，同名不同目录各自更新，重绘不重复。
+4. **文档事实源**：CURRENT_STATE 顶部状态、head SHA、远端 Windows CI `370 passed`、最新构建 SHA `dfa29fc1…` 已同步。
+- 全量回归：`368 passed, 3 skipped`。
+
 ### 交接给下一位执行者
 
 1. 保持 Draft，不转 Ready、不合并、不打标签、不发布。

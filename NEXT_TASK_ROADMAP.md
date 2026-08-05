@@ -234,11 +234,16 @@ RC2 网速/完成移除/全部暂停继续无回归
   - [x] `ensure_refreshed_once` 真单飞；
   - [x] refresh/transport budget 分离 + 二次签名 fail-closed + 日志脱敏；
   - [x] 磁盘核验移出 UI 线程 + generation token；
-  - [x] UI 显示 `verified_bytes`、`registered` 非终态、成功保持 `completed`、混合分母修复；
+  - [x] UI 显示 verified 字节、`registered` 非终态、成功保持 `completed`、混合分母修复；
   - [x] UI 单调度器守卫 + 数量/时间双预算；
   - [x] 文件树/相对路径 key/失败原因/.part/每状态唯一按钮；
   - [x] 交付文档同步。
-- [x] 全量回归：`367 passed, 3 skipped`。
+- [x] PR #21 第二轮审查 4 项全部修复：
+  - [x] unknown-size 进度贯通 read model（`verified_progress`/known-size 字节）；
+  - [x] 启动只执行一次磁盘核验；
+  - [x] 同名文件实时更新按 track_id 解析；
+  - [x] 文档顶部事实源与 head/SHA/370 passed 同步。
+- [x] 全量回归：`368 passed, 3 skipped`；release_check `ready: true`。
 
 待完成（需 Windows 宿主，通过前不转 Ready）：
 

@@ -320,6 +320,9 @@ class DownloadService:
                 verified_bytes=summary.verified_bytes,
                 verified_files=summary.complete_files,
                 overage_file_count=summary.overage_files,
+                verified_known_bytes=summary.known_verified_bytes,
+                verified_expected_bytes=summary.known_expected_bytes,
+                verified_progress=summary.progress,
             ))
         return DownloadQueuePage(
             items=tuple(updated),

@@ -35,6 +35,10 @@ class VerifiedDownloadSummary:
     complete_files: int
     overage_files: int
     total_files: int
+    # Known-size byte totals: unknown-size (expected==0) files are excluded from
+    # BOTH numerator and denominator so they can never inflate the ratio.
+    known_verified_bytes: int = 0
+    known_expected_bytes: int = 0
 
     @property
     def progress(self) -> float:
@@ -46,26 +50,8 @@ class VerifiedDownloadSummary:
         When there are no known-size files at all, fall back to the fraction of
         observed complete files.
         """
-        known_verified = 0
-        known_expected = 0
-        for file in self._files:
-            expected = max(0, int(file.expected_bytes or 0))
-            if expected <= 0:
-                continue
-            known_expected += expected
-            if file.final_bytes is not None:
-                final = max(0, int(file.final_bytes))
-                if final == expected:
-                    known_verified += final
-                elif final > expected:
-                    # Oversized final file is anomalous: not trusted.
-                    pass
-                else:
-                    known_verified += final
-            elif file.part_bytes is not None:
-                known_verified += min(max(0, int(file.part_bytes)), expected)
-        if known_expected > 0:
-            return max(0.0, min(1.0, known_verified / known_expected))
+        if self.known_expected_bytes > 0:
+            return max(0.0, min(1.0, self.known_verified_bytes / self.known_expected_bytes))
         if self.total_files > 0 and self.complete_files >= self.total_files:
             return 1.0
         return 0.0
@@ -82,31 +68,45 @@ def verified_download_progress(files: list[ObservedFile]) -> VerifiedDownloadSum
     verified = 0
     complete = 0
     overage = 0
+    known_verified = 0
+    known_expected = 0
     for file in files:
         expected = max(0, int(file.expected_bytes or 0))
-        if file.final_bytes is not None:
-            final = max(0, int(file.final_bytes))
-            if expected > 0:
+        if expected > 0:
+            known_expected += expected
+            if file.final_bytes is not None:
+                final = max(0, int(file.final_bytes))
                 if final == expected:
                     verified += final
+                    known_verified += final
                     complete += 1
                 elif final > expected:
                     # Oversized final file is anomalous: do not trust the bytes.
                     overage += 1
                 else:
                     verified += final
-            else:
-                # Unknown expected size: an existing final file is best-effort
-                # treated as verified content.
+                    known_verified += final
+            elif file.part_bytes is not None:
+                part = max(0, int(file.part_bytes))
+                contribution = min(part, expected)
+                verified += contribution
+                known_verified += contribution
+        else:
+            # Unknown expected size: an existing final file is best-effort
+            # treated as verified content, but never enters the known-size
+            # ratio (no matching denominator).
+            if file.final_bytes is not None:
+                final = max(0, int(file.final_bytes))
                 verified += final
                 complete += 1
-        elif file.part_bytes is not None:
-            part = max(0, int(file.part_bytes))
-            verified += min(part, expected) if expected > 0 else part
+            elif file.part_bytes is not None:
+                verified += max(0, int(file.part_bytes))
     return VerifiedDownloadSummary(
         verified_bytes=verified,
         complete_files=complete,
         overage_files=overage,
         total_files=len(files),
+        known_verified_bytes=known_verified,
+        known_expected_bytes=known_expected,
         _files=tuple(files),
     )

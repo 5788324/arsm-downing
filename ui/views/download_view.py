@@ -52,7 +52,8 @@ class DownloadView(BaseDownloadView):
         self._selected_rj: str | None = None
         self._card_controls: Dict[str, Any] = {}      # rj_id -> stable card
         self._detail_rows: Dict[str, Any] = {}         # file key -> stable row
-        self._detail_rows_by_title: Dict[str, Any] = {}  # basename -> row
+        self._detail_key_by_title: Dict[str, str] = {}  # basename -> key (1st)
+        self._detail_key_by_track: Dict[str, Dict[str, str]] = {}  # rj->track_id->key
         self._detail_page = 1
         self._detail_page_size = 200
         self._active_ns: Dict[str, str] = {}
@@ -175,7 +176,10 @@ class DownloadView(BaseDownloadView):
             self.content.controls[3],   # divider
             split,
         ]
-        self.reload_queue_from_database(reset_speed=False)
+        # NOTE: no reload_queue_from_database() here.  The base constructor
+        # already ran load_queue() (which routes through the SAME pipeline as
+        # refresh_queue_async), so another call would start a SECOND full
+        # fetch + disk-verification query at startup (review #2).
 
     @staticmethod
     def _sync_queue_file() -> None:
@@ -195,35 +199,14 @@ class DownloadView(BaseDownloadView):
     def load_queue(self):
         """Initial queue snapshot; called by the base constructor.
 
-        The DB fetch + disk verification is dispatched off the UI thread and
-        the result marshalled back through the controller's UI queue, so a large
-        work (thousands of files) never blocks Flet during startup.
+        Routes through the SAME ``_queue_refreshing``/generation pipeline as
+        ``refresh_queue_async`` so startup issues exactly ONE fetch + disk
+        verification query: any later ``reload_queue_from_database`` request is
+        coalesced into that in-flight query instead of starting a second one.
+        The DB fetch + stat runs off the UI thread via ``run_blocking``.
         """
         self._sync_queue_file()
-        self._queue_generation += 1
-        generation = self._queue_generation
-        status_filter = self.queue_filter
-        page = self.queue_page
-        page_size = self.queue_page_size
-
-        def query():
-            return self.download_service.apply_disk_verification(
-                self.download_service.fetch_queue_page(
-                    status_filter=status_filter,
-                    page=page,
-                    page_size=page_size,
-                )
-            )
-
-        def render(model):
-            if generation != self._queue_generation:
-                return
-            self._apply_queue_page(model)
-
-        try:
-            self.app_controller.run_blocking(query, render)
-        except Exception as exc:
-            logging.error("queue snapshot load failed: %s", exc, exc_info=True)
+        self.refresh_queue_async(force=True)
 
     def reload_queue_from_database(self, *, reset_speed: bool = False):
         if reset_speed:
@@ -588,18 +571,19 @@ class DownloadView(BaseDownloadView):
         data["status_text"].color = colors.get(ns, ACCENT_PRIMARY)
 
         prog = self._get_progress_value(data)
-        if ns in {"completed", "verified"}:
+        # Terminal display must obey disk verification, never the DB label
+        # alone: if a "completed"/"registered" row's files are missing or
+        # truncated, the verified ratio wins.  Only when NO verification ran do
+        # we trust the DB terminal label.
+        if isinstance(snapshot, DownloadQueueItem) and snapshot.verified_progress is not None:
+            prog = snapshot.verified_progress
+        elif ns in {"completed", "verified"}:
             prog = 1.0
         elif ns == "registered":
-            # Legacy "registered" row: only 100% when disk verification confirms
-            # every expected file is really on disk.
-            if isinstance(snapshot, DownloadQueueItem):
-                verified_files = snapshot.verified_files
-                file_count = snapshot.file_count
-                if verified_files is not None and file_count:
-                    prog = min(1.0, verified_files / file_count)
-                elif verified_files is not None and verified_files == 0:
-                    prog = 0.0
+            verified_files = getattr(snapshot, "verified_files", None)
+            file_count = getattr(snapshot, "file_count", 0)
+            if verified_files is not None and file_count:
+                prog = min(1.0, verified_files / file_count)
         data["prog_bar"].value = prog
         data["pct_text"].value = f"{prog * 100:.0f}%"
 
@@ -608,12 +592,16 @@ class DownloadView(BaseDownloadView):
             self._active_ns[rj_id] = ns
             data["actions_row"].controls = self._build_compact_actions(ns, rj_id)
 
-        # Display the disk-verified byte count, never the DB snapshot bytes
-        # (which can be stale/overstated for registered or truncated files).
+        # Display known-size verified bytes/total when available (unknown-size
+        # files are excluded from both), otherwise verified bytes vs DB total.
         if isinstance(snapshot, DownloadQueueItem):
-            verified = snapshot.verified_bytes
-            downloaded = verified if verified is not None else snapshot.downloaded_bytes
-            total = snapshot.total_bytes
+            if snapshot.verified_known_bytes is not None:
+                downloaded = snapshot.verified_known_bytes
+                total = snapshot.verified_expected_bytes or 0
+            else:
+                verified = snapshot.verified_bytes
+                downloaded = verified if verified is not None else snapshot.downloaded_bytes
+                total = snapshot.total_bytes
         else:
             downloaded = total = 0
         data["size_text"].value = (
@@ -737,9 +725,11 @@ class DownloadView(BaseDownloadView):
         """File tree rows for the right panel.
 
         Keys are normalized relative paths (never bare titles) so duplicate
-        filenames cannot collide.  Per-file status, failure reason and a
-        ``.part`` recovery marker are derived from the download state — no disk
-        ``stat`` happens on the UI thread (review #3 / #6).
+        filenames cannot collide.  Live in-memory progress is matched to the
+        matching DB row (by download id first, then by basename) and never
+        appended as a duplicate top-level node.  Per-file status, failure reason
+        and a ``.part`` recovery marker are derived from the download state — no
+        disk ``stat`` happens on the UI thread (review #3 / #6).
         """
         data = self.active_downloads.get(rj_id, {})
         snapshot = data.get("snapshot")
@@ -759,6 +749,8 @@ class DownloadView(BaseDownloadView):
             key = self._unique_key(seen, "/".join(rel))
             rows.append({
                 "key": key, "rel": rel,
+                "dl_id": str(db.get("id") or ""),
+                "track_id": None,
                 "title": str(db.get("track_title") or rel[-1]),
                 "status": str(db.get("status") or ""),
                 "error": str(db.get("error") or ""),
@@ -771,31 +763,91 @@ class DownloadView(BaseDownloadView):
             })
 
         # Live in-memory progress overlays the DB rows for the active RJ.
-        tracks = data.get("tracks", {})
-        for title, info in tracks.items():
-            rel = [str(title)]
-            key = self._unique_key(seen, "/".join(rel))
-            idx = None
-            for i, existing in enumerate(rows):
-                if existing["rel"] == rel:
-                    idx = i
-                    break
-            if idx is None:
-                rows.append({"key": key, "rel": rel, "title": str(title),
-                             "status": "", "error": "", "has_part": False})
-                idx = len(rows) - 1
-            rows[idx].update(
-                status=str(info.get("status", rows[idx].get("status", ""))),
-                downloaded=int(info.get("downloaded", 0) or 0),
-                total=int(info.get("total", 0) or 0),
-            )
+        # Prefer the track_id-keyed cache; fall back to the title-keyed one
+        # used by the base view (and tests).
+        live_tracks = data.get("_live_tracks") or {}
+        if not live_tracks:
+            for title, info in data.get("tracks", {}).items():
+                live_tracks[title] = {
+                    "track_id": None, "title": title,
+                    "downloaded": int(info.get("downloaded", 0) or 0),
+                    "total": int(info.get("total", 0) or 0),
+                    "status": str(info.get("status", "")),
+                }
+
+        self._detail_key_by_track[rj_id] = {}
+        by_basename: dict = {}
+        for i, row in enumerate(rows):
+            by_basename.setdefault(row["title"], []).append(i)
+        matched_rows: set = set()
+        make_dl_id = getattr(getattr(self.app_controller, "orc", None),
+                             "_make_dl_id", None)
+        if make_dl_id is None:
+            try:
+                from core.orchestrator import Orchestrator
+                make_dl_id = Orchestrator._make_dl_id
+            except Exception:
+                make_dl_id = None
+        for track_id, live in live_tracks.items():
+            title = str(live.get("title") or track_id)
+            candidates = by_basename.get(title, [])
+            match = None
+            if len(candidates) == 1:
+                match = candidates[0]
+            elif make_dl_id is not None:
+                # Duplicate basenames: correlate through the deterministic
+                # download id (derived from track_id + local_path basename).
+                for idx in candidates:
+                    if idx in matched_rows:
+                        continue
+                    row = rows[idx]
+                    try:
+                        candidate = make_dl_id(
+                            rj_id, track_id, Path(row["rel"][-1]), title)
+                    except Exception:
+                        candidate = None
+                    if candidate and candidate == row["dl_id"]:
+                        match = idx
+                        break
+            if match is None:
+                # Safety net: never append a duplicate tree node — fold into an
+                # unmatched existing row with the same basename.
+                for idx in candidates:
+                    if idx not in matched_rows:
+                        match = idx
+                        break
+            if match is not None:
+                idx = match
+                matched_rows.add(idx)
+                rows[idx].update(
+                    status=str(live.get("status", rows[idx].get("status", ""))),
+                    downloaded=int(live.get("downloaded", 0) or 0),
+                    total=int(live.get("total", 0) or 0),
+                    track_id=track_id,
+                )
+                if track_id:
+                    self._detail_key_by_track[rj_id][track_id] = rows[idx]["key"]
+            else:
+                rel = [title]
+                key = self._unique_key(seen, "/".join(rel))
+                rows.append({
+                    "key": key, "rel": rel, "dl_id": "", "track_id": track_id,
+                    "title": title,
+                    "status": str(live.get("status", "")),
+                    "error": "",
+                    "downloaded": int(live.get("downloaded", 0) or 0),
+                    "total": int(live.get("total", 0) or 0),
+                    "has_part": False,
+                })
+                if track_id:
+                    self._detail_key_by_track[rj_id][track_id] = key
         return rows
 
     def _db_file_rows(self, rj_id: str) -> list:
         """One indexed SELECT for the selected RJ's download rows (no stats)."""
         try:
             cursor = self.download_service.connection.execute(
-                "SELECT track_title, status, downloaded_bytes, total_bytes, "
+                "SELECT id, track_title, status, downloaded_bytes, total_bytes, "
                 "COALESCE(local_path, '') AS local_path, "
                 "COALESCE(error, '') AS error "
                 "FROM downloads WHERE rj_id = ?", (rj_id,))
@@ -837,10 +889,14 @@ class DownloadView(BaseDownloadView):
             if snapshot.circle:
                 human = f"{human}  ·  {snapshot.circle}"
             self.detail_title.value = human
-            total = snapshot.total_bytes
-            verified = snapshot.verified_bytes
-            downloaded = verified if verified is not None else snapshot.downloaded_bytes
             file_count = snapshot.file_count
+            if snapshot.verified_known_bytes is not None:
+                total = snapshot.verified_expected_bytes or 0
+                downloaded = snapshot.verified_known_bytes
+            else:
+                verified = snapshot.verified_bytes
+                downloaded = verified if verified is not None else snapshot.downloaded_bytes
+                total = snapshot.total_bytes
         else:
             self.detail_title.value = rj_id
             total = downloaded = file_count = 0
@@ -887,7 +943,9 @@ class DownloadView(BaseDownloadView):
                 self._update_folder_row(key, payload)
             else:
                 self._update_detail_row(key, payload)
-                self._detail_rows_by_title[payload["title"]] = row
+                # First match wins for the title→key fallback; duplicate titles
+                # are resolved through _detail_key_by_track by track_id instead.
+                self._detail_key_by_title.setdefault(payload["title"], key)
             controls.append(row)
         self.detail_scroll.controls[:] = controls
 
@@ -989,12 +1047,35 @@ class DownloadView(BaseDownloadView):
         card_event.global_speed_bps = event.work_speed_bps
         super().update_track_progress(card_event)
         self.global_speed_bps = event.global_speed_bps
+        # Maintain a track_id-keyed live cache so duplicate filenames in
+        # different directories each update their own row (review #3).
+        data = self.active_downloads.get(event.rj_id)
+        if data is not None:
+            live = data.setdefault("_live_tracks", {})
+            live[event.track_id or event.track_title] = {
+                "track_id": event.track_id,
+                "title": event.track_title,
+                "downloaded": event.downloaded_bytes,
+                "total": event.total_bytes,
+                "status": event.status,
+            }
         self._update_queue_summary()
         if self._selected_rj == event.rj_id:
             self._live_update_detail_row(event)
 
     def _live_update_detail_row(self, event):
-        row = self._detail_rows_by_title.get(event.track_title)
+        """Resolve the live event to its stable row: track_id first, then the
+        unique-title fallback.  Duplicate titles never overwrite each other."""
+        row = None
+        track_map = self._detail_key_by_track.get(event.rj_id)
+        if track_map and event.track_id:
+            key = track_map.get(event.track_id)
+            if key:
+                row = self._detail_rows.get(key)
+        if row is None and event.track_title:
+            key = self._detail_key_by_title.get(event.track_title)
+            if key:
+                row = self._detail_rows.get(key)
         if row is not None:
             total = max(0, int(event.total_bytes or 0))
             downloaded = max(0, int(event.downloaded_bytes or 0))
