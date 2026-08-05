@@ -11,6 +11,7 @@ from core.paths import app_path
 from core.shutdown_signal import ShutdownSignal
 from core.version import display_title
 from core.tray import SystemTray
+from core.ui_dispatch import UiDispatcher
 
 logger = logging.getLogger("echovault")
 
@@ -73,6 +74,24 @@ class AppController:
 
         # ── UI message queue for thread-safe cross-thread updates ──
         self.ui_queue: queue.Queue = queue.Queue()
+        # P0-A: high-frequency progress events are coalesced instead of flooding
+        # the control queue.  Control messages keep their own priority queue.
+        self.ui_dispatcher = UiDispatcher()
+        self.ui_metrics = {
+            "dispatch_count": 0,
+            "control_processed": 0,
+            "progress_processed": 0,
+            "protected_processed": 0,
+            "pending_after": 0,
+            "last_dispatch_ms": 0.0,
+            "max_dispatch_ms": 0.0,
+            "received": 0,
+            "coalesced": 0,
+        }
+        # Per-dispatch budgets: yield back to Flet's event loop once exceeded.
+        self._ui_control_budget = 256
+        self._ui_dispatch_budget_ms = 50.0
+        self._ui_last_tick = time.time()
         self.shutdown_signal = ShutdownSignal(
             lambda: self.ui_queue.put(("installer_shutdown",))
         )
@@ -217,8 +236,8 @@ class AppController:
     #  Thread-safe message enqueue (called from any thread)
     # ──────────────────────────────────────────────────────
     def _enqueue_progress(self, event):
-        """Called from download thread — puts ProgressEvent in queue."""
-        self.ui_queue.put(("progress", event))
+        """Called from the downloader loop — coalesced into the UI dispatcher."""
+        self.ui_dispatcher.submit(event)
 
     def _enqueue_work_status(self, rj_id: str, status: str):
         """Called from download thread — puts message in queue."""
@@ -255,7 +274,7 @@ class AppController:
         def poll_loop():
             while not self._ui_poller_stop.wait(0.1):
                 try:
-                    if not self.ui_processing and not self.ui_queue.empty():
+                    if not self.ui_processing and self._ui_has_pending_work():
                         self.ui_processing = True
                         self.page.run_task(self._process_ui_queue)
                 except Exception as e:
@@ -263,78 +282,140 @@ class AppController:
 
         threading.Thread(target=poll_loop, daemon=True).start()
 
+    def _ui_has_pending_work(self) -> bool:
+        """True when either control messages or coalesced progress are waiting."""
+        if not self.ui_queue.empty():
+            return True
+        dispatcher = getattr(self, "ui_dispatcher", None)
+        if dispatcher is not None and dispatcher.has_pending():
+            return True
+        return False
+
     async def _process_ui_queue(self):
-        """Process all pending UI messages. Runs on Flet's event loop."""
-        processed = False
+        """Process pending UI work under a bounded budget (P0-A).
+
+        Control messages (close/tray/status/snack) are consumed first so they
+        are never starved by progress traffic.  Progress is then applied from
+        one coalesced snapshot.  If new work is still pending after the budget
+        is spent, the method yields to Flet's event loop and re-schedules
+        itself — a perpetually-fed queue can never keep ``_process_ui_queue``
+        from returning.
+        """
+        started = time.perf_counter()
+        control_processed = 0
+        progress_processed = 0
+        protected_processed = 0
+        budget_ms = getattr(self, "_ui_dispatch_budget_ms", 50.0)
         try:
-            while not self.ui_queue.empty():
+            control_budget = getattr(self, "_ui_control_budget", 256)
+            while control_processed < control_budget:
                 try:
                     msg = self.ui_queue.get_nowait()
-                    msg_type = msg[0]
-
-                    if msg_type == "progress":
-                        event = msg[1]  # ProgressEvent
-                        try:
-                            self.views[0].update_track_progress(event)
-                        except Exception as e:
-                            logging.debug(f"UI progress update error: {e}")
-
-                    elif msg_type == "work_status":
-                        _, rj_id, status = msg
-                        try:
-                            self.views[0].update_work_status(rj_id, status)
-                        except Exception as e:
-                            logging.debug(f"UI work_status update error: {e}")
-
-                    elif msg_type == "snack":
-                        self.show_snack(msg[1])
-
-                    elif msg_type == "ui_callback":
-                        callback, result = msg[1], msg[2]
-                        callback(result)
-
-                    elif msg_type == "tray_show_window":
-                        self._show_from_tray()
-
-                    elif msg_type == "tray_pause_all":
-                        self.pause_all_downloads()
-
-                    elif msg_type == "tray_resume_all":
-                        self.resume_all_downloads()
-
-                    elif msg_type == "tray_exit":
-                        self._exit_from_tray()
-
-                    elif msg_type == "installer_shutdown":
-                        self._exit_requested = True
-                        self._begin_shutdown()
-
-                    elif msg_type == "close_window":
-                        self._ui_poller_stop.set()
-                        tray = getattr(self, "tray", None)
-                        if tray is not None:
-                            tray.stop()
-                        error = msg[1] if len(msg) > 1 else None
-                        if error:
-                            logger.error("Closing after shutdown error: %s", error)
-                        try:
-                            self.page.window.destroy()
-                        except Exception:
-                            try:
-                                self.page.window.close()
-                            except Exception:
-                                logger.debug("Unable to close Flet window", exc_info=True)
-                        self.shutdown_signal.mark_stopped()
-                        self.shutdown_signal.close()
-
-                    processed = True
                 except queue.Empty:
                     break
-                except Exception as e:
-                    logging.debug(f"UI queue processing error: {e}")
+                control_processed += 1
+                self._dispatch_control_message(msg)
 
+            dispatcher = getattr(self, "ui_dispatcher", None)
+            if dispatcher is not None and dispatcher.has_pending():
+                latest_batch, protected_batch = dispatcher.drain()
+                remaining = []
+                for event in protected_batch + latest_batch:
+                    if (time.perf_counter() - started) * 1000.0 > budget_ms:
+                        remaining.append(event)
+                        continue
+                    if event.status in ("completed", "failed", "paused", "cancelled"):
+                        protected_processed += 1
+                    else:
+                        progress_processed += 1
+                    self._apply_progress_event(event)
+                if remaining:
+                    dispatcher.requeue(remaining)
+        except Exception as exc:
+            logging.debug("UI queue processing error: %s", exc)
         finally:
             self.ui_processing = False
+
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        metrics = getattr(self, "ui_metrics", None)
+        if metrics is not None:
+            metrics["dispatch_count"] += 1
+            metrics["control_processed"] += control_processed
+            metrics["progress_processed"] += progress_processed
+            metrics["protected_processed"] += protected_processed
+            metrics["last_dispatch_ms"] = elapsed_ms
+            metrics["max_dispatch_ms"] = max(
+                metrics.get("max_dispatch_ms", 0.0), elapsed_ms)
+            dispatcher = getattr(self, "ui_dispatcher", None)
+            if dispatcher is not None:
+                metrics["pending_after"] = dispatcher.pending_count()
+                metrics["received"] = dispatcher.received
+                metrics["coalesced"] = dispatcher.coalesced
+        self._ui_last_tick = time.time()
+
+        # Yield back to Flet and re-schedule only if more work is already waiting.
+        # ``ui_processing`` stays False so the poller remains the single
+        # scheduler; duplicate scheduling is harmless because drains are atomic.
+        if control_processed or progress_processed or protected_processed:
+            if self._ui_has_pending_work():
+                self._schedule_ui_processing()
+
+    def _schedule_ui_processing(self) -> None:
+        try:
+            self.page.run_task(self._process_ui_queue)
+        except Exception:
+            logging.debug("Unable to re-schedule UI processing", exc_info=True)
+
+    def _apply_progress_event(self, event) -> None:
+        try:
+            self.views[0].update_track_progress(event)
+        except Exception as exc:
+            logging.debug("UI progress update error: %s", exc)
+
+    def _dispatch_control_message(self, msg) -> None:
+        """Route one control message; a single bad message must not kill the loop."""
+        try:
+            msg_type = msg[0]
+            if msg_type == "work_status":
+                _, rj_id, status = msg
+                self.views[0].update_work_status(rj_id, status)
+            elif msg_type == "snack":
+                self.show_snack(msg[1])
+            elif msg_type == "ui_callback":
+                callback, result = msg[1], msg[2]
+                callback(result)
+            elif msg_type == "tray_show_window":
+                self._show_from_tray()
+            elif msg_type == "tray_pause_all":
+                self.pause_all_downloads()
+            elif msg_type == "tray_resume_all":
+                self.resume_all_downloads()
+            elif msg_type == "tray_exit":
+                self._exit_from_tray()
+            elif msg_type == "installer_shutdown":
+                self._exit_requested = True
+                self._begin_shutdown()
+            elif msg_type == "close_window":
+                self._ui_poller_stop.set()
+                tray = getattr(self, "tray", None)
+                if tray is not None:
+                    tray.stop()
+                error = msg[1] if len(msg) > 1 else None
+                if error:
+                    logger.error("Closing after shutdown error: %s", error)
+                try:
+                    self.page.window.destroy()
+                except Exception:
+                    try:
+                        self.page.window.close()
+                    except Exception:
+                        logging.debug("Unable to close Flet window", exc_info=True)
+                shutdown_signal = getattr(self, "shutdown_signal", None)
+                if shutdown_signal is not None:
+                    shutdown_signal.mark_stopped()
+                    shutdown_signal.close()
+        except Exception as exc:
+            logging.debug("UI queue message error: %s", exc)
 
     def run_blocking(self, function, on_success=None, *, action_label: str = "后台任务"):
         """Run blocking filesystem/SQLite presentation work off the Flet loop.

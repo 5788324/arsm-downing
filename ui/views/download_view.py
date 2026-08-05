@@ -136,10 +136,12 @@ class DownloadView(BaseDownloadView):
         """Initial synchronous snapshot; called by the base constructor."""
         self._sync_queue_file()
         try:
-            model = self.download_service.fetch_queue_page(
-                status_filter=self.queue_filter,
-                page=self.queue_page,
-                page_size=self.queue_page_size,
+            model = self.download_service.apply_disk_verification(
+                self.download_service.fetch_queue_page(
+                    status_filter=self.queue_filter,
+                    page=self.queue_page,
+                    page_size=self.queue_page_size,
+                )
             )
             self._apply_queue_page(model)
         except Exception as exc:
@@ -164,10 +166,12 @@ class DownloadView(BaseDownloadView):
         page_size = self.queue_page_size
 
         def query():
-            return self.download_service.fetch_queue_page(
-                status_filter=status_filter,
-                page=page,
-                page_size=page_size,
+            return self.download_service.apply_disk_verification(
+                self.download_service.fetch_queue_page(
+                    status_filter=status_filter,
+                    page=page,
+                    page_size=page_size,
+                )
             )
 
         def render(result):

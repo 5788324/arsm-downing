@@ -34,14 +34,27 @@ class DownloadQueueItem:
     can_retry: bool
     is_terminal: bool
     cancelled_files: int = 0
+    # P0-D: disk-verified progress (None = no on-disk verification was run).
+    verified_bytes: int | None = None
+    verified_files: int | None = None
+    overage_file_count: int = 0
 
     @property
     def progress(self) -> float:
-        if self.total_bytes <= 0:
+        expected = max(0, self.total_bytes)
+        if expected <= 0:
+            if self.verified_files is not None:
+                if self.file_count > 0 and self.verified_files >= self.file_count:
+                    return 1.0
+                return 0.0
             if self.file_count > 0 and self.completed_files >= self.file_count:
                 return 1.0
             return 0.0
-        return max(0.0, min(1.0, self.downloaded_bytes / self.total_bytes))
+        # Prefer on-disk verified bytes; fall back to the DB byte total only
+        # when no verification was possible.  Either way the ratio stays <= 1.
+        verified = (self.verified_bytes
+                    if self.verified_bytes is not None else self.downloaded_bytes)
+        return max(0.0, min(1.0, verified / expected))
 
 
 @dataclass(frozen=True)

@@ -72,6 +72,9 @@ class FakeController:
             "file-1", meta.rj_id, "track.mp3",
             str(work_path / "track.mp3"), "paused", 3, 10,
         )
+        # P0-D: progress is disk-verified, so a real .part must exist on disk
+        # for the snapshot to report 30% instead of 0%.
+        (work_path / "track.mp3.part").write_bytes(b"abc")
 
     def start_download(self, rj_id, **kwargs):
         self.calls.append(("start", rj_id, kwargs))

@@ -664,13 +664,16 @@ class DownloadView(ft.Container):
                 break
             t_total = tdata.get("total", 0)
             t_dl = tdata.get("downloaded", 0)
-            t_pct = t_dl / t_total if t_total > 0 else 0
+            # P0-D: never display over 100%; flag oversized local files.
+            overage = t_total > 0 and t_dl > t_total
+            t_pct = min(1.0, t_dl / t_total) if t_total > 0 else 0
             t_color = SUCCESS if t_pct >= 1.0 else ACCENT_PRIMARY
             short_name = tname[:35] + ".." if len(tname) > 35 else tname
+            label = f"{t_pct*100:.0f}%" + ("  ⚠" if overage else "")
             track_items.append(ft.Column([
                 ft.Row([
                     ft.Text(short_name, size=10, color=ACCENT_SECONDARY, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
-                    ft.Text(f"{t_pct*100:.0f}%", size=10, color="grey"),
+                    ft.Text(label, size=10, color="grey"),
                 ], spacing=6, alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                 ft.ProgressBar(value=t_pct, color=t_color, bar_height=3),
             ], spacing=1))
@@ -1074,15 +1077,17 @@ class DownloadView(ft.Container):
             for d in details:
                 total = d["total"]
                 dl = d["downloaded"]
-                prog = dl / total if total > 0 else 0
+                prog = min(1.0, dl / total) if total > 0 else 0
+                overage = total > 0 and dl > total
                 color = (SUCCESS if d["status"] == "completed"
                          else ERROR if d["status"] == "failed"
                          else ACCENT_SECONDARY)
                 title = d["title"][:40]
+                label = f"{prog*100:.1f}%" + ("  ⚠" if overage else "")
                 self.dialog_list.controls.append(ft.Column([
                     ft.Row([
                         ft.Text(title, size=12),
-                        ft.Text(f"{prog*100:.1f}%", size=12),
+                        ft.Text(label, size=12),
                     ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                     ft.ProgressBar(value=prog, color=color),
                 ]))

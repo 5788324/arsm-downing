@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
 from collections.abc import Iterable, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from core.progress import ObservedFile, VerifiedDownloadSummary, verified_download_progress
 from core.read_models import (
     BatchEnqueuePreview,
     DownloadQueueItem,
@@ -247,6 +250,81 @@ class DownloadService:
             page=page,
             page_size=page_size,
             total_items=total_items,
+        )
+
+    @staticmethod
+    def _safe_stat(path: Path) -> int | None:
+        try:
+            if path.is_file():
+                return path.stat().st_size
+        except OSError:
+            pass
+        return None
+
+    def apply_disk_verification(
+            self, page: DownloadQueuePage
+    ) -> DownloadQueuePage:
+        """Return a copy of ``page`` whose items carry P0-D disk-verified
+        progress (never >100%).
+
+        Kept separate from ``fetch_queue_page`` so the two-SELECT contract of
+        the queue snapshot is preserved; callers run it off the UI thread.  One
+        additional SELECT fetches the per-file paths for the page's works only,
+        bounded by the page size.
+        """
+        items_by_rj = {item.rj_id: item for item in page.items
+                       if item.local_path}
+        if not items_by_rj:
+            return page
+        placeholders = ",".join("?" * len(items_by_rj))
+        rows = self.connection.execute(
+            f"SELECT rj_id, local_path, total_bytes FROM downloads "
+            f"WHERE rj_id IN ({placeholders})",
+            tuple(items_by_rj),
+        ).fetchall()
+        grouped: dict[str, list[tuple[str, int]]] = {}
+        for rj, local_path, total in rows:
+            grouped.setdefault(str(rj), []).append((str(local_path or ""),
+                                                    int(total or 0)))
+
+        summaries: dict[str, VerifiedDownloadSummary] = {}
+        for rj_id in items_by_rj:
+            by_abs: dict[str, int] = {}
+            for local_path, total in grouped.get(rj_id, []):
+                try:
+                    norm = os.path.normcase(str(Path(local_path).resolve()))
+                except OSError:
+                    norm = os.path.normcase(local_path)
+                by_abs[norm] = max(by_abs.get(norm, 0), total)
+            observed = []
+            for key, expected in by_abs.items():
+                final = Path(key)
+                part = final.with_suffix(final.suffix + ".part")
+                observed.append(ObservedFile(
+                    expected_bytes=expected,
+                    final_bytes=self._safe_stat(final),
+                    part_bytes=self._safe_stat(part),
+                ))
+            summaries[rj_id] = verified_download_progress(observed)
+
+        updated = []
+        for item in page.items:
+            summary = summaries.get(item.rj_id)
+            if summary is None:
+                updated.append(item)
+                continue
+            updated.append(replace(
+                item,
+                verified_bytes=summary.verified_bytes,
+                verified_files=summary.complete_files,
+                overage_file_count=summary.overage_files,
+            ))
+        return DownloadQueuePage(
+            items=tuple(updated),
+            summary=page.summary,
+            page=page.page,
+            page_size=page.page_size,
+            total_items=page.total_items,
         )
 
     def _existing_tables(self) -> set[str]:
