@@ -108,7 +108,9 @@ class DownloadService:
         return item.queue_state == status_filter
 
     @staticmethod
-    def _sort_key(item: DownloadQueueItem) -> tuple[int, str, str]:
+    def _sort_key(item: DownloadQueueItem) -> tuple[int, str]:
+        # Issue #19: order must be stable across refreshes, not re-sorted by a
+        # changing updated_at.  Priority, then a deterministic RJ id tiebreak.
         priority = {
             "active": 0,
             "queued": 1,
@@ -122,7 +124,7 @@ class DownloadService:
             "cancelled": 9,
             "completed": 10,
         }.get(item.queue_state, 10)
-        return (priority, item.updated_at or "", item.rj_id)
+        return (priority, item.rj_id)
 
     @staticmethod
     def _aggregate_sql() -> str:
