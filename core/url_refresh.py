@@ -30,6 +30,10 @@ class SignedUrlRefresher:
         )
         self._in_flight: Dict[str, asyncio.Task] = {}
         self._latest: Dict[str, Dict[str, Any]] = {}
+        # Last completed outcome per RJ (mapping on success, None on failure).
+        # ``ensure_refreshed_once`` reuses it instead of guessing completion
+        # from counters, which is what caused the "refresh failed" mis-reads.
+        self._last_outcome: Dict[str, Optional[Dict[str, Any]]] = {}
         # ── observability ──
         self.refresh_count: Dict[str, int] = {}
         self.refresh_failures: Dict[str, int] = {}
@@ -39,16 +43,35 @@ class SignedUrlRefresher:
         return str(getattr(track, "id", None) or getattr(track, "title", ""))
 
     async def refresh(self, rj_id: str) -> Optional[Dict[str, Any]]:
-        """Return a fresh ``{key: TrackItem}`` map for one RJ (single-flight).
+        """Explicitly refresh one RJ now (single-flight under concurrency).
 
-        Concurrent callers awaiting the same RJ share one refresh.  ``None`` is
-        returned when the refresh itself fails; it is never retried inside this
-        class (the caller owns the "one refresh per RJ per round" budget).
+        Every caller that awaits this method shares the same in-flight task.
+        ``None`` is returned when the refresh itself fails; it is never retried
+        inside this class.
         """
-        existing = self._in_flight.get(rj_id)
-        if existing is not None and not existing.done():
-            return await asyncio.shield(existing)
+        return await self._ensure_refresh(rj_id, force=True)
 
+    async def ensure_refreshed_once(self, rj_id: str) -> Optional[Dict[str, Any]]:
+        """Return this round's refresh result for ``rj_id`` exactly once.
+
+        Unlike ``refresh`` (which always re-fetches), this is safe for the
+        orchestrator's "one refresh per RJ per round" contract:
+
+        - an in-flight refresh is awaited by every concurrent caller (same
+          future, no counting-based guessing);
+        - a completed success is reused directly;
+        - a completed failure is returned as-is so every caller fails closed
+          consistently instead of racing ahead and mis-reading ``latest_url``.
+        """
+        return await self._ensure_refresh(rj_id, force=False)
+
+    async def _ensure_refresh(self, rj_id: str,
+                              force: bool) -> Optional[Dict[str, Any]]:
+        task = self._in_flight.get(rj_id)
+        if task is not None and not task.done():
+            return await asyncio.shield(task)
+        if not force and rj_id in self._last_outcome:
+            return self._last_outcome[rj_id]
         task = asyncio.create_task(self._do_refresh(rj_id),
                                    name=f"arsm-url-refresh-{rj_id}")
         self._in_flight[rj_id] = task
@@ -63,12 +86,15 @@ class SignedUrlRefresher:
             fresh = await self._fetcher(rj_id)
         except Exception:
             self.refresh_failures[rj_id] = self.refresh_failures.get(rj_id, 0) + 1
+            self._last_outcome[rj_id] = None
             return None
         if not fresh:
             self.refresh_failures[rj_id] = self.refresh_failures.get(rj_id, 0) + 1
+            self._last_outcome[rj_id] = None
             return None
         mapping = {self._key_of(track): track for track in fresh}
         self._latest[rj_id] = mapping
+        self._last_outcome[rj_id] = mapping
         return mapping
 
     def latest_url(self, rj_id: str, key: str) -> Optional[str]:

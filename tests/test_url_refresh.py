@@ -129,3 +129,76 @@ def test_second_expiry_is_not_auto_refreshed_by_refresher() -> None:
     refresher, mapping = asyncio.run(_case())
     assert mapping is not None
     assert refresher.refresh_count_for("RJ00000001") == 2
+
+
+def test_ensure_refreshed_once_reuses_success_result() -> None:
+    """Review #1: a completed success is reused, never re-fetched."""
+    async def _case():
+        fetches = 0
+
+        async def fetcher(_rj_id):
+            nonlocal fetches
+            fetches += 1
+            return [_track("a.mp3", "http://cdn/once")]
+
+        refresher = SignedUrlRefresher(fetcher)
+        first = await refresher.ensure_refreshed_once("RJ00000001")
+        second = await refresher.ensure_refreshed_once("RJ00000001")
+        return refresher, first, second, fetches
+
+    refresher, first, second, fetches = asyncio.run(_case())
+    assert first["a.mp3"].url == "http://cdn/once"
+    assert second is first
+    assert fetches == 1
+
+
+def test_ensure_refreshed_once_returns_same_failure_for_all_callers() -> None:
+    """Review #1: a failed round returns the SAME failure to every caller —
+    nobody races ahead and mis-reads a missing latest_url as success."""
+    async def _case():
+        async def fetcher(_rj_id):
+            raise OSError("network down")
+
+        refresher = SignedUrlRefresher(fetcher)
+        results = await asyncio.gather(
+            refresher.ensure_refreshed_once("RJ00000001"),
+            refresher.ensure_refreshed_once("RJ00000001"),
+            refresher.ensure_refreshed_once("RJ00000001"),
+        )
+        return refresher, results
+
+    refresher, results = asyncio.run(_case())
+    assert all(result is None for result in results)
+    assert refresher.refresh_count_for("RJ00000001") == 1
+    assert refresher.refresh_failures.get("RJ00000001") == 1
+
+
+def test_ensure_refreshed_once_all_await_same_in_flight_future() -> None:
+    """Review #1: when the refresh is blocked, every concurrent caller waits
+    on the SAME future (single flight), not a counting-based guess."""
+    async def _case():
+        release = asyncio.Event()
+        calls = {"n": 0}
+
+        async def fetcher(_rj_id):
+            calls["n"] += 1
+            await release.wait()
+            return [_track("a.mp3", "http://cdn/fresh")]
+
+        refresher = SignedUrlRefresher(fetcher)
+        task_a = asyncio.create_task(
+            refresher.ensure_refreshed_once("RJ00000001"))
+        task_b = asyncio.create_task(
+            refresher.ensure_refreshed_once("RJ00000001"))
+        task_c = asyncio.create_task(
+            refresher.ensure_refreshed_once("RJ00000001"))
+        await asyncio.sleep(0.05)
+        assert calls["n"] == 1  # exactly one refresh started
+        release.set()
+        results = await asyncio.gather(task_a, task_b, task_c)
+        return refresher, results, calls
+
+    refresher, results, calls = asyncio.run(_case())
+    assert calls["n"] == 1
+    assert all(result is not None for result in results)
+    assert refresher.latest_url("RJ00000001", "a.mp3") == "http://cdn/fresh"

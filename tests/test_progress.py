@@ -108,3 +108,23 @@ def test_mixed_states_aggregate_without_overrun() -> None:
     assert summary.complete_files == 1
     assert summary.overage_files == 1
     assert summary.progress == 0.375
+
+
+def test_unknown_size_bytes_never_inflate_known_file_ratio() -> None:
+    """Review #4: an unknown-size file's on-disk bytes must not enter the
+    numerator without a matching denominator, or it pushes a half-done known
+    file to 100%."""
+    summary = verified_download_progress([
+        _file(expected=100, final=None),      # known file, 0 bytes done
+        _file(expected=0, final=100000),      # unknown size, huge content
+    ])
+    assert summary.progress == 0.0            # known file is NOT done
+    assert summary.verified_bytes == 100000   # display still shows on-disk bytes
+
+
+def test_known_file_done_with_unknown_file_still_100_percent() -> None:
+    summary = verified_download_progress([
+        _file(expected=100, final=100),       # known file complete
+        _file(expected=0, final=500),         # unknown-size content present
+    ])
+    assert summary.progress == 1.0

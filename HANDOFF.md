@@ -190,3 +190,31 @@
 - Windows 隔离验收：安装、启动、--shutdown 协作退出、运行中卸载、用户数据保留及零残留进程均通过。
 - 最终安装器 SHA-256：2a7df244d6c07d289c7dea3a9788a271c48b6eb33f296b4a5de81e8c27b171e6。
 - 当前状态：等待 Git PR、CI、合并、v1.0.0 标签和正式 GitHub Release；正式 E:\arsm 与既有运行数据零接触。
+
+## v1.0.1 交接（2026-08-06）——PR #21 Draft
+
+### 分支与提交
+
+- 分支：`fix/v1.0.1-download-freeze-ui`（base `main@b628c86`）。
+- 提交：`872ef7c`（P0 #20）、`dde1ed9`（#19）、`98e3b07`（bump 1.0.1）。
+- PR：`https://github.com/5788324/arsm-downing/pull/21`（Draft，Fixes #19 #20）。
+
+### PR #21 审查（NO-GO）修复已完成
+
+- `SignedUrlRefresher.ensure_refreshed_once()`：并发 403 共享同一刷新 future；成功复用、失败返回同一失败。
+- `download_file`：refresh/transport budget 分离，`refresh_used`，二次签名错误 fail-closed；`retry_count=1` 也尝试新 URL；日志不输出 `fresh_url`。
+- `refresh_queue_async`/`load_queue`：经 `run_blocking` 离开 UI 线程 + generation token 丢弃过期。
+- `_update_compact_card`/detail：显示 `verified_bytes`；`registered` 非终态；orchestrator 成功保持 `completed`；`verified_download_progress` 修复 unknown+known 混合分母。
+- `ui/app_base.py`：单调度器守卫（`_ui_schedule_lock`）+ 数量/时间双预算 + `await asyncio.sleep(0)`。
+- 详情面板：文件树（相对路径 key、目录缩进）、失败原因、`.part` 状态、重复名不碰撞、每状态唯一按钮。
+- 全量回归：`367 passed, 3 skipped`。
+
+### 交接给下一位执行者
+
+1. 保持 Draft，不转 Ready、不合并、不打标签、不发布。
+2. 在本分支完成真实验收（需 Windows 宿主）：
+   - 真实 GUI / DPI 125–200% / 托盘 / 退出；
+   - 9 任务约 2700 文件 30 分钟压力验收；
+   - 300 个集中 HTTP 400 场景；
+   - 远端完整 pytest/CI、release_check、PyInstaller。
+3. 验收通过后再讨论是否转 Ready。

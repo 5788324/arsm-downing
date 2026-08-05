@@ -129,6 +129,7 @@ class _Harness:
     """Minimal controller shell: real dispatcher + real _process_ui_queue."""
 
     def __init__(self):
+        import threading
         from ui.app_base import AppController
         self.controller = AppController.__new__(AppController)
         self.controller.page = _NoopPage()
@@ -136,6 +137,9 @@ class _Harness:
         self.controller.ui_dispatcher = UiDispatcher()
         self.controller.ui_processing = False
         self.controller._ui_last_tick = 0.0
+        self.controller._ui_control_budget = 256
+        self.controller._ui_dispatch_budget_ms = 50.0
+        self.controller._ui_schedule_lock = threading.Lock()
         self.controller.views = {0: _NoopView()}
         self.controller.tray = None
         self.controller.ui_metrics = {
@@ -161,8 +165,10 @@ def test_process_ui_queue_returns_under_progress_flood() -> None:
     asyncio.run(controller._process_ui_queue())
 
     # Control budget (256) capped the control drain; remaining stay queued for
-    # the re-scheduled run. The method must have returned and released the flag.
-    assert controller.ui_processing is False
+    # the re-scheduled run. The method returned and re-scheduled through the
+    # single-scheduler guard, so ``ui_processing`` stays True until that next
+    # drain runs and finds nothing left.
+    assert controller.ui_processing is True
     assert controller.ui_queue.qsize() == 300 - 256
     assert controller.ui_metrics["control_processed"] == 256
     assert controller.ui_metrics["progress_processed"] + \
@@ -188,3 +194,63 @@ def test_work_status_messages_are_consumed_before_progress() -> None:
     asyncio.run(controller._process_ui_queue())
 
     assert seen[0] == ("status", "Completed")
+
+
+def test_real_asyncio_single_drain_guard_and_backlog_drain() -> None:
+    """Review #5: with REAL asyncio re-scheduling there is never more than one
+    drain running at a time, control messages stay responsive, and the backlog
+    drains to zero."""
+    harness = _Harness()
+    controller = harness.controller
+
+    active = {"n": 0, "max": 0}
+    original = controller._process_ui_queue
+
+    async def wrapped():
+        active["n"] += 1
+        active["max"] = max(active["max"], active["n"])
+        try:
+            await original()
+        finally:
+            active["n"] -= 1
+
+    controller._process_ui_queue = wrapped
+
+    for chunk in range(1000):
+        controller.ui_dispatcher.submit(
+            _progress("RJ00000001", f"track-{chunk % 5}", chunk))
+    for _ in range(600):
+        controller.ui_queue.put(("work_status", "RJ00000001", "Downloading"))
+
+    async def _drive():
+        loop = asyncio.get_running_loop()
+        tasks = set()
+
+        def run_task(handler):
+            # Flet's Page.run_task invokes the handler on the event loop.
+            task = asyncio.create_task(handler())
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
+
+        controller.page.run_task = run_task
+
+        # Only the first claim schedules; a second must be refused.
+        assert controller._schedule_ui_if_pending() is True
+        assert controller._schedule_ui_if_pending() is False
+
+        deadline = loop.time() + 5.0
+        while loop.time() < deadline:
+            if not tasks and not controller._ui_has_pending_work():
+                break
+            await asyncio.sleep(0.01)
+        while tasks:
+            await asyncio.sleep(0.01)
+        return controller
+
+    controller = asyncio.run(_drive())
+
+    assert active["max"] == 1           # at most one drain at any instant
+    assert controller.ui_processing is False
+    assert controller.ui_queue.qsize() == 0
+    assert controller.ui_dispatcher.pending_count() == 0
+    assert controller.ui_metrics["control_processed"] == 600

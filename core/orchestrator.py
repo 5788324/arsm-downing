@@ -1416,7 +1416,14 @@ class Orchestrator:
         retry_count = max(1, int(self.config.retry_count))
         existing_size = local_partial_size(final_path, part_path, track.size)
 
-        for attempt in range(retry_count):
+        # ── Issue #20 / review: transport retry budget is SEPARATE from the
+        # signed-URL refresh budget.  ``refresh_used`` grants exactly one fresh
+        # attempt against a newly-fetched URL (it does not consume the transport
+        # retry budget).  A second signed-URL error is fail-closed immediately.
+        attempt = 0
+        refresh_used = False
+
+        while True:
             self.db.upsert_download(
                 dl_id, meta.rj_id, track.title, str(final_path),
                 'downloading', existing_size, track.size)
@@ -1487,6 +1494,7 @@ class Orchestrator:
                                     resp.close()
                                 await asyncio.sleep(
                                     self.config.retry_backoff ** attempt)
+                                attempt += 1
                                 continue
                             elif plan.action == "http_error":
                                 if (resp.status in {400, 401, 403}
@@ -1562,6 +1570,23 @@ class Orchestrator:
                 # only this file against the fresh URL.  No retry_backoff, no
                 # mechanical same-URL retry, and stored partial data (.part) is
                 # preserved unless the fresh URL itself is unusable.
+                if refresh_used:
+                    # The freshly-refreshed URL is signed-invalid too: fail
+                    # closed now instead of mechanically retrying it.
+                    actual = local_partial_size(final_path, part_path, track.size)
+                    self.stats.failed += 1
+                    final_status = 'paused' if actual > 0 else 'failed'
+                    self.db.upsert_download(
+                        dl_id, meta.rj_id, track.title, str(final_path),
+                        final_status, actual, track.size,
+                        error=f"Signed URL expired again after refresh: {exc}")
+                    self._emit_progress(
+                        meta.rj_id, track.id or track.title, track.title,
+                        actual, track.size, final_status)
+                    logging.warning(
+                        f"Download {track.title} {final_status} (fresh signed URL "
+                        f"also expired, partial_bytes={actual}): {exc}")
+                    return False
                 fresh_url = await self._refresh_one_url(
                     meta.rj_id, track, refresher)
                 if fresh_url is None:
@@ -1580,18 +1605,22 @@ class Orchestrator:
                         f"after refresh, partial_bytes={actual}): {exc}")
                     return False
                 track.url = fresh_url
+                refresh_used = True
                 existing_size = local_partial_size(
                     final_path, part_path, track.size)
                 if track.size > 0 and existing_size > track.size:
                     existing_size = track.size
+                # Signed query/token must never reach the logs — host + stable
+                # key + attempt only.
+                fresh_host = urllib.parse.urlparse(fresh_url).hostname or "unknown"
                 logging.info(
                     f"URL_REFRESH rj={meta.rj_id} track={track.title[:50]} "
-                    f"fresh_url={fresh_url[:80]}")
+                    f"host={fresh_host} refresh_count="
+                    f"{refresher.refresh_count_for(meta.rj_id)}")
                 continue
             except Exception as e:
                 actual = local_partial_size(final_path, part_path, track.size)
-                last_attempt = attempt == retry_count - 1
-                if last_attempt:
+                if attempt >= retry_count - 1:
                     self.stats.failed += 1
                     final_status = 'paused' if actual > 0 else 'failed'
                     self.db.upsert_download(
@@ -1605,8 +1634,9 @@ class Orchestrator:
                         f"(partial_bytes={actual}): {e}")
                     return False
                 existing_size = actual
+                attempt += 1
                 logging.warning(
-                    f"Retry {attempt+1}/{retry_count} for {track.title}: {e}")
+                    f"Retry {attempt}/{retry_count} for {track.title}: {e}")
                 await asyncio.sleep(self.config.retry_backoff ** attempt)
 
         return False
@@ -1757,11 +1787,20 @@ class Orchestrator:
 
     async def _refresh_one_url(self, rj_id: str, track: TrackItem,
                                refresher: SignedUrlRefresher) -> Optional[str]:
-        """Return a fresh download URL for one track (single-flight, 1/round)."""
-        if refresher.refresh_count_for(rj_id) == 0:
-            await refresher.refresh(rj_id)
+        """Return a fresh download URL for one track (single-flight, 1/round).
+
+        Uses ``ensure_refreshed_once`` so concurrent 403s for the same RJ all
+        await the SAME refresh future; none can race ahead and read a stale
+        ``latest_url`` before the mapping is generated.
+        """
+        mapping = await refresher.ensure_refreshed_once(rj_id)
+        if not mapping:
+            return None
         key = track.id or track.title
-        return refresher.latest_url(rj_id, key)
+        fresh = mapping.get(key)
+        if fresh is None:
+            return None
+        return getattr(fresh, "url", None)
 
     async def _process_download(self, rj_id: str, meta: WorkMetadata,
                                  targets: List[TrackItem],
@@ -1828,7 +1867,7 @@ class Orchestrator:
                         rj_id, t.id or t.title, t.save_path, t.title)
                     self.db.upsert_download(
                         dl_id, rj_id, t.title, str(t.save_path),
-                        'registered', t.size, t.size)
+                        'completed', t.size, t.size)
                 self._emit_work_status(rj_id, "Completed")
             elif cancelled_count > 0:
                 # Distinguish a durable user cancellation from a pause.
@@ -1854,6 +1893,6 @@ class Orchestrator:
                             rj_id, t.id or t.title, t.save_path, t.title)
                         self.db.upsert_download(
                             dl_id, rj_id, t.title, str(t.save_path),
-                            'registered', t.size, t.size)
+                            'completed', t.size, t.size)
         except Exception as e:
             logging.error(f"Failed to register work {rj_id}: {e}")

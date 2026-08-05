@@ -236,3 +236,27 @@ Git 远端写入：无
 - Windows 隔离验收：安装、启动、--shutdown 协作退出、运行中卸载、用户数据保留及零残留进程均通过。
 - 最终安装器 SHA-256：2a7df244d6c07d289c7dea3a9788a271c48b6eb33f296b4a5de81e8c27b171e6。
 - 当前状态：等待 Git PR、CI、合并、v1.0.0 标签和正式 GitHub Release；正式 E:\arsm 与既有运行数据零接触。
+
+## 2026-08-05：v1.0.1 P0 修复（Issue #20 / #19，同分支同 PR）
+
+- 在同一分支 `fix/v1.0.1-download-freeze-ui`、同一 PR（#21，Draft）内完成 Issue #20（冻结/签名 URL 重试风暴/虚假总进度）与 Issue #19（下载页布局闪烁）修复，符合 owner 对 #19 必须与 #20 同 PR 的要求。
+- P0-A：`core/ui_dispatch.py` 按 `(rj_id, track_id)` 去重、保护终态事件，`ui/app_base.py` 预算化 dispatch（256 条 + 50ms 时间双预算）。
+- P0-B：`core/download_workers.py` 固定 worker 池，orchestrator `_process_download` 以稳定 `id(task)` 关联结果。
+- P0-C：`core/url_refresh.py` 单飞刷新 + `core/download_errors.py` `SignedUrlExpired`（HTTP 400/401/403）。
+- P0-D：`core/progress.py` 磁盘核验进度，`DownloadQueueItem` 增加 verified 字段，UI 百分比全部钳制 ≤100%。
+- 提交：`872ef7c`（P0 #20）、`dde1ed9`（#19）、`98e3b07`（bump 1.0.1）。
+- 全量回归 `347 passed, 3 skipped`；release_check `ready: true`；PyInstaller `ARSM-Suite-1.0.1-windows-x64.zip` 已构建。
+
+## 2026-08-06：PR #21 审查 NO-GO 集中修复
+
+- 代码审查发现 7 个发布阻塞并全部修复（当前分支，Draft 保持）：
+  1. Signed URL 竞态：`SignedUrlRefresher.ensure_refreshed_once()` 让并发 403 全部 await 同一 future；成功复用、失败返回同一失败结果，不再靠计数猜测完成状态。
+  2. 二次签名失效：transport retry budget 与 signed-URL refresh budget 分离；每文件 `refresh_used` 只授一次新 URL 尝试；新 URL 再次 400/401/403 立即 fail-closed；`retry_count=1` 时新 URL 仍会被尝试；日志不再输出 `fresh_url`（只记 host + 稳定键 + attempt）。
+  3. 磁盘核验移出 UI 线程：`refresh_queue_async`/`load_queue` 经 `run_blocking`（`asyncio.to_thread`）执行，generation token 丢弃过期快照，多余请求合并为一次重拉。
+  4. 真实进度：UI 容量/摘要改用 `verified_bytes`；`registered` 不再被当作终态 100%/绿色；orchestrator 成功保持 `completed` 不再改写 `registered`；`verified_download_progress` 只把已知大小文件计入进度分母，unknown-size 字节不会把未完成已知文件推到 100%。
+  5. UI 调度：`_ui_schedule_lock` 单调度器守卫（poller 与 drain 共享），数量+时间双预算，`await asyncio.sleep(0)` 让出；真实 asyncio 测试验证任意时刻最多一个 drain、backlog 归零、控制消息可响应。
+  6. #19 详情面板：文件树（相对路径 key + 目录缩进）、每文件失败原因、`.part` 恢复状态；重复文件名不再碰撞；每状态唯一操作按钮（不再同时出现暂停/继续）。
+  7. 交付记录：本文档、CURRENT_STATE、DECISIONS、ROADMAP、HANDOFF、README 同步；PR 描述测试数更新为 `350 passed`（远端 CI）。
+- 新增回归：多文件并发 403 共享单次刷新、`retry_count=1` 新 URL 尝试、二次 403 fail-closed、日志脱敏、unknown+known 混合进度、非阻塞队列刷新 + generation、单调度器真实 asyncio、文件树重复名/错误/.part、每状态唯一按钮。
+- 全量回归：`367 passed, 3 skipped`；3 项 skipped 均为 Windows 无法创建符号链接。
+- 仍保持 Draft；真实 GUI/DPI/托盘验收、9 任务约 2700 文件 30 分钟压力与 300 个集中 400 场景在通过前保持 NO-GO。

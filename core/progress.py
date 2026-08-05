@@ -38,15 +38,37 @@ class VerifiedDownloadSummary:
 
     @property
     def progress(self) -> float:
-        """Ratio of verified bytes to expected bytes, clamped to [0, 1]."""
-        expected_total = sum(
-            max(0, file.expected_bytes) for file in self._files
-        )
-        if expected_total <= 0:
-            if self.total_files > 0 and self.complete_files >= self.total_files:
-                return 1.0
-            return 0.0
-        return max(0.0, min(1.0, self.verified_bytes / expected_total))
+        """Truthful ratio, never pushed to 100% by unknown-size files.
+
+        Only files with a known expected size contribute to the byte ratio:
+        unknown-size (``expected == 0``) content never enters the numerator,
+        so it cannot inflate the completion of files whose size is known.
+        When there are no known-size files at all, fall back to the fraction of
+        observed complete files.
+        """
+        known_verified = 0
+        known_expected = 0
+        for file in self._files:
+            expected = max(0, int(file.expected_bytes or 0))
+            if expected <= 0:
+                continue
+            known_expected += expected
+            if file.final_bytes is not None:
+                final = max(0, int(file.final_bytes))
+                if final == expected:
+                    known_verified += final
+                elif final > expected:
+                    # Oversized final file is anomalous: not trusted.
+                    pass
+                else:
+                    known_verified += final
+            elif file.part_bytes is not None:
+                known_verified += min(max(0, int(file.part_bytes)), expected)
+        if known_expected > 0:
+            return max(0.0, min(1.0, known_verified / known_expected))
+        if self.total_files > 0 and self.complete_files >= self.total_files:
+            return 1.0
+        return 0.0
 
     @property
     def has_overage(self) -> bool:

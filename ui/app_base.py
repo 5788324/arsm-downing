@@ -91,6 +91,11 @@ class AppController:
         # Per-dispatch budgets: yield back to Flet's event loop once exceeded.
         self._ui_control_budget = 256
         self._ui_dispatch_budget_ms = 50.0
+        # Single-scheduler guard for the UI drain: the background poller and the
+        # drain task itself both claim scheduling through this lock, so at most
+        # one ``_process_ui_queue`` is ever running or scheduled at a time.
+        self._ui_schedule_lock = threading.Lock()
+        self.ui_processing = False
         self._ui_last_tick = time.time()
         self.shutdown_signal = ShutdownSignal(
             lambda: self.ui_queue.put(("installer_shutdown",))
@@ -274,13 +279,30 @@ class AppController:
         def poll_loop():
             while not self._ui_poller_stop.wait(0.1):
                 try:
-                    if not self.ui_processing and self._ui_has_pending_work():
-                        self.ui_processing = True
-                        self.page.run_task(self._process_ui_queue)
+                    # At most one drain runs at a time; the poller is just one
+                    # of the two schedulers (the drain may re-schedule itself).
+                    self._schedule_ui_if_pending()
                 except Exception as e:
                     logging.debug(f"UI poller error: {e}")
 
         threading.Thread(target=poll_loop, daemon=True).start()
+
+    def _schedule_ui_if_pending(self) -> bool:
+        """Atomically claim and schedule exactly one UI drain.
+
+        Returns True if this call scheduled a drain.  The background poller and
+        ``_process_ui_queue`` (which may re-schedule itself) share this guard,
+        so duplicate/concurrent drains are impossible.
+        """
+        with self._ui_schedule_lock:
+            if self.ui_processing:
+                return False
+            if not self._ui_has_pending_work():
+                return False
+            if not self._schedule_ui_processing():
+                return False
+            self.ui_processing = True
+            return True
 
     def _ui_has_pending_work(self) -> bool:
         """True when either control messages or coalesced progress are waiting."""
@@ -292,14 +314,16 @@ class AppController:
         return False
 
     async def _process_ui_queue(self):
-        """Process pending UI work under a bounded budget (P0-A).
+        """Process pending UI work under count + time double budget (P0-A).
 
         Control messages (close/tray/status/snack) are consumed first so they
-        are never starved by progress traffic.  Progress is then applied from
-        one coalesced snapshot.  If new work is still pending after the budget
-        is spent, the method yields to Flet's event loop and re-schedules
-        itself — a perpetually-fed queue can never keep ``_process_ui_queue``
-        from returning.
+        are never starved by progress traffic; both the control loop and the
+        progress batch check the 50ms time budget.  Progress is applied from one
+        coalesced snapshot; anything left over is requeued.  If new work is
+        still pending after the budget, the method yields to Flet's event loop
+        (``await asyncio.sleep(0)``) and re-schedules itself through the same
+        single-scheduler guard — a perpetually-fed queue can never keep
+        ``_process_ui_queue`` from returning or spawn a second concurrent drain.
         """
         started = time.perf_counter()
         control_processed = 0
@@ -309,6 +333,8 @@ class AppController:
         try:
             control_budget = getattr(self, "_ui_control_budget", 256)
             while control_processed < control_budget:
+                if (time.perf_counter() - started) * 1000.0 > budget_ms:
+                    break
                 try:
                     msg = self.ui_queue.get_nowait()
                 except queue.Empty:
@@ -333,8 +359,6 @@ class AppController:
                     dispatcher.requeue(remaining)
         except Exception as exc:
             logging.debug("UI queue processing error: %s", exc)
-        finally:
-            self.ui_processing = False
 
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         metrics = getattr(self, "ui_metrics", None)
@@ -353,18 +377,29 @@ class AppController:
                 metrics["coalesced"] = dispatcher.coalesced
         self._ui_last_tick = time.time()
 
-        # Yield back to Flet and re-schedule only if more work is already waiting.
-        # ``ui_processing`` stays False so the poller remains the single
-        # scheduler; duplicate scheduling is harmless because drains are atomic.
+        # Yield back to Flet and re-schedule only if more work is already
+        # waiting.  The flag stays True while we re-schedule, so the background
+        # poller cannot start a second concurrent drain; it is cleared only when
+        # there is genuinely nothing left to process.
         if control_processed or progress_processed or protected_processed:
             if self._ui_has_pending_work():
-                self._schedule_ui_processing()
+                await asyncio.sleep(0)
+                with self._ui_schedule_lock:
+                    if self._schedule_ui_processing():
+                        self.ui_processing = True
+                    else:
+                        self.ui_processing = False
+                return
+        with self._ui_schedule_lock:
+            self.ui_processing = False
 
-    def _schedule_ui_processing(self) -> None:
+    def _schedule_ui_processing(self) -> bool:
         try:
             self.page.run_task(self._process_ui_queue)
+            return True
         except Exception:
             logging.debug("Unable to re-schedule UI processing", exc_info=True)
+            return False
 
     def _apply_progress_event(self, event) -> None:
         try:

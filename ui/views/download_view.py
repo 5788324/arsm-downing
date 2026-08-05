@@ -52,9 +52,14 @@ class DownloadView(BaseDownloadView):
         self._selected_rj: str | None = None
         self._card_controls: Dict[str, Any] = {}      # rj_id -> stable card
         self._detail_rows: Dict[str, Any] = {}         # file key -> stable row
+        self._detail_rows_by_title: Dict[str, Any] = {}  # basename -> row
         self._detail_page = 1
         self._detail_page_size = 200
         self._active_ns: Dict[str, str] = {}
+        # Issue #3 (review): queue snapshots are fetched + disk-verified off the
+        # UI thread; generation drops stale results.
+        self._queue_generation = 0
+        self._queue_refresh_pending = False
         super().__init__(app_controller)
 
         self.btn_resume_all.text = "全部继续"
@@ -188,17 +193,35 @@ class DownloadView(BaseDownloadView):
             self.refresh_queue_async()
 
     def load_queue(self):
-        """Initial synchronous snapshot; called by the base constructor."""
+        """Initial queue snapshot; called by the base constructor.
+
+        The DB fetch + disk verification is dispatched off the UI thread and
+        the result marshalled back through the controller's UI queue, so a large
+        work (thousands of files) never blocks Flet during startup.
+        """
         self._sync_queue_file()
-        try:
-            model = self.download_service.apply_disk_verification(
+        self._queue_generation += 1
+        generation = self._queue_generation
+        status_filter = self.queue_filter
+        page = self.queue_page
+        page_size = self.queue_page_size
+
+        def query():
+            return self.download_service.apply_disk_verification(
                 self.download_service.fetch_queue_page(
-                    status_filter=self.queue_filter,
-                    page=self.queue_page,
-                    page_size=self.queue_page_size,
+                    status_filter=status_filter,
+                    page=page,
+                    page_size=page_size,
                 )
             )
+
+        def render(model):
+            if generation != self._queue_generation:
+                return
             self._apply_queue_page(model)
+
+        try:
+            self.app_controller.run_blocking(query, render)
         except Exception as exc:
             logging.error("queue snapshot load failed: %s", exc, exc_info=True)
 
@@ -208,11 +231,30 @@ class DownloadView(BaseDownloadView):
         self.refresh_queue_async(force=True)
 
     def refresh_queue_async(self, *, reset_page: bool = False, force: bool = False):
+        """Fetch + disk-verify the queue OFF the UI thread (review #3).
+
+        ``fetch_queue_page`` + ``apply_disk_verification`` (per-file ``stat``)
+        run through ``app_controller.run_blocking`` (``asyncio.to_thread``); the
+        result is marshalled back to the UI thread and dropped if a newer
+        refresh superseded it (generation token).  At most one query is in
+        flight; extra requests are coalesced into one pending relaunch.
+        """
         if reset_page:
             self.queue_page = 1
-        if (not self._active and not force) or self._queue_refreshing:
+        if not self._active and not force:
             return
+        self._queue_generation += 1
+        generation = self._queue_generation
+        if self._queue_refreshing:
+            # A query is already in flight; remember a newer snapshot is wanted
+            # and let the in-flight callback relaunch with the latest state.
+            self._queue_refresh_pending = True
+            return
+        self._launch_queue_query(generation)
+
+    def _launch_queue_query(self, generation: int) -> None:
         self._queue_refreshing = True
+        self._queue_refresh_pending = False
         if hasattr(self, "queue_refresh_btn"):
             self.queue_refresh_btn.disabled = True
 
@@ -230,15 +272,20 @@ class DownloadView(BaseDownloadView):
             )
 
         def render(result):
+            if generation != self._queue_generation:
+                # Superseded by a newer request: never apply a stale snapshot.
+                self._queue_refreshing = False
+                if self._queue_refresh_pending:
+                    self.refresh_queue_async(force=True)
+                return
             self._queue_refreshing = False
-            if hasattr(self, "queue_refresh_btn"):
-                self.queue_refresh_btn.disabled = False
             self._apply_queue_page(result)
             self._safe_update(getattr(self, "queue_refresh_btn", None))
-
+            if self._queue_refresh_pending:
+                self.refresh_queue_async(force=True)
 
         try:
-            render(query())
+            self.app_controller.run_blocking(query, render)
         except Exception as exc:
             self._queue_refreshing = False
             if hasattr(self, "queue_refresh_btn"):
@@ -541,8 +588,18 @@ class DownloadView(BaseDownloadView):
         data["status_text"].color = colors.get(ns, ACCENT_PRIMARY)
 
         prog = self._get_progress_value(data)
-        if ns in {"completed", "registered", "verified"}:
+        if ns in {"completed", "verified"}:
             prog = 1.0
+        elif ns == "registered":
+            # Legacy "registered" row: only 100% when disk verification confirms
+            # every expected file is really on disk.
+            if isinstance(snapshot, DownloadQueueItem):
+                verified_files = snapshot.verified_files
+                file_count = snapshot.file_count
+                if verified_files is not None and file_count:
+                    prog = min(1.0, verified_files / file_count)
+                elif verified_files is not None and verified_files == 0:
+                    prog = 0.0
         data["prog_bar"].value = prog
         data["pct_text"].value = f"{prog * 100:.0f}%"
 
@@ -551,10 +608,14 @@ class DownloadView(BaseDownloadView):
             self._active_ns[rj_id] = ns
             data["actions_row"].controls = self._build_compact_actions(ns, rj_id)
 
-        total = getattr(snapshot, "total_bytes", 0) if isinstance(
-            snapshot, DownloadQueueItem) else 0
-        downloaded = getattr(snapshot, "downloaded_bytes", 0) if isinstance(
-            snapshot, DownloadQueueItem) else 0
+        # Display the disk-verified byte count, never the DB snapshot bytes
+        # (which can be stale/overstated for registered or truncated files).
+        if isinstance(snapshot, DownloadQueueItem):
+            verified = snapshot.verified_bytes
+            downloaded = verified if verified is not None else snapshot.downloaded_bytes
+            total = snapshot.total_bytes
+        else:
+            downloaded = total = 0
         data["size_text"].value = (
             f"{self._format_bytes(downloaded)} / {self._format_bytes(total)}"
         ) if (total or downloaded) else ""
@@ -577,46 +638,58 @@ class DownloadView(BaseDownloadView):
         )
 
     def _build_compact_actions(self, ns: str, rj_id: str) -> list:
+        """One action set per state (review #6): a card never shows both
+        "暂停" and "继续" at once."""
         actions = []
         push = actions.append
-        if ns in {"downloading", "queued", "resuming", "paused"}:
+
+        def open_btn(tooltip="打开目录"):
+            return ft.IconButton(
+                icon=ft.Icons.FOLDER_OPEN, tooltip=tooltip,
+                icon_color=ACCENT_SECONDARY,
+                on_click=lambda e, r=rj_id: self._open_work_dir(r))
+
+        def remove_btn(tooltip="移除"):
+            return ft.IconButton(
+                icon=ft.Icons.DELETE_OUTLINE, tooltip=tooltip,
+                icon_color=ERROR,
+                on_click=lambda e, r=rj_id: self.cancel_item(r))
+
+        if ns in {"downloading", "queued", "resuming"}:
             push(ft.IconButton(icon=ft.Icons.PAUSE, tooltip="暂停",
                                icon_color=ACCENT_PRIMARY,
                                on_click=lambda e, r=rj_id: self.toggle_pause(r)))
-        if ns in {"queued", "resuming", "paused"}:
-            push(ft.IconButton(icon=ft.Icons.PLAY_ARROW, tooltip="继续",
+            push(open_btn())
+            push(remove_btn())
+        elif ns == "paused":
+            push(ft.IconButton(icon=ft.Icons.PLAY_ARROW, tooltip="继续下载",
                                icon_color=SUCCESS,
                                on_click=lambda e, r=rj_id: self.toggle_pause(r)))
-        if ns in ("paused", "failed"):
-            push(ft.IconButton(icon=ft.Icons.FOLDER_OPEN, tooltip="打开目录",
-                               icon_color=ACCENT_SECONDARY,
-                               on_click=lambda e, r=rj_id: self._open_work_dir(r)))
-            push(ft.IconButton(icon=ft.Icons.REPLAY, tooltip="重试",
+            push(open_btn())
+            push(remove_btn())
+        elif ns == "failed":
+            push(ft.IconButton(icon=ft.Icons.REPLAY, tooltip="重试下载",
                                icon_color=ACCENT_PRIMARY,
-                               on_click=lambda e, r=rj_id: self._retry_failed(r)
-                               if ns == "failed" else self.toggle_pause(r)))
-        if ns == "downloading":
-            push(ft.IconButton(icon=ft.Icons.FOLDER_OPEN, tooltip="打开目录",
-                               icon_color=ACCENT_SECONDARY,
-                               on_click=lambda e, r=rj_id: self._open_work_dir(r)))
-        if ns in ("failed", "metadata_failed", "no_pending", "duplicate", "cancelled"):
+                               on_click=lambda e, r=rj_id: self._retry_failed(r)))
+            push(open_btn())
+            push(remove_btn())
+        elif ns in {"metadata_failed", "no_pending"}:
             push(ft.IconButton(icon=ft.Icons.REFRESH, tooltip="重新准备",
                                icon_color=ACCENT_PRIMARY,
                                on_click=lambda e, r=rj_id: self._retry_prepare(r)))
-        if ns == "duplicate":
+            push(open_btn())
+            push(remove_btn())
+        elif ns == "duplicate":
             push(ft.IconButton(icon=ft.Icons.FORCE_GRAPH_3, tooltip="仍然下载",
                                icon_color=WARNING,
                                on_click=lambda e, r=rj_id: self._force_download(r)))
-        if ns == "cancelled":
+            push(remove_btn("清理"))
+        elif ns == "cancelled":
             push(ft.IconButton(icon=ft.Icons.REPLAY, tooltip="继续已取消任务",
                                icon_color=SUCCESS,
                                on_click=lambda e, r=rj_id:
                                    self.app_controller.resume_cancelled_download(r)))
-        if ns in ("downloading", "queued", "resuming", "paused", "failed",
-                  "metadata_failed", "no_pending", "duplicate"):
-            push(ft.IconButton(icon=ft.Icons.DELETE_OUTLINE, tooltip="移除",
-                               icon_color=ERROR,
-                               on_click=lambda e, r=rj_id: self.cancel_item(r)))
+            push(open_btn())
         return actions
 
     @staticmethod
@@ -661,34 +734,98 @@ class DownloadView(BaseDownloadView):
             self._safe_update(self.detail_panel)
 
     def _file_details(self, rj_id: str) -> list:
-        """Flat, read-only file list for the right panel."""
+        """File tree rows for the right panel.
+
+        Keys are normalized relative paths (never bare titles) so duplicate
+        filenames cannot collide.  Per-file status, failure reason and a
+        ``.part`` recovery marker are derived from the download state — no disk
+        ``stat`` happens on the UI thread (review #3 / #6).
+        """
         data = self.active_downloads.get(rj_id, {})
+        snapshot = data.get("snapshot")
+        root = None
+        if isinstance(snapshot, DownloadQueueItem) and snapshot.local_path:
+            try:
+                root = Path(snapshot.local_path).resolve()
+            except OSError:
+                root = Path(snapshot.local_path)
+
+        seen: dict = {}
+        rows: list = []
+        db_rows = self._db_file_rows(rj_id)
+        for db in db_rows:
+            local = str(db.get("local_path") or "")
+            rel = self._relative_path(local, root) or [str(db.get("track_title") or "")]
+            key = self._unique_key(seen, "/".join(rel))
+            rows.append({
+                "key": key, "rel": rel,
+                "title": str(db.get("track_title") or rel[-1]),
+                "status": str(db.get("status") or ""),
+                "error": str(db.get("error") or ""),
+                "downloaded": int(db.get("downloaded_bytes") or 0),
+                "total": int(db.get("total_bytes") or 0),
+                "has_part": self._implies_part(
+                    str(db.get("status") or ""),
+                    int(db.get("downloaded_bytes") or 0),
+                    int(db.get("total_bytes") or 0)),
+            })
+
+        # Live in-memory progress overlays the DB rows for the active RJ.
         tracks = data.get("tracks", {})
-        if not tracks:
-            getter = getattr(
-                getattr(self.app_controller, "orc", None),
-                "get_track_detail_for_ui", None)
-            if callable(getter):
-                try:
-                    rows = getter(rj_id)
-                except Exception:
-                    rows = []
-                return [
-                    {"key": str(row.get("title") or f"file-{i}"),
-                     "title": str(row.get("title", "")),
-                     "downloaded": int(row.get("downloaded", 0) or 0),
-                     "total": int(row.get("total", 0) or 0),
-                     "status": str(row.get("status", ""))}
-                    for i, row in enumerate(rows)
-                ]
+        for title, info in tracks.items():
+            rel = [str(title)]
+            key = self._unique_key(seen, "/".join(rel))
+            idx = None
+            for i, existing in enumerate(rows):
+                if existing["rel"] == rel:
+                    idx = i
+                    break
+            if idx is None:
+                rows.append({"key": key, "rel": rel, "title": str(title),
+                             "status": "", "error": "", "has_part": False})
+                idx = len(rows) - 1
+            rows[idx].update(
+                status=str(info.get("status", rows[idx].get("status", ""))),
+                downloaded=int(info.get("downloaded", 0) or 0),
+                total=int(info.get("total", 0) or 0),
+            )
+        return rows
+
+    def _db_file_rows(self, rj_id: str) -> list:
+        """One indexed SELECT for the selected RJ's download rows (no stats)."""
+        try:
+            cursor = self.download_service.connection.execute(
+                "SELECT track_title, status, downloaded_bytes, total_bytes, "
+                "COALESCE(local_path, '') AS local_path, "
+                "COALESCE(error, '') AS error "
+                "FROM downloads WHERE rj_id = ?", (rj_id,))
+            return [dict(row) for row in cursor.fetchall()]
+        except Exception:
             return []
-        return [
-            {"key": title, "title": title,
-             "downloaded": int(info.get("downloaded", 0) or 0),
-             "total": int(info.get("total", 0) or 0),
-             "status": str(info.get("status", ""))}
-            for title, info in tracks.items()
-        ]
+
+    @staticmethod
+    def _relative_path(local: str, root) -> list | None:
+        if not root or not local:
+            return None
+        try:
+            path = Path(local).resolve()
+            return list(path.relative_to(root).parts)
+        except (OSError, ValueError):
+            return None
+
+    @staticmethod
+    def _unique_key(seen: dict, rel: str) -> str:
+        rel = rel or "unknown"
+        count = seen.get(rel, 0)
+        seen[rel] = count + 1
+        return rel if count == 0 else f"{rel}#{count}"
+
+    @staticmethod
+    def _implies_part(status: str, downloaded: int, total: int) -> bool:
+        """A resumable partial is stored in ``.part`` for these states."""
+        return (str(status).lower() in {"downloading", "paused", "resuming",
+                                        "queued", "failed"}
+                and downloaded > 0 and (total <= 0 or downloaded < total))
 
     def _render_detail_panel(self, rj_id: str) -> None:
         data = self.active_downloads.get(rj_id)
@@ -701,7 +838,8 @@ class DownloadView(BaseDownloadView):
                 human = f"{human}  ·  {snapshot.circle}"
             self.detail_title.value = human
             total = snapshot.total_bytes
-            downloaded = snapshot.downloaded_bytes
+            verified = snapshot.verified_bytes
+            downloaded = verified if verified is not None else snapshot.downloaded_bytes
             file_count = snapshot.file_count
         else:
             self.detail_title.value = rj_id
@@ -715,26 +853,51 @@ class DownloadView(BaseDownloadView):
         details = self._file_details(rj_id)
         page_size = max(1, int(self._detail_page_size))
         start = (self._detail_page - 1) * page_size
-        page_slice = details[start:start + page_size]
+        page_files = details[start:start + page_size]
         self.detail_header_more.value = (
-            f"{start + 1}–{start + len(page_slice)} / {len(details)} 个文件"
+            f"{start + 1}–{start + len(page_files)} / {len(details)} 个文件"
             if details else "暂无文件")
         self.detail_prev_btn.disabled = self._detail_page <= 1
         self.detail_next_btn.disabled = start + page_size >= len(details)
 
-        for offset, detail in enumerate(page_slice):
-            key = detail["key"]
+        # Build display entries: folder headers + file rows (directory tree).
+        entries: list[tuple] = []
+        seen_folders: set = set()
+        for offset, detail in enumerate(page_files):
+            rel = detail["rel"]
+            for depth in range(1, len(rel)):
+                folder = "/".join(rel[:depth])
+                if folder in seen_folders:
+                    continue
+                seen_folders.add(folder)
+                entries.append(("folder", {
+                    "key": f"folder:{folder}", "title": rel[depth - 1],
+                    "depth": depth,
+                }))
+            entries.append(("file", detail))
+
+        controls: list = []
+        for kind, payload in entries:
+            key = payload["key"]
             row = self._detail_rows.get(key)
             if row is None:
-                row = self._make_detail_row()
+                row = self._make_detail_row(kind)
                 self._detail_rows[key] = row
-            self._update_detail_row(key, detail, start + offset + 1)
-        self.detail_scroll.controls[:] = [
-            self._detail_rows[d["key"]] for d in page_slice
-            if d["key"] in self._detail_rows
-        ]
+            if kind == "folder":
+                self._update_folder_row(key, payload)
+            else:
+                self._update_detail_row(key, payload)
+                self._detail_rows_by_title[payload["title"]] = row
+            controls.append(row)
+        self.detail_scroll.controls[:] = controls
 
-    def _make_detail_row(self):
+    def _make_detail_row(self, kind: str = "file"):
+        if kind == "folder":
+            return ft.Row([
+                ft.Text("", size=10, color="grey"),
+                ft.Text("", size=11, color=ACCENT_SECONDARY,
+                        weight=ft.FontWeight.W_600, expand=True),
+            ], spacing=6)
         return ft.Row([
             ft.Text("", size=10, color="grey"),
             ft.Text("", size=11, color=ACCENT_SECONDARY, max_lines=1,
@@ -745,18 +908,35 @@ class DownloadView(BaseDownloadView):
             ft.Text("", size=10, color="grey"),
         ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
-    def _update_detail_row(self, key: str, detail: dict, index: int) -> None:
+    def _update_folder_row(self, key: str, detail: dict) -> None:
         row = self._detail_rows.get(key)
         if row is None:
             return
-        row.controls[0].value = str(index)
+        indent = "  " * max(0, int(detail.get("depth", 1)) - 1)
+        row.controls[0].value = indent + "▸"
+        row.controls[1].value = detail["title"]
+
+    def _update_detail_row(self, key: str, detail: dict) -> None:
+        row = self._detail_rows.get(key)
+        if row is None:
+            return
+        depth = len(detail.get("rel", [detail["title"]]))
+        row.controls[0].value = "  " * max(0, depth - 1)
         row.controls[1].value = detail["title"]
         status = detail.get("status", "")
-        row.controls[2].value = status
-        if status in {"completed", "registered", "verified"}:
+        label = status
+        if detail.get("has_part"):
+            label += " · .part"
+        error = str(detail.get("error") or "")
+        if error:
+            label += " · " + error[:28]
+        row.controls[2].value = label
+        if status in {"completed", "verified"}:
             row.controls[2].color = SUCCESS
-        elif status == "failed":
+        elif status in {"failed", "metadata_failed", "no_pending"}:
             row.controls[2].color = ERROR
+        elif status in {"paused", "cancelled"}:
+            row.controls[2].color = WARNING
         else:
             row.controls[2].color = ACCENT_SECONDARY
         total = int(detail.get("total", 0) or 0)
@@ -814,7 +994,7 @@ class DownloadView(BaseDownloadView):
             self._live_update_detail_row(event)
 
     def _live_update_detail_row(self, event):
-        row = self._detail_rows.get(event.track_title)
+        row = self._detail_rows_by_title.get(event.track_title)
         if row is not None:
             total = max(0, int(event.total_bytes or 0))
             downloaded = max(0, int(event.downloaded_bytes or 0))
@@ -822,8 +1002,10 @@ class DownloadView(BaseDownloadView):
             status = event.status
             row.controls[2].value = status
             row.controls[2].color = (
-                SUCCESS if status in {"completed", "registered", "verified"}
-                else ERROR if status == "failed" else ACCENT_SECONDARY)
+                SUCCESS if status in {"completed", "verified"}
+                else ERROR if status in {"failed", "metadata_failed", "no_pending"}
+                else WARNING if status in {"paused", "cancelled"}
+                else ACCENT_SECONDARY)
             row.controls[3].value = prog
             row.controls[4].value = f"{prog * 100:.0f}%"
             self._safe_update(row)

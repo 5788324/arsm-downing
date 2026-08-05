@@ -124,10 +124,12 @@ class _Page:
 
 
 def test_close_queue_uses_flet_027_window_api() -> None:
+    import threading
     controller = BaseAppController.__new__(BaseAppController)
     controller.page = _Page()
     controller.ui_queue = queue.Queue()
     controller.ui_processing = False
+    controller._ui_schedule_lock = threading.Lock()
     controller._ui_poller_stop = type("Stop", (), {"set": lambda self: None})()
     controller.ui_queue.put(("close_window", None))
 

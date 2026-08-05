@@ -238,3 +238,33 @@ Windows 修复前基线：231 passed，3 skipped
 - Windows 隔离验收：安装、启动、--shutdown 协作退出、运行中卸载、用户数据保留及零残留进程均通过。
 - 最终安装器 SHA-256：2a7df244d6c07d289c7dea3a9788a271c48b6eb33f296b4a5de81e8c27b171e6。
 - 当前状态：等待 Git PR、CI、合并、v1.0.0 标签和正式 GitHub Release；正式 E:\arsm 与既有运行数据零接触。
+
+## 2026-08-06：v1.0.1 P0 修复（Issue #20 / #19）——PR #21 Draft
+
+> 更新时间：2026-08-06
+> 分支：`fix/v1.0.1-download-freeze-ui`（head `98e3b07` 之前，修复后已新增提交）
+> 当前版本：`1.0.1`（Draft，未转 Ready，未发布）
+> 当前阶段：`PR #21 代码审查 NO-GO 已修复，待真实 GUI/压力验收；NO-GO`
+
+### 已修复的 7 个审查阻塞
+
+1. **Signed URL 竞态**：`SignedUrlRefresher.ensure_refreshed_once()` 真正单飞——in-flight 共用同一 future，成功结果复用，失败返回同一失败；并发 403 文件不再因计数猜测误判失败。
+2. **二次签名失效**：refresh budget 与 transport retry budget 分离，每文件 `refresh_used`；新 URL 至少尝试一次，二次 400/401/403 立即 fail-closed；`retry_count=1` 下新 URL 仍被尝试；日志不再泄漏 `fresh_url` 签名参数。
+3. **磁盘核验离开 UI 线程**：`load_queue`/`refresh_queue_async` 经 `run_blocking`（`asyncio.to_thread`）执行；generation token 丢弃过期快照，多余请求合并为一次重拉。
+4. **真实进度**：UI 容量/摘要使用 `verified_bytes`；`registered` 不再当作终态 100%/绿色；orchestrator 成功保持 `completed`；`verified_download_progress` 的 unknown-size 字节不再污染已知文件进度分母。
+5. **UI 调度**：`_ui_schedule_lock` 单调度器守卫 + 数量/时间双预算 + `await asyncio.sleep(0)`；真实 asyncio 测试证明任意时刻最多一个 drain、backlog 归零。
+6. **#19 详情面板**：相对路径 key 的文件树（目录缩进）、失败原因、`.part` 状态；重复文件名不碰撞；每状态唯一操作按钮。
+7. **交付记录**：本文档、WORKLOG、DECISIONS、ROADMAP、HANDOFF、README 已同步；PR 描述测试数更新。
+
+### 当前验证
+
+- 全量回归：`367 passed, 3 skipped`（3 项为 Windows 符号链接不可用）。
+- 新增测试：并发单飞刷新、`retry_count=1`、二次 403 fail-closed、日志脱敏、unknown+known 混合进度、非阻塞队列刷新 + generation、单调度器真实 asyncio、文件树与按钮。
+- 已构建 `ARSM-Suite-1.0.1-windows-x64.zip`（SHA-256 `3138b86b2cbd9b790d78b1c2519bf44271c0227791171238056a3b324a1a3172`）。
+
+### 待验收（通过前 NO-GO）
+
+- 真实 GUI / DPI 125–200% / 托盘 / 退出；
+- 9 任务约 2700 文件 30 分钟压力验收；
+- 300 个集中 HTTP 400 场景；
+- 远端完整 pytest/CI、release_check、PyInstaller。
