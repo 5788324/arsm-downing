@@ -10,6 +10,7 @@ action buttons, verified-byte display and the off-UI-thread queue refresh.
 from pathlib import Path
 from types import SimpleNamespace
 
+import flet as ft
 import pytest
 
 import ui.views.download_view as download_module
@@ -577,3 +578,167 @@ def test_registered_incomplete_card_is_not_green_100(view_controller, tmp_path) 
     view._update_compact_card("RJ00000002")
     assert data["prog_bar"].value == 0.0
     assert data["status_text"].color != SUCCESS
+
+
+# ══════════════════════════════════════════════
+#  Review round 4: whole-work live total, mixed completion,
+#  partial resume path, working pagination
+# ══════════════════════════════════════════════
+
+def _progress_event(rj_id, track_id, title, downloaded, total=100):
+    return ProgressEvent(
+        rj_id=rj_id, track_id=track_id, track_title=title,
+        downloaded_bytes=downloaded, total_bytes=total,
+        percent=downloaded * 100 / total if total else 0.0,
+        work_speed_bps=0.0, track_speed_bps=0.0, global_speed_bps=0.0,
+        eta_seconds=None, status="downloading",
+    )
+
+
+def test_resume_shows_whole_work_progress_never_remaining_only(view_controller) -> None:
+    """Review #4: nine completed files + one resumed file must render the WORK
+    total (90% → 95% → 100%), not just the remaining file's 0% → 100%."""
+    view, controller = view_controller
+    rj = "RJ00000002"
+    work_path = tmp = Path(view.app_controller.config.output_dir)
+    work_path = work_path / "RJ00000002"
+    work_path.mkdir(parents=True, exist_ok=True)
+    meta = WorkMetadata(
+        rj_id=rj, title="Resume T", circle="", cv=[], tags=[],
+        price=0, dl_count=0, source_url="", rating=0.0,
+        release_date="", cover_url="")
+    controller.db.register(meta, 900, work_path, status="downloading")
+    for i in range(9):
+        fp = work_path / f"f{i}.mp3"
+        fp.write_bytes(b"x" * 100)
+        controller.db.upsert_download(
+            f"r{i}", rj, f"f{i}.mp3", str(fp), "completed", 100, 100)
+    controller.db.upsert_download(
+        "r-resume", rj, "resume.mp3", str(work_path / "resume.mp3"),
+        "downloading", 0, 100)
+    controller.db.conn.commit()
+
+    view.refresh_queue_async(force=True)
+    view.update_work_status(rj, "Downloading")  # new generation
+    data = view.active_downloads[rj]
+
+    view.update_track_progress(_progress_event(rj, "r-track", "resume.mp3", 0))
+    assert view._get_progress_value(data) == 0.9
+    view.update_track_progress(_progress_event(rj, "r-track", "resume.mp3", 50))
+    assert view._get_progress_value(data) == 0.95
+    view.update_track_progress(_progress_event(rj, "r-track", "resume.mp3", 100))
+    assert view._get_progress_value(data) == 1.0
+    # Never 0% — the already-complete files stay in the baseline.
+    assert view._get_progress_value(data) != 0.0
+
+
+def test_known_complete_plus_unknown_missing_not_confirmed_complete(tmp_path) -> None:
+    """Review #4: known-size file complete + unknown-size file missing must NOT
+    keep a registered work terminal — it is downgraded to partial."""
+    from core.database import LibraryVault
+    from core.services.download_service import DownloadService
+
+    vault = LibraryVault(tmp_path / "history.db")
+    try:
+        work_path = tmp_path / "RJ00000002"
+        work_path.mkdir(parents=True, exist_ok=True)
+        (work_path / "a.mp3").write_bytes(b"x" * 100)
+        meta = WorkMetadata(
+            rj_id="RJ00000002", title="Mixed", circle="", cv=[], tags=[],
+            price=0, dl_count=0, source_url="", rating=0.0,
+            release_date="", cover_url="")
+        vault.register(meta, 100, work_path, status="registered")
+        vault.upsert_download(
+            "d-a", "RJ00000002", "a.mp3", str(work_path / "a.mp3"),
+            "registered", 100, 100)
+        # Unknown-size expected file B is MISSING on disk.
+        vault.upsert_download(
+            "d-b", "RJ00000002", "b.mp3", str(work_path / "b.mp3"),
+            "registered", 0, 0)
+        service = DownloadService(vault, output_dir=tmp_path)
+        page = service.apply_disk_verification(
+            service.fetch_queue_page(status_filter="working"),
+            status_filter="working")
+        item = {i.rj_id: i for i in page.items}.get("RJ00000002")
+        assert item is not None
+        assert item.queue_state == "partial"
+        assert item.is_terminal is False
+    finally:
+        vault.close()
+
+
+def test_partial_card_button_uses_resume_reconcile_not_prepare(
+    view_controller, tmp_path,
+) -> None:
+    """Review #4: a disk-incomplete registered work (also in library_index)
+    resolves through resume_download (reconcile), never the prepare duplicate
+    guard."""
+    view, controller = view_controller
+    rj = "RJ00000002"
+    work_path = tmp_path / "RJ00000002"
+    meta = WorkMetadata(
+        rj_id=rj, title="Reg T", circle="", cv=[], tags=[],
+        price=0, dl_count=0, source_url="", rating=0.0,
+        release_date="", cover_url="")
+    controller.db.register(meta, 100, work_path, status="registered")
+    controller.db.upsert_download(
+        "d1", rj, "a.mp3", str(work_path / "a.mp3"), "registered", 100, 100)
+    # Present in library_index — the prepare duplicate guard would block it.
+    controller.db.conn.execute(
+        "INSERT INTO library_items(rj_id, folder_path, folder_name) "
+        "VALUES (?, ?, ?)",
+        (rj, str(work_path), "Reg T"))
+    controller.db.conn.commit()
+
+    view.refresh_queue_async(force=True)
+    data = view.active_downloads[rj]
+    assert data["snapshot"].queue_state == "partial"
+
+    actions = view._build_compact_actions("partial", rj)
+    play = next(a for a in actions if a.icon == ft.Icons.PLAY_ARROW)
+    play.on_click(None)
+    assert any(call[0] == "resume" for call in controller.calls)
+    assert not any(call[0] == "start" for call in controller.calls)
+
+
+def test_working_page_shows_incomplete_after_complete_candidates(tmp_path) -> None:
+    """Review #4: 24 complete registered works then 1 incomplete — verification
+    runs BEFORE pagination so the incomplete work appears on the default page."""
+    from core.database import LibraryVault
+    from core.services.download_service import DownloadService
+
+    vault = LibraryVault(tmp_path / "history.db")
+    try:
+        for i in range(24):
+            rj = f"RJ{i + 1:08d}"
+            wp = tmp_path / rj
+            wp.mkdir(parents=True, exist_ok=True)
+            (wp / "a.mp3").write_bytes(b"x" * 100)
+            meta = WorkMetadata(
+                rj_id=rj, title=f"W{i}", circle="", cv=[], tags=[],
+                price=0, dl_count=0, source_url="", rating=0.0,
+                release_date="", cover_url="")
+            vault.register(meta, 100, wp, status="registered")
+            vault.upsert_download(
+                f"d{i}", rj, "a.mp3", str(wp / "a.mp3"),
+                "registered", 100, 100)
+        incomplete = "RJ00999999"
+        wp = tmp_path / incomplete
+        wp.mkdir(parents=True, exist_ok=True)  # dir exists, file missing
+        meta = WorkMetadata(
+            rj_id=incomplete, title="Incomplete", circle="", cv=[], tags=[],
+            price=0, dl_count=0, source_url="", rating=0.0,
+            release_date="", cover_url="")
+        vault.register(meta, 100, wp, status="registered")
+        vault.upsert_download(
+            "dx", incomplete, "a.mp3", str(wp / "a.mp3"),
+            "registered", 100, 100)
+
+        service = DownloadService(vault, output_dir=tmp_path)
+        page = service.fetch_working_page(page=1, page_size=24)
+        rjs = [item.rj_id for item in page.items]
+        assert incomplete in rjs
+        assert page.total_items == 1
+        assert page.page_count == 1
+    finally:
+        vault.close()

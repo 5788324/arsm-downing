@@ -3,7 +3,7 @@
 > 更新时间：2026-08-06
 > v1.0.1 修复分支：`fix/v1.0.1-download-freeze-ui`（PR #21，Draft，Fixes #19 #20）
 > 当前版本：`1.0.1`（Draft，未转 Ready，未合并，未发布）
-> 当前阶段：`PR #21 第三轮审查 2 组已修复；待重新审查；真实 GUI/压力验收通过前 NO-GO`
+> 当前阶段：`PR #21 第四轮审查 4 项已修复；待 CI 与重新审查；真实 GUI/压力验收通过前 NO-GO`
 
 > 历史记录见下文各章节；本文件顶部为当前事实源。
 
@@ -270,12 +270,19 @@ Windows 修复前基线：231 passed，3 skipped
 1. **实时总进度统一为单一权威来源**：`_get_progress_value`（卡片与详情共用）改为以 track_id 键控的 `_live_tracks` 聚合，只把 known-size 文件计入字节分子/分母，同名文件分别统计；live 数据一旦建立就优先于旧磁盘快照（恢复任务的进度条会动，不再停在上次扫描值），快照仅作为 live 建立前的基线。
 2. **registered/completed 磁盘不完整降级**：`apply_disk_verification` 新增 `status_filter` 参数；对磁盘核验未齐全的 `completed/registered` 下载作品在 presentation/read-model 层降级为 `partial`（非终态、`is_terminal=False`、`can_resume=True`、`ui_status="部分完成"`），不再显示绿色 100%；working 筛选把这类作品作为候选纳入并在核验后保留不完整项、丢弃真正完成项。正式数据库未改动。
 
+### 第四轮审查 4 项（已修复）
+
+1. **恢复任务显示全作品实时总进度**：`_live_tracks` 改为完整 per-track 基线——新一轮下载/准备/恢复开始时 `update_work_status` 使旧 live 缓存失效，首个进度事件经 `_seed_live_baseline` 用数据库全部文件行重建基线（含已完成文件），`_apply_live_event` 按 title/dl_id 关联把实时增量合并进去。恢复 9 完成 + 1 续传的任务显示 90% → 95% → 100%，不再退化成“剩余文件 0%→100%”。
+2. **mixed known/unknown 完整性判定**：`_disk_confirms_complete` 现在同时要求 `complete_files == file_count`、无 overage、known-size 比率为 100%；已知完整 + 未知缺失不会被误判完成。
+3. **partial 卡片改走 resume/reconcile**：`partial` 按钮调用 `app_controller.resume_download`（`_resume_one`/`resume_job` 核验 completed/registered/.part/缺失文件，仅在 `metadata_required`/缓存损坏时重新获取 metadata），不再走 `prepare_work` 的 duplicate guard，`library_index` 已存在也不会被拦截。
+4. **Working 核验后分页**：新增 `DownloadService.fetch_working_page`——先 over-fetch 全部 working 候选（≤200），磁盘核验降级/丢弃后再分页并重算 `total_items/page_count`；前 24 个完整、第 25 个不完整时，不完整作品直接出现在默认 Working 页。
+
 ### 当前验证
 
-- 全量回归：`373 passed, 3 skipped`（3 项为 Windows 符号链接不可用）。
-- 远端 CI：上一 head `80afcb5` Windows **371 passed**；本轮 head 待 CI。
+- 全量回归：`377 passed, 3 skipped`（3 项为 Windows 符号链接不可用）。
+- 远端 CI：上一 head `0a74307` Windows **376 passed**；本轮 head 待 CI。
 - release_check：`ready: true`，`failures: []`。
-- PyInstaller：`ARSM-Suite-1.0.1-windows-x64.zip`，SHA-256 `fada0cc4afabdaabf33871987559d5ab4316e4a2acf6a746b1f20cf17cb612b0`。
+- PyInstaller：`ARSM-Suite-1.0.1-windows-x64.zip`，SHA-256 `169d71fe808d14690a0edeb8d5a9b31213e88ee8b674008ba2f1c914e52d7444`。
 
 ### 待验收（通过前 NO-GO）
 

@@ -228,6 +228,37 @@ class DownloadService:
         with lock:
             return self._fetch_queue_page_unlocked(status_filter, page, page_size)
 
+    def fetch_working_page(self, *, page: int = 1,
+                           page_size: int = 24) -> DownloadQueuePage:
+        """Fetch + disk-verify + paginate the active queue in one pass.
+
+        Terminal download candidates (completed/registered) are included as
+        re-verification candidates, downgraded to ``partial`` when incomplete
+        on disk, and dropped when genuinely complete — all BEFORE final
+        pagination.  A Working page is therefore never emptied by post-filter
+        drops and ``total_items``/``page_count`` reflect the verified state
+        (review #2c).
+        """
+        page_size = max(1, min(int(page_size), 200))
+        # Bounded over-fetch: every Working candidate (active + terminal
+        # download works) is verified before the requested slice is chosen.
+        candidates = self.fetch_queue_page(
+            status_filter="working", page=1, page_size=200)
+        verified = self.apply_disk_verification(
+            candidates, status_filter="working")
+        items = [item for item in verified.items if not item.is_terminal]
+        total_items = len(items)
+        page_count = max(1, (total_items + page_size - 1) // page_size)
+        page = max(1, min(int(page), page_count))
+        start = (page - 1) * page_size
+        return DownloadQueuePage(
+            items=tuple(items[start:start + page_size]),
+            summary=candidates.summary,
+            page=page,
+            page_size=page_size,
+            total_items=total_items,
+        )
+
     def _fetch_queue_page_unlocked(self, status_filter: str, page: int,
                                    page_size: int) -> DownloadQueuePage:
         rows = self.connection.execute(self._aggregate_sql()).fetchall()
@@ -378,9 +409,18 @@ class DownloadService:
     @staticmethod
     def _disk_confirms_complete(summary: VerifiedDownloadSummary,
                                 file_count: int) -> bool:
-        if summary.known_expected_bytes > 0:
-            return summary.progress >= 1.0
-        return file_count > 0 and summary.complete_files >= file_count
+        """A terminal work is only truly complete when EVERY expected file row
+        is confirmed present/complete on disk: all files observed complete, no
+        overage, and a 100% known-size ratio."""
+        if file_count <= 0:
+            return False
+        if summary.overage_files > 0:
+            return False
+        if summary.complete_files < file_count:
+            return False
+        if summary.known_expected_bytes > 0 and summary.progress < 1.0:
+            return False
+        return True
 
     def _existing_tables(self) -> set[str]:
         return {

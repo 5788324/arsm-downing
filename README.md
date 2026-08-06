@@ -10,8 +10,8 @@ Python + Flet 0.27.6 + SQLite + asyncio + aiohttp
 
 - v1.0.1 修复分支：`fix/v1.0.1-download-freeze-ui`，PR #21（Draft，Fixes #19 #20）。
 - 已修复 Issue #20（UI 冻结 / 签名 URL 重试风暴 / 虚假总进度）与 Issue #19（下载页布局闪烁）。
-- PR 三轮代码审查阻塞已修复：并发签名刷新单飞、refresh/transport budget 分离、磁盘核验移出 UI 线程且启动只跑一次、真实进度贯通 read model、UI 单调度器、文件树详情与同名文件实时更新、实时总进度统一、registered/completed 磁盘不完整降级、交付文档。
-- 全量回归：`373 passed, 3 skipped`；release_check `ready: true`；PyInstaller `ARSM-Suite-1.0.1-windows-x64.zip`。
+- PR 四轮代码审查阻塞已修复：并发签名刷新单飞、refresh/transport budget 分离、磁盘核验移出 UI 线程且启动只跑一次、真实进度贯通 read model、UI 单调度器、文件树详情与同名文件实时更新、实时总进度统一（全作品基线）、registered/completed 磁盘不完整降级、partial 走 resume/reconcile、Working 核验后分页、交付文档。
+- 全量回归：`377 passed, 3 skipped`；release_check `ready: true`；PyInstaller `ARSM-Suite-1.0.1-windows-x64.zip`。
 - 当前为 **NO-GO**：真实 GUI/DPI/托盘、9 任务约 2700 文件压力与 300 个集中 400 场景验收通过前不转 Ready、不发布。
 
 ## T10 已完成
@@ -181,5 +181,5 @@ Windows 下点击标题栏关闭会隐藏到系统托盘。右键托盘图标可
 
 - 同一分支 `fix/v1.0.1-download-freeze-ui`、同一 PR #21（Draft）内完成 Issue #20 与 #19。
 - 关键修复：bounded worker pool；签名 URL 单飞刷新 + `ensure_refreshed_once`；refresh/transport budget 分离（二次签名失效 fail-closed，`retry_count=1` 也尝试新 URL，日志脱敏）；磁盘核验移出 UI 线程（`run_blocking` + generation token）；真实进度使用 `verified_bytes`、`registered` 非终态、成功保持 `completed`、混合大小分母修复；UI 单调度器守卫 + 数量/时间双预算；下载页稳定列表 + 右侧文件树详情（相对路径 key、失败原因、`.part` 状态、每状态唯一按钮）。
-- 新增回归测试覆盖并发单飞刷新、二次 403、日志脱敏、混合进度、非阻塞刷新、单调度器真实 asyncio 调度、文件树与按钮、同名不同目录文件的 track_id 实时更新，以及 registered/completed 磁盘不完整降级与实时总进度统一。
-- 全量回归：`373 passed, 3 skipped`。正式 E:\arsm 与既有运行数据零接触。
+- 新增回归测试覆盖并发单飞刷新、二次 403、日志脱敏、混合进度、非阻塞刷新、单调度器真实 asyncio 调度、文件树与按钮、同名不同目录文件的 track_id 实时更新、registered/completed 磁盘不完整降级、实时总进度统一，以及恢复任务全作品进度、mixed 完整性、partial resume 与 Working 核验后分页。
+- 全量回归：`377 passed, 3 skipped`。正式 E:\arsm 与既有运行数据零接触。

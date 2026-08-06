@@ -246,6 +246,11 @@ class DownloadView(BaseDownloadView):
         page_size = self.queue_page_size
 
         def query():
+            if status_filter == "working":
+                # Disk-verification + downgrade happen BEFORE pagination so a
+                # Working page is never emptied by post-filter drops (review #2c).
+                return self.download_service.fetch_working_page(
+                    page=page, page_size=page_size)
             return self.download_service.apply_disk_verification(
                 self.download_service.fetch_queue_page(
                     status_filter=status_filter,
@@ -692,9 +697,14 @@ class DownloadView(BaseDownloadView):
             push(open_btn())
             push(remove_btn())
         elif ns == "partial":
-            push(ft.IconButton(icon=ft.Icons.REFRESH, tooltip="重新准备补全",
+            # Disk-incomplete work: go through resume/reconcile (verifies
+            # completed/registered/.part/missing files and only re-prepares
+            # metadata when reconciliation reports metadata_required).  Avoids
+            # the prepare_work duplicate-guard blocking a library-indexed work.
+            push(ft.IconButton(icon=ft.Icons.PLAY_ARROW, tooltip="补全下载",
                                icon_color=WARNING,
-                               on_click=lambda e, r=rj_id: self._retry_prepare(r)))
+                               on_click=lambda e, r=rj_id:
+                                   self.app_controller.resume_download(r)))
             push(open_btn())
             push(remove_btn("清理"))
         elif ns == "duplicate":
@@ -857,6 +867,11 @@ class DownloadView(BaseDownloadView):
                 )
                 if track_id:
                     self._detail_key_by_track[rj_id][track_id] = rows[idx]["key"]
+                # Also map the live event's real track_id (set by _apply_live_event)
+                # so _live_update_detail_row resolves between renders.
+                event_track = live.get("track_id")
+                if event_track and event_track != track_id:
+                    self._detail_key_by_track[rj_id][event_track] = rows[idx]["key"]
             else:
                 rel = [title]
                 key = self._unique_key(seen, "/".join(rel))
@@ -1063,6 +1078,14 @@ class DownloadView(BaseDownloadView):
                 value for value in self._transient_rj_ids if value != rj_id
             ]
         super().update_work_status(rj_id, status)
+        data = self.active_downloads.get(rj_id)
+        if data is not None and normalized in {
+                "queued", "downloading", "resuming", "preparing", "prepared"}:
+            # A new download/prepare/resume generation begins: drop the stale
+            # live cache so the next progress event re-seeds the WHOLE-work
+            # baseline from the DB (review #4 round).
+            data.pop("_live_tracks", None)
+            data.pop("_live_by_title", None)
         if status == "Completed":
             self._remove_queue_item(rj_id)
             return
@@ -1077,21 +1100,104 @@ class DownloadView(BaseDownloadView):
         card_event.global_speed_bps = event.work_speed_bps
         super().update_track_progress(card_event)
         self.global_speed_bps = event.global_speed_bps
-        # Maintain a track_id-keyed live cache so duplicate filenames in
-        # different directories each update their own row (review #3).
         data = self.active_downloads.get(event.rj_id)
         if data is not None:
-            live = data.setdefault("_live_tracks", {})
-            live[event.track_id or event.track_title] = {
-                "track_id": event.track_id,
-                "title": event.track_title,
-                "downloaded": event.downloaded_bytes,
-                "total": event.total_bytes,
-                "status": event.status,
-            }
+            if "_live_tracks" not in data:
+                # First progress event of a generation: establish the complete
+                # per-track baseline from the DB (every file, including already
+                # complete ones) so the work total is never just "remaining file
+                # progress" (review #4 round).
+                self._seed_live_baseline(event.rj_id)
+            self._apply_live_event(event)
         self._update_queue_summary()
         if self._selected_rj == event.rj_id:
             self._live_update_detail_row(event)
+
+    def _seed_live_baseline(self, rj_id: str) -> None:
+        """Populate the whole-work live cache from the DB per-file rows."""
+        data = self.active_downloads.get(rj_id)
+        if data is None:
+            return
+        live = {}
+        by_title: dict = {}
+        for db in self._db_file_rows(rj_id):
+            dlid = str(db.get("id") or "")
+            if not dlid:
+                continue
+            title = str(db.get("track_title") or "")
+            live[dlid] = {
+                "track_id": dlid,
+                "title": title,
+                "downloaded": int(db.get("downloaded_bytes") or 0),
+                "total": int(db.get("total_bytes") or 0),
+                "status": str(db.get("status") or ""),
+                "filename": Path(str(db.get("local_path") or "")).name,
+            }
+            by_title.setdefault(title, []).append(dlid)
+        data["_live_tracks"] = live
+        data["_live_by_title"] = by_title
+
+    def _live_resolve_key(self, event, data: Dict[str, Any]) -> str:
+        """Map a live progress event to its seeded baseline entry key.
+
+        Unique titles match directly; duplicate titles are correlated through
+        the deterministic download id derived from track_id + filename; any
+        unmapped file falls back to a track_id/title-keyed new entry."""
+        by_title = data.get("_live_by_title") or {}
+        live = data.get("_live_tracks") or {}
+        candidates = by_title.get(event.track_title, [])
+        if len(candidates) == 1:
+            return candidates[0]
+        if candidates:
+            make_dl_id = self._make_dl_id_fn()
+            if make_dl_id is not None:
+                for dlid in candidates:
+                    entry = live.get(dlid)
+                    if not entry:
+                        continue
+                    try:
+                        candidate = make_dl_id(
+                            event.rj_id, event.track_id,
+                            Path(entry.get("filename", "")), event.track_title)
+                    except Exception:
+                        candidate = None
+                    if candidate and candidate == dlid:
+                        return dlid
+            return candidates[0]
+        return event.track_id or event.track_title
+
+    def _apply_live_event(self, event) -> None:
+        data = self.active_downloads.get(event.rj_id)
+        if data is None:
+            return
+        live = data.setdefault("_live_tracks", {})
+        key = self._live_resolve_key(event, data)
+        entry = live.get(key)
+        if entry is None:
+            entry = {
+                "track_id": key, "title": event.track_title,
+                "downloaded": 0, "total": 0, "status": "",
+                "filename": Path(str(event.track_title or "")).name,
+            }
+            live[key] = entry
+        entry.update(
+            track_id=event.track_id or key,
+            title=event.track_title,
+            downloaded=max(0, int(event.downloaded_bytes or 0)),
+            total=max(0, int(event.total_bytes or 0)),
+            status=event.status,
+        )
+
+    def _make_dl_id_fn(self):
+        fn = getattr(getattr(self.app_controller, "orc", None),
+                     "_make_dl_id", None)
+        if fn is None:
+            try:
+                from core.orchestrator import Orchestrator
+                fn = Orchestrator._make_dl_id
+            except Exception:
+                fn = None
+        return fn
 
     def _live_update_detail_row(self, event):
         """Resolve the live event to its stable row: track_id first, then the

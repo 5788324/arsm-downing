@@ -223,6 +223,14 @@
 2. **registered/completed 磁盘不完整降级**：`apply_disk_verification` 增加 `status_filter`；磁盘核验未齐全的 `completed/registered` 下载作品降级为 `partial`（非终态、可恢复、黄色警示），不再显示绿色 100%；正式数据库未改动。
 - 全量回归：`373 passed, 3 skipped`；PyInstaller SHA-256 `fada0cc4afabdaabf33871987559d5ab4316e4a2acf6a746b1f20cf17cb612b0`。
 
+### 第四轮审查 4 项（2026-08-06 已修复）
+
+1. **恢复任务全作品实时总进度**：`_live_tracks` 改为完整 per-track 基线（新一轮准备/恢复时由 `update_work_status` 失效，首个进度事件用 DB 全部文件重建，含已完成文件）；恢复 9 完成 + 1 续传显示 90% → 95% → 100%。
+2. **mixed known/unknown 完整性判定**：`_disk_confirms_complete` 要求 `complete_files == file_count`、无 overage、known-size 100%；已知完整 + 未知缺失不误判完成。
+3. **partial 走 resume/reconcile**：`partial` 按钮调用 `resume_download`（`_resume_one`/`resume_job`），`library_index` 已存在也不会被 duplicate guard 拦截。
+4. **Working 核验后分页**：`DownloadService.fetch_working_page` over-fetch → 核验降级/丢弃 → 再分页并重算 `total_items/page_count`。
+- 全量回归：`377 passed, 3 skipped`；PyInstaller SHA-256 `169d71fe808d14690a0edeb8d5a9b31213e88ee8b674008ba2f1c914e52d7444`。
+
 ### 交接给下一位执行者
 
 1. 保持 Draft，不转 Ready、不合并、不打标签、不发布。

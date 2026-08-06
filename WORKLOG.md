@@ -277,3 +277,13 @@ Git 远端写入：无
 - 新增端到端测试：live 进度推进卡片与详情、unknown-size 不虚高总进度、同名文件分别计入、registered 缺文件被服务链降级且 UI 非绿色 100%。
 - 全量回归：`373 passed, 3 skipped`；release_check `ready: true`；PyInstaller `ARSM-Suite-1.0.1-windows-x64.zip` SHA-256 `fada0cc4afabdaabf33871987559d5ab4316e4a2acf6a746b1f20cf17cb612b0`。
 - 保持 Draft；待重新审查；真实 GUI/DPI/托盘、9 任务约 2700 文件 30 分钟压力、300 个集中 400 场景通过前保持 NO-GO。
+
+## 2026-08-06：PR #21 第四轮审查 4 项修复
+
+- **恢复任务全作品实时总进度**：`_live_tracks` 改为完整 per-track 基线；新一轮下载/准备/恢复开始时 `update_work_status` 使旧 live 缓存失效，首个进度事件用数据库全部文件行重建基线（含已完成文件），`_apply_live_event` 按 title/dl_id 关联合并实时增量。恢复 9 完成 + 1 续传显示 90% → 95% → 100%，不再退化为剩余文件进度。
+- **mixed known/unknown 完整性判定**：`_disk_confirms_complete` 同时要求 `complete_files == file_count`、无 overage、known-size 比率 100%；已知完整 + 未知缺失不再误判完成。
+- **partial 卡片改走 resume/reconcile**：`partial` 按钮调用 `resume_download`（`_resume_one`/`resume_job` 核验 completed/registered/.part/缺失文件，仅在 `metadata_required`/缓存损坏时重新获取 metadata），不再被 `prepare_work` duplicate guard 拦截 `library_index` 已存在作品。
+- **Working 核验后分页**：新增 `DownloadService.fetch_working_page`——over-fetch working 候选（≤200）→ 磁盘核验降级/丢弃 → 再分页并重算 `total_items/page_count`；前 24 个完整、第 25 个不完整时，不完整作品出现在默认页。
+- 新增端到端测试：恢复 90/95/100、mixed 完整性、partial 走 resume（含 library_index）、working 分页填充。
+- 全量回归：`377 passed, 3 skipped`；release_check `ready: true`；PyInstaller `ARSM-Suite-1.0.1-windows-x64.zip` SHA-256 `169d71fe808d14690a0edeb8d5a9b31213e88ee8b674008ba2f1c914e52d7444`。
+- 保持 Draft；待 CI 与重新审查；真实 GUI/DPI/托盘、9 任务约 2700 文件 30 分钟压力、300 个集中 400 场景通过前保持 NO-GO。
