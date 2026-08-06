@@ -74,7 +74,14 @@ def test_queue_snapshot_uses_two_selects_independent_of_task_count(
         assert len(selects) == 2
         assert page.summary.total_tasks == count
         assert len(page.items) <= 24
-        assert all(not item.is_terminal for item in page.items)
+        # The "working" fetch includes non-terminal items PLUS terminal download
+        # works (completed/registered) as disk re-verification candidates; the
+        # full apply_disk_verification pipeline resolves which of those stay.
+        assert all(
+            not item.is_terminal
+            or str(item.work_status or "").lower() in {"completed", "registered"}
+            for item in page.items
+        )
     finally:
         vault.close()
 

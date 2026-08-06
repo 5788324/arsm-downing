@@ -13,8 +13,8 @@ from types import SimpleNamespace
 import pytest
 
 import ui.views.download_view as download_module
-from core.models import ProgressEvent
-from ui.theme import ACCENT_PRIMARY
+from core.models import ProgressEvent, WorkMetadata
+from ui.theme import ACCENT_PRIMARY, SUCCESS
 from ui.views.download_view import DownloadView
 from tests.test_download_ui_semantics import FakeController, FakePage
 
@@ -445,3 +445,135 @@ def test_generation_token_drops_stale_snapshot(tmp_path) -> None:
         assert set(view.active_downloads) == {"RJ00000001"}
     finally:
         controller.db.close()
+
+
+# ══════════════════════════════════════════════
+#  Review round 3: authoritative live total progress
+# ══════════════════════════════════════════════
+
+def test_live_known_progress_advances_card_and_detail_over_stale_snapshot(
+    view_controller,
+) -> None:
+    """Review #3: once live data exists it wins over the last disk scan —
+    both the left card and the right overall bar move."""
+    view, _controller = view_controller
+    rj = "RJ00000001"
+    data = view.active_downloads[rj]
+    assert data["snapshot"].verified_progress == 0.3  # 3-byte .part of 10
+    data["_live_tracks"] = {
+        "t1": {"track_id": "t1", "title": "track.mp3",
+               "downloaded": 6, "total": 10, "status": "downloading"},
+    }
+    view._update_compact_card(rj)
+    assert data["prog_bar"].value == 0.6
+
+    view._render_detail_panel(rj)
+    assert view.detail_progress.value == 0.6
+
+
+def test_unknown_size_live_bytes_never_inflate_work_total(view_controller) -> None:
+    """Review #3: a huge unknown-size (total=0) live file never enters the
+    numerator without a denominator, so a 0-byte known file stays at 0%."""
+    view, _controller = view_controller
+    rj = "RJ00000001"
+    data = view.active_downloads[rj]
+    data["_live_tracks"] = {
+        "known": {"track_id": "known", "title": "a.mp3",
+                  "downloaded": 0, "total": 100, "status": "downloading"},
+        "unknown": {"track_id": "unknown", "title": "b.mp3",
+                    "downloaded": 100000, "total": 0, "status": "downloading"},
+    }
+    assert view._get_progress_value(data) == 0.0
+
+    data["_live_tracks"]["known"]["downloaded"] = 50
+    assert view._get_progress_value(data) == 0.5
+
+
+def test_same_title_files_contribute_separately_to_work_total(view_controller) -> None:
+    """Review #3: duplicate filenames in different dirs each add to the work
+    total (track_id-keyed), instead of collapsing onto one title key."""
+    view, _controller = view_controller
+    rj = "RJ00000001"
+    data = view.active_downloads[rj]
+    data["_live_tracks"] = {
+        "t1": {"track_id": "t1", "title": "same.mp3",
+               "downloaded": 50, "total": 100, "status": "downloading"},
+        "t2": {"track_id": "t2", "title": "same.mp3",
+               "downloaded": 75, "total": 100, "status": "downloading"},
+    }
+    assert view._get_progress_value(data) == (50 + 75) / 200
+
+
+def test_registered_incomplete_work_downgraded_by_service_pipeline(tmp_path) -> None:
+    """Review #3 (full chain): SQLite registered → DownloadService → disk
+    verification → read model.  Missing files must downgrade the presentation
+    state to partial (non-terminal, visible), never green completed 100%."""
+    from core.database import LibraryVault
+    from core.services.download_service import DownloadService
+
+    vault = LibraryVault(tmp_path / "history.db")
+    try:
+        work_path = tmp_path / "RJ00000002"
+        meta = WorkMetadata(
+            rj_id="RJ00000002", title="Reg T", circle="", cv=[], tags=[],
+            price=0, dl_count=0, source_url="", rating=0.0,
+            release_date="", cover_url="")
+        vault.register(meta, 100, work_path, status="registered")
+        vault.upsert_download(
+            "d1", "RJ00000002", "a.mp3", str(work_path / "a.mp3"),
+            "registered", 100, 100)
+        service = DownloadService(vault, output_dir=tmp_path)
+        page = service.apply_disk_verification(
+            service.fetch_queue_page(status_filter="working"),
+            status_filter="working")
+        item = {i.rj_id: i for i in page.items}["RJ00000002"]
+        assert item.queue_state == "partial"
+        assert item.is_terminal is False
+        assert item.ui_status == "部分完成"
+        assert item.verified_progress == 0.0
+        assert item.can_resume is True
+        # A genuinely complete registered work stays terminal.
+        complete_path = tmp_path / "RJ00000003"
+        complete_path.mkdir(parents=True, exist_ok=True)
+        (complete_path / "b.mp3").write_bytes(b"x" * 100)
+        meta3 = WorkMetadata(
+            rj_id="RJ00000003", title="Reg Complete", circle="", cv=[], tags=[],
+            price=0, dl_count=0, source_url="", rating=0.0,
+            release_date="", cover_url="")
+        vault.register(meta3, 100, complete_path, status="registered")
+        vault.upsert_download(
+            "d2", "RJ00000003", "b.mp3", str(complete_path / "b.mp3"),
+            "registered", 100, 100)
+        page3 = service.apply_disk_verification(
+            service.fetch_queue_page(status_filter="working"),
+            status_filter="working")
+        complete_items = {i.rj_id: i for i in page3.items}
+        # Complete registered work is dropped from the active queue (terminal).
+        assert "RJ00000003" not in complete_items
+    finally:
+        vault.close()
+
+
+def test_registered_incomplete_card_is_not_green_100(view_controller, tmp_path) -> None:
+    """Review #3 UI end-to-end: a registered work with missing files renders as
+    partial (warning color, verified 0%), never a green 100% card."""
+    view, controller = view_controller
+    work_path = tmp_path / "RJ00000002"
+    meta = WorkMetadata(
+        rj_id="RJ00000002", title="Reg T", circle="", cv=[], tags=[],
+        price=0, dl_count=0, source_url="", rating=0.0,
+        release_date="", cover_url="")
+    controller.db.register(meta, 100, work_path, status="registered")
+    controller.db.upsert_download(
+        "d1", "RJ00000002", "a.mp3", str(work_path / "a.mp3"),
+        "registered", 100, 100)
+    controller.db.conn.commit()
+
+    view.refresh_queue_async(force=True)
+
+    data = view.active_downloads["RJ00000002"]
+    assert data["snapshot"].queue_state == "partial"
+    assert data["snapshot"].is_terminal is False
+    view._update_compact_card("RJ00000002")
+    assert data["prog_bar"].value == 0.0
+    assert data["status_text"].color != SUCCESS

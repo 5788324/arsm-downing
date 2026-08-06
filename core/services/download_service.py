@@ -104,7 +104,18 @@ class DownloadService:
         if status_filter == "all":
             return True
         if status_filter == "working":
-            return not item.is_terminal and item.queue_state != "unknown"
+            if item.queue_state == "unknown":
+                return False
+            if not item.is_terminal:
+                return True
+            # Terminal download works (completed/registered) are candidates for
+            # disk re-verification: apply_disk_verification downgrades the ones
+            # that are incomplete on disk to partial (kept visible) and drops
+            # the genuinely-complete ones from the active queue.  Library
+            # states (verified/external/indexed) are never re-checked.
+            return (item.queue_state == "completed"
+                    and str(item.work_status or "").lower()
+                    in {"completed", "registered"})
         return item.queue_state == status_filter
 
     @staticmethod
@@ -264,15 +275,18 @@ class DownloadService:
         return None
 
     def apply_disk_verification(
-            self, page: DownloadQueuePage
+            self, page: DownloadQueuePage, *, status_filter: str | None = None
     ) -> DownloadQueuePage:
         """Return a copy of ``page`` whose items carry P0-D disk-verified
-        progress (never >100%).
+        progress (never >100%) and whose terminal works that are incomplete on
+        disk are downgraded to ``partial`` for presentation.
 
         Kept separate from ``fetch_queue_page`` so the two-SELECT contract of
         the queue snapshot is preserved; callers run it off the UI thread.  One
         additional SELECT fetches the per-file paths for the page's works only,
-        bounded by the page size.
+        bounded by the page size.  ``status_filter == "working"`` additionally
+        drops terminal items that ARE complete (they belong to the completed
+        view, not the active queue).
         """
         items_by_rj = {item.rj_id: item for item in page.items
                        if item.local_path}
@@ -315,15 +329,12 @@ class DownloadService:
             if summary is None:
                 updated.append(item)
                 continue
-            updated.append(replace(
-                item,
-                verified_bytes=summary.verified_bytes,
-                verified_files=summary.complete_files,
-                overage_file_count=summary.overage_files,
-                verified_known_bytes=summary.known_verified_bytes,
-                verified_expected_bytes=summary.known_expected_bytes,
-                verified_progress=summary.progress,
-            ))
+            updated.append(self._apply_verified_state(item, summary))
+        if status_filter == "working":
+            # Terminal items still present are genuinely complete (or library
+            # states) — drop them from the active queue; incomplete ones were
+            # already downgraded to partial above.
+            updated = [item for item in updated if not item.is_terminal]
         return DownloadQueuePage(
             items=tuple(updated),
             summary=page.summary,
@@ -331,6 +342,45 @@ class DownloadService:
             page_size=page.page_size,
             total_items=page.total_items,
         )
+
+    @staticmethod
+    def _apply_verified_state(item: DownloadQueueItem,
+                              summary: VerifiedDownloadSummary) -> DownloadQueueItem:
+        """Attach disk-verified metrics and, if a completed/registered work is
+        NOT actually complete on disk, downgrade its PRESENTATION state so it
+        never shows as a green terminal 100%.  The production DB is untouched.
+        """
+        replaced = replace(
+            item,
+            verified_bytes=summary.verified_bytes,
+            verified_files=summary.complete_files,
+            overage_file_count=summary.overage_files,
+            verified_known_bytes=summary.known_verified_bytes,
+            verified_expected_bytes=summary.known_expected_bytes,
+            verified_progress=summary.progress,
+        )
+        if item.queue_state != "completed":
+            return replaced
+        # Library-indexed states are validated elsewhere; never downgrade them.
+        if str(item.work_status or "").lower() in {"verified", "external", "indexed"}:
+            return replaced
+        if DownloadService._disk_confirms_complete(summary, item.file_count):
+            return replaced
+        return replace(
+            replaced,
+            queue_state="partial",
+            ui_status="部分完成",
+            is_terminal=False,
+            can_resume=True,
+            can_retry=True,
+        )
+
+    @staticmethod
+    def _disk_confirms_complete(summary: VerifiedDownloadSummary,
+                                file_count: int) -> bool:
+        if summary.known_expected_bytes > 0:
+            return summary.progress >= 1.0
+        return file_count > 0 and summary.complete_files >= file_count
 
     def _existing_tables(self) -> set[str]:
         return {

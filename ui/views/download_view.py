@@ -251,7 +251,8 @@ class DownloadView(BaseDownloadView):
                     status_filter=status_filter,
                     page=page,
                     page_size=page_size,
-                )
+                ),
+                status_filter=status_filter,
             )
 
         def render(result):
@@ -284,6 +285,7 @@ class DownloadView(BaseDownloadView):
             "failed": WorkStatus.FAILED,
             "completed": WorkStatus.COMPLETED,
             "cancelled": WorkStatus.CANCELLED,
+            "partial": WorkStatus.PARTIAL,
         }.get(item.queue_state, WorkStatus.normalize(item.work_status))
 
     def _apply_queue_page(self, model: DownloadQueuePage) -> None:
@@ -465,12 +467,37 @@ class DownloadView(BaseDownloadView):
         for control in (self.queue_summary, self.btn_pause_all, self.btn_resume_all):
             self._safe_update(control)
 
+    @staticmethod
+    def _live_known_totals(item_data: Dict[str, Any]) -> tuple[int, int]:
+        """Sum (downloaded, total) over track_id-keyed LIVE progress.
+
+        Unknown-size files (``total <= 0``) never enter either the numerator
+        or the denominator, and duplicate filenames stay separate because the
+        live cache is keyed by track_id (not the bare title).
+        """
+        live = item_data.get("_live_tracks")
+        if not live:
+            return 0, 0
+        downloaded = 0
+        total = 0
+        for info in live.values():
+            expected = max(0, int(info.get("total", 0) or 0))
+            if expected <= 0:
+                continue
+            total += expected
+            downloaded += min(max(0, int(info.get("downloaded", 0) or 0)), expected)
+        return downloaded, total
+
     def _get_progress_value(self, item_data: Dict[str, Any]) -> float:
-        tracks = item_data.get("tracks", {})
-        total = sum(value.get("total", 0) for value in tracks.values())
-        if total > 0:
-            downloaded = sum(value.get("downloaded", 0) for value in tracks.values())
-            return max(0.0, min(1.0, downloaded / total))
+        """Single authoritative overall progress for BOTH card and detail.
+
+        Live track_id-keyed known-size progress wins once it exists; the disk
+        snapshot is only the baseline before live data is established, so a
+        resuming work's bar moves instead of sitting on the last scan.
+        """
+        live_downloaded, live_total = self._live_known_totals(item_data)
+        if live_total > 0:
+            return max(0.0, min(1.0, live_downloaded / live_total))
         snapshot = item_data.get("snapshot")
         if isinstance(snapshot, DownloadQueueItem):
             return snapshot.progress
@@ -566,24 +593,21 @@ class DownloadView(BaseDownloadView):
         colors = {"downloading": SUCCESS, "queued": ACCENT_SECONDARY,
                   "paused": WARNING, "failed": ERROR, "cancelled": WARNING,
                   "completed": SUCCESS, "metadata_failed": ERROR,
-                  "no_pending": WARNING, "duplicate": "grey"}
+                  "no_pending": WARNING, "duplicate": "grey",
+                  "partial": WARNING}
         data["status_text"].value = status + cache
         data["status_text"].color = colors.get(ns, ACCENT_PRIMARY)
 
         prog = self._get_progress_value(data)
-        # Terminal display must obey disk verification, never the DB label
-        # alone: if a "completed"/"registered" row's files are missing or
-        # truncated, the verified ratio wins.  Only when NO verification ran do
-        # we trust the DB terminal label.
-        if isinstance(snapshot, DownloadQueueItem) and snapshot.verified_progress is not None:
-            prog = snapshot.verified_progress
-        elif ns in {"completed", "verified"}:
-            prog = 1.0
-        elif ns == "registered":
-            verified_files = getattr(snapshot, "verified_files", None)
-            file_count = getattr(snapshot, "file_count", 0)
-            if verified_files is not None and file_count:
-                prog = min(1.0, verified_files / file_count)
+        # Once live progress exists it wins (a resuming work's bar must move,
+        # not sit on the last disk scan).  Only when there is no live data do
+        # we let terminal display obey disk verification — and if no disk
+        # verification ran at all, trust the DB terminal label.
+        live_downloaded, live_total = self._live_known_totals(data)
+        has_live = live_total > 0
+        if not has_live and isinstance(snapshot, DownloadQueueItem):
+            if snapshot.verified_progress is None and ns in {"completed", "verified"}:
+                prog = 1.0
         data["prog_bar"].value = prog
         data["pct_text"].value = f"{prog * 100:.0f}%"
 
@@ -667,6 +691,12 @@ class DownloadView(BaseDownloadView):
                                on_click=lambda e, r=rj_id: self._retry_prepare(r)))
             push(open_btn())
             push(remove_btn())
+        elif ns == "partial":
+            push(ft.IconButton(icon=ft.Icons.REFRESH, tooltip="重新准备补全",
+                               icon_color=WARNING,
+                               on_click=lambda e, r=rj_id: self._retry_prepare(r)))
+            push(open_btn())
+            push(remove_btn("清理"))
         elif ns == "duplicate":
             push(ft.IconButton(icon=ft.Icons.FORCE_GRAPH_3, tooltip="仍然下载",
                                icon_color=WARNING,

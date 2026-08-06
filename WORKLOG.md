@@ -266,6 +266,14 @@ Git 远端写入：无
 - **unknown-size 进度贯通**：`VerifiedDownloadSummary` 新增 `known_verified_bytes/known_expected_bytes`；`DownloadQueueItem` 新增 `verified_known_bytes/verified_expected_bytes/verified_progress`，`progress` 属性优先返回磁盘核验的 known-size 比率。卡片与详情的进度条/容量都使用该值；`completed/registered` 展示完成态服从磁盘核验，不再无条件强制 100%。
 - **启动单次磁盘核验**：`load_queue()` 并入 `refresh_queue_async` 同一管道，子类构造末尾不再二次调用 `reload_queue_from_database`；初始化后 pending query 恰为 1，后续请求合并而非再开一轮 SQLite+stat I/O。
 - **重复文件名实时更新**：`update_track_progress` 维护 track_id 键控 `_live_tracks`；`_file_details` 以 download id（`_make_dl_id`）优先、basename 回退映射 live 进度；实时更新经 `_detail_key_by_track` 按 track_id 解析，同名不同目录各自更新自己的行，重绘不产生重复顶层节点。
-- **文档事实源**：CURRENT_STATE 顶部状态、head SHA、远端 Windows CI `370 passed`、最新构建 SHA 已同步。
+- **文档事实源**：CURRENT_STATE 顶部状态、head SHA、远端 Windows CI `371 passed`、最新构建 SHA `dfa29fc1…` 已同步。
 - 全量回归：`368 passed, 3 skipped`；release_check `ready: true`；PyInstaller `ARSM-Suite-1.0.1-windows-x64.zip` SHA-256 `dfa29fc1adafcdf0476c6f00a98ce97f368774b8734591ac33955528ed1e7d0f`。
 - 保持 Draft；真实 GUI/DPI/托盘、9 任务约 2700 文件 30 分钟压力、300 个集中 400 场景通过前保持 NO-GO。
+
+## 2026-08-06：PR #21 第三轮审查 2 组修复
+
+- **实时总进度统一**：`_get_progress_value`（左侧卡片与右侧总进度共用单一来源）改为以 track_id 键控的 `_live_tracks` 聚合：只把 known-size 文件计入字节分子/分母，同名文件分别统计；live 数据一旦建立就优先于旧磁盘快照（恢复任务的进度条实时动），快照仅在 live 建立前作为基线。
+- **registered/completed 磁盘不完整降级**：`apply_disk_verification` 增加 `status_filter` 参数；磁盘核验未齐全的 `completed/registered` 下载作品在 presentation/read-model 层降级为 `partial`（`is_terminal=False`、`can_resume=True`、`ui_status="部分完成"`、黄色警示），不再显示绿色 100%；working 筛选纳入这类候选，核验后保留不完整项、丢弃真正完成项。不修改正式数据库。
+- 新增端到端测试：live 进度推进卡片与详情、unknown-size 不虚高总进度、同名文件分别计入、registered 缺文件被服务链降级且 UI 非绿色 100%。
+- 全量回归：`373 passed, 3 skipped`；release_check `ready: true`；PyInstaller `ARSM-Suite-1.0.1-windows-x64.zip` SHA-256 `fada0cc4afabdaabf33871987559d5ab4316e4a2acf6a746b1f20cf17cb612b0`。
+- 保持 Draft；待重新审查；真实 GUI/DPI/托盘、9 任务约 2700 文件 30 分钟压力、300 个集中 400 场景通过前保持 NO-GO。

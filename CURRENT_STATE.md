@@ -3,7 +3,7 @@
 > 更新时间：2026-08-06
 > v1.0.1 修复分支：`fix/v1.0.1-download-freeze-ui`（PR #21，Draft，Fixes #19 #20）
 > 当前版本：`1.0.1`（Draft，未转 Ready，未合并，未发布）
-> 当前阶段：`PR #21 第二轮审查 4 项已修复；待真实 GUI/压力验收；NO-GO`
+> 当前阶段：`PR #21 第三轮审查 2 组已修复；待重新审查；真实 GUI/压力验收通过前 NO-GO`
 
 > 历史记录见下文各章节；本文件顶部为当前事实源。
 
@@ -246,7 +246,7 @@ Windows 修复前基线：231 passed，3 skipped
 > 更新时间：2026-08-06
 > 分支：`fix/v1.0.1-download-freeze-ui`
 > 当前版本：`1.0.1`（Draft，未转 Ready，未发布）
-> 当前阶段：`PR #21 第二轮审查 4 项已修复；待真实 GUI/压力验收；NO-GO`
+> 当前阶段：`PR #21 第三轮审查 2 组已修复；待重新审查与真实 GUI/压力验收；NO-GO`
 
 ### 第一轮审查 7 项（已修复）
 
@@ -263,14 +263,19 @@ Windows 修复前基线：231 passed，3 skipped
 1. **unknown-size 进度贯通到 read model**：`VerifiedDownloadSummary` 新增 `known_verified_bytes/known_expected_bytes`；`DownloadQueueItem` 新增 `verified_known_bytes/verified_expected_bytes/verified_progress`，`progress` 属性优先返回磁盘核验的 known-size 比率。卡片与详情的进度条/容量均使用该值；`completed/registered` 展示完成态也服从磁盘核验，不再无条件强制 100%。
 2. **启动只执行一次磁盘核验**：`load_queue()` 并入 `refresh_queue_async` 的同一 `_queue_refreshing`/generation 管道；子类构造末尾不再二次调用 `reload_queue_from_database`。测试断言初始化后 pending query 恰为 1，后续请求被合并而非再开一轮 I/O。
 3. **重复文件名的实时更新**：`update_track_progress` 维护 track_id 键控的 `_live_tracks`；`_file_details` 用 download id（`_make_dl_id` 关联）优先、basename 回退把 live 进度映射到正确的树节点；实时更新经 `_detail_key_by_track` 按 track_id 解析。同名不同目录各自更新自己的行，重绘不产生重复顶层节点。
-4. **文档事实源**：本文件顶部状态、head SHA、远端 Windows CI `370 passed`、最新构建完整 SHA 已同步。
+4. **文档事实源**：本文件顶部状态、head SHA、远端 Windows CI `371 passed`、最新构建完整 SHA 已同步。
+
+### 第三轮审查 2 组（已修复）
+
+1. **实时总进度统一为单一权威来源**：`_get_progress_value`（卡片与详情共用）改为以 track_id 键控的 `_live_tracks` 聚合，只把 known-size 文件计入字节分子/分母，同名文件分别统计；live 数据一旦建立就优先于旧磁盘快照（恢复任务的进度条会动，不再停在上次扫描值），快照仅作为 live 建立前的基线。
+2. **registered/completed 磁盘不完整降级**：`apply_disk_verification` 新增 `status_filter` 参数；对磁盘核验未齐全的 `completed/registered` 下载作品在 presentation/read-model 层降级为 `partial`（非终态、`is_terminal=False`、`can_resume=True`、`ui_status="部分完成"`），不再显示绿色 100%；working 筛选把这类作品作为候选纳入并在核验后保留不完整项、丢弃真正完成项。正式数据库未改动。
 
 ### 当前验证
 
-- 全量回归：`368 passed, 3 skipped`（3 项为 Windows 符号链接不可用）。
-- 远端 CI：Ubuntu pass；Windows **370 passed**（head `fabe5f2`）。
+- 全量回归：`373 passed, 3 skipped`（3 项为 Windows 符号链接不可用）。
+- 远端 CI：上一 head `80afcb5` Windows **371 passed**；本轮 head 待 CI。
 - release_check：`ready: true`，`failures: []`。
-- PyInstaller：`ARSM-Suite-1.0.1-windows-x64.zip`，SHA-256 `dfa29fc1adafcdf0476c6f00a98ce97f368774b8734591ac33955528ed1e7d0f`。
+- PyInstaller：`ARSM-Suite-1.0.1-windows-x64.zip`，SHA-256 `fada0cc4afabdaabf33871987559d5ab4316e4a2acf6a746b1f20cf17cb612b0`。
 
 ### 待验收（通过前 NO-GO）
 

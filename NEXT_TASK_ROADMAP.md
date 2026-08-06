@@ -242,8 +242,11 @@ RC2 网速/完成移除/全部暂停继续无回归
   - [x] unknown-size 进度贯通 read model（`verified_progress`/known-size 字节）；
   - [x] 启动只执行一次磁盘核验；
   - [x] 同名文件实时更新按 track_id 解析；
-  - [x] 文档顶部事实源与 head/SHA/370 passed 同步。
-- [x] 全量回归：`368 passed, 3 skipped`；release_check `ready: true`。
+  - [x] 文档顶部事实源与 head/SHA/371 passed 同步。
+- [x] PR #21 第三轮审查 2 组全部修复：
+  - [x] 实时总进度统一（track_id 键控 known-size 聚合，live 优先于快照）；
+  - [x] registered/completed 磁盘不完整在 read model 降级为 partial。
+- [x] 全量回归：`373 passed, 3 skipped`；release_check `ready: true`。
 
 待完成（需 Windows 宿主，通过前不转 Ready）：
 
