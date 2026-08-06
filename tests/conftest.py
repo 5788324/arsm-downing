@@ -7,6 +7,7 @@ working directory used by an active downloader.
 from __future__ import annotations
 
 import os
+import signal
 from pathlib import Path
 
 import pytest
@@ -52,3 +53,21 @@ def temp_sandbox(tmp_path: Path) -> Path:
     sandbox = tmp_path / "sandbox"
     sandbox.mkdir()
     return sandbox
+
+
+# CI diagnostic (Linux-only): fail any single test that exceeds 60s.
+# ``signal.SIGALRM`` exists only on POSIX, so this is a no-op on Windows and is
+# used solely to name the test that hangs the Ubuntu CI job instead of waiting
+# for the 15-minute workflow timeout.  Remove once the hang is fixed.
+if hasattr(signal, "SIGALRM"):
+
+    @pytest.fixture(autouse=True)
+    def _posix_test_timeout():
+        def _handler(_signum, _frame):
+            raise TimeoutError("test exceeded 60s (possible hang)")
+
+        previous = signal.signal(signal.SIGALRM, _handler)
+        signal.alarm(60)
+        yield
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
