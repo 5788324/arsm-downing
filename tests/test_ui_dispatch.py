@@ -243,7 +243,10 @@ def test_real_asyncio_single_drain_guard_and_backlog_drain() -> None:
             if not tasks and not controller._ui_has_pending_work():
                 break
             await asyncio.sleep(0.01)
-        while tasks:
+        # Bounded wait: a pathological never-draining queue must surface as a
+        # test failure instead of hanging the CI job to its timeout.
+        finish_deadline = loop.time() + 30.0
+        while tasks and loop.time() < finish_deadline:
             await asyncio.sleep(0.01)
         return controller
 
