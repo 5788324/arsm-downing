@@ -287,3 +287,10 @@ Git 远端写入：无
 - 新增端到端测试：恢复 90/95/100、mixed 完整性、partial 走 resume（含 library_index）、working 分页填充。
 - 全量回归：`377 passed, 3 skipped`；release_check `ready: true`；PyInstaller `ARSM-Suite-1.0.1-windows-x64.zip` SHA-256 `169d71fe808d14690a0edeb8d5a9b31213e88ee8b674008ba2f1c914e52d7444`。
 - 保持 Draft；待 CI 与重新审查；真实 GUI/DPI/托盘、9 任务约 2700 文件 30 分钟压力、300 个集中 400 场景通过前保持 NO-GO。
+
+## 2026-08-07：PR #21 第四轮修复 CI 通过 + 超时诊断
+
+- CI（head `02350af`）通过：Windows **380 passed**；Ubuntu **379 passed, 1 skipped**。
+- Ubuntu 曾两次在 15 分钟 workflow 超时被取消；经排查为 CI runner CPU 资源拥挤（同一 head 曾以 51s 通过，Windows/Python 3.11/3.12 本地与各文件独立运行均无挂起），并非代码缺陷。
+- 为 `tests/conftest.py` 加入 Linux 专属 60s 单测超时守卫（POSIX `SIGALRM`，Windows 为 no-op），后续此类问题会直接点名超时测试，避免整段 CI 静默超时。
+- 保持 Draft；待重新审查；真实 GUI/DPI/托盘、9 任务约 2700 文件 30 分钟压力、300 个集中 400 场景通过前保持 NO-GO。

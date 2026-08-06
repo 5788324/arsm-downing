@@ -55,3 +55,4 @@ tmp_probe_*/
 .venv-build/
 release/
 .pytest_cache/
+.venv-py311/

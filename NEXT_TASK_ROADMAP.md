@@ -251,7 +251,7 @@ RC2 网速/完成移除/全部暂停继续无回归
   - [x] mixed known/unknown 完整性判定（`complete_files == file_count`）；
   - [x] partial 卡片改走 resume/reconcile；
   - [x] Working 核验后分页（`fetch_working_page`）。
-- [x] 全量回归：`377 passed, 3 skipped`；release_check `ready: true`。
+- [x] 全量回归：`377 passed, 3 skipped`；release_check `ready: true`；CI（head `02350af`）：Windows **380 passed**、Ubuntu **379 passed, 1 skipped**。
 
 待完成（需 Windows 宿主，通过前不转 Ready）：
 

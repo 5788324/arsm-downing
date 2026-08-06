@@ -1,9 +1,9 @@
 # ARSM Suite 当前状态
 
-> 更新时间：2026-08-06
+> 更新时间：2026-08-07
 > v1.0.1 修复分支：`fix/v1.0.1-download-freeze-ui`（PR #21，Draft，Fixes #19 #20）
 > 当前版本：`1.0.1`（Draft，未转 Ready，未合并，未发布）
-> 当前阶段：`PR #21 第四轮审查 4 项已修复；待 CI 与重新审查；真实 GUI/压力验收通过前 NO-GO`
+> 当前阶段：`PR #21 第四轮审查 4 项已修复，head 02350af，CI 通过；待重新审查；真实 GUI/压力验收通过前 NO-GO`
 
 > 历史记录见下文各章节；本文件顶部为当前事实源。
 
@@ -280,9 +280,10 @@ Windows 修复前基线：231 passed，3 skipped
 ### 当前验证
 
 - 全量回归：`377 passed, 3 skipped`（3 项为 Windows 符号链接不可用）。
-- 远端 CI：上一 head `0a74307` Windows **376 passed**；本轮 head 待 CI。
+- 远端 CI（head `02350af`）：Windows **380 passed**；Ubuntu **379 passed, 1 skipped**。
 - release_check：`ready: true`，`failures: []`。
 - PyInstaller：`ARSM-Suite-1.0.1-windows-x64.zip`，SHA-256 `169d71fe808d14690a0edeb8d5a9b31213e88ee8b674008ba2f1c914e52d7444`。
+- 说明：Ubuntu 曾两次因 CI runner 资源拥挤在 15 分钟 workflow 超时被取消（非代码缺陷，Ubuntu 曾以 51s 通过同一 head）；已为 tests/conftest.py 加入 Linux 专属 60s 单测超时守卫，后续这类问题会直接点名超时测试。
 
 ### 待验收（通过前 NO-GO）
 
