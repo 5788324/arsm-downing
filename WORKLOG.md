@@ -286,7 +286,7 @@ Git 远端写入：无
   - single-flight：10 个 RJ 各恰好 1 次刷新；3000 个过期 URL 各命中 1 次（无重试风暴）；
   - 恢复场景：9/10 完成 + 50% `.part` 经 HTTP 206 Range 续传至 100%，DB 比率 0.9 → 1.0，进度单调不回退；
   - RSS 48.8 → 62.3 MB 后稳定，CPU 峰值 92%、平均 1.2%；180 个 10s 采样（连续 ≥30 分钟）。
-- 最终 head `4136550` 双平台 CI 全绿：Windows **380 passed**、Ubuntu **379 passed, 1 skipped**。
+- 最终 head `facf351` 双平台 CI 全绿：Windows **380 passed**、Ubuntu **379 passed, 1 skipped**。
 - 保持 Draft；仅剩真实 Windows 视觉 GUI 验收（1366×768/1920×1080、DPI 125/150/200%、托盘、暂停/继续/取消、三次退出无残留）需人工在桌面完成；通过前 NO-GO。
 
 ## 2026-08-06：PR #21 第四轮审查 4 项修复

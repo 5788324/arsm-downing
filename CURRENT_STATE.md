@@ -3,7 +3,7 @@
 > 更新时间：2026-08-08
 > v1.0.1 修复分支：`fix/v1.0.1-download-freeze-ui`（PR #21，Draft，Fixes #19 #20）
 > 当前版本：`1.0.1`（Draft，未转 Ready，未合并，未发布）
-> 当前阶段：`PR #21 第五轮审查产品代码 CONDITIONAL GO；head 4136550 双平台 CI 全绿；无头压力验收通过；视觉 GUI 验收待人工；NO-GO`
+> 当前阶段：`PR #21 第五轮审查产品代码 CONDITIONAL GO；head facf351 双平台 CI 全绿；无头压力验收通过；视觉 GUI 验收待人工；NO-GO`
 
 > 历史记录见下文各章节；本文件顶部为当前事实源。
 
@@ -228,7 +228,8 @@ Windows 修复前基线：231 passed，3 skipped
 ## 2026-08-02 PR1 直接源码候选：Windows 验收完成（条件 GO）
 
 - 维护语义已拆分为维护阻断、metadata 保护和终态队列三个集合；已取消任务不阻止 VACUUM/队列预览，但继续保护 metadata 以支持显式重试。
-- 在全新隔离 Python 3.12 环境：focused 49 passed，full 294 passed, 3 skipped，elease_check --skip-tests ready=true，PyInstaller one-folder 与 EXE 非空通过。
+- 在全新隔离 Python 3.12 环境：focused 49 passed，full 294 passed, 3 skipped，
+elease_check --skip-tests ready=true，PyInstaller one-folder 与 EXE 非空通过。
 - 隔离 EXE：8,320,551 bytes，SHA-256 6c84d11e7b028cbb96ffa5b58cba56c91ae09ceb7fcc2af8abaebd3c928ad580。
 - GUI：四页导航、批量粘贴取消、维护保护可见性和三轮启动/关闭通过；托盘彻底退出后无 ARSM/Flet/Python 残留。
 - 未改变 main、正式 E:\arsm、正式数据库、队列、任务或 .part。高 DPI（125%/150%/200%）视觉检查仍需在用户显示缩放下完成。
@@ -280,7 +281,7 @@ Windows 修复前基线：231 passed，3 skipped
 ### 当前验证
 
 - 全量回归：`377 passed, 3 skipped`（3 项为 Windows 符号链接不可用）。
-- 远端 CI（最终 head `4136550`）：Windows **380 passed**；Ubuntu **379 passed, 1 skipped**。
+- 远端 CI（最终 head `facf351`）：Windows **380 passed**；Ubuntu **379 passed, 1 skipped**。
 - release_check：`ready: true`，`failures: []`。
 - PyInstaller：`ARSM-Suite-1.0.1-windows-x64.zip`，SHA-256 `169d71fe808d14690a0edeb8d5a9b31213e88ee8b674008ba2f1c914e52d7444`。
 - **无头压力验收（scripts/v101_stress_acceptance.py，30 分钟）通过**：
