@@ -278,6 +278,17 @@ Git 远端写入：无
 - 全量回归：`373 passed, 3 skipped`；release_check `ready: true`；PyInstaller `ARSM-Suite-1.0.1-windows-x64.zip` SHA-256 `fada0cc4afabdaabf33871987559d5ab4316e4a2acf6a746b1f20cf17cb612b0`。
 - 保持 Draft；待重新审查；真实 GUI/DPI/托盘、9 任务约 2700 文件 30 分钟压力、300 个集中 400 场景通过前保持 NO-GO。
 
+## 2026-08-08：第五轮审查 CONDITIONAL GO + 无头压力验收通过
+
+- 第五轮代码审查：第四轮 4 个阻塞全部通过，产品代码层 **CONDITIONAL GO**。
+- 新增 `scripts/v101_stress_acceptance.py` 无头压力验收（真实 Orchestrator + DownloadWorkerPool + SignedUrlRefresher + 本地 aiohttp 服务器），运行 30 分钟：**ACCEPTANCE PASS**。
+  - 9 作品 × 300 文件 + 300 文件 400/401/403 集中风暴 = 3000 文件全部完成（0 失败）；
+  - single-flight：10 个 RJ 各恰好 1 次刷新；3000 个过期 URL 各命中 1 次（无重试风暴）；
+  - 恢复场景：9/10 完成 + 50% `.part` 经 HTTP 206 Range 续传至 100%，DB 比率 0.9 → 1.0，进度单调不回退；
+  - RSS 48.8 → 62.3 MB 后稳定，CPU 峰值 92%、平均 1.2%；180 个 10s 采样（连续 ≥30 分钟）。
+- 最终 head `4136550` 双平台 CI 全绿：Windows **380 passed**、Ubuntu **379 passed, 1 skipped**。
+- 保持 Draft；仅剩真实 Windows 视觉 GUI 验收（1366×768/1920×1080、DPI 125/150/200%、托盘、暂停/继续/取消、三次退出无残留）需人工在桌面完成；通过前 NO-GO。
+
 ## 2026-08-06：PR #21 第四轮审查 4 项修复
 
 - **恢复任务全作品实时总进度**：`_live_tracks` 改为完整 per-track 基线；新一轮下载/准备/恢复开始时 `update_work_status` 使旧 live 缓存失效，首个进度事件用数据库全部文件行重建基线（含已完成文件），`_apply_live_event` 按 title/dl_id 关联合并实时增量。恢复 9 完成 + 1 续传显示 90% → 95% → 100%，不再退化为剩余文件进度。

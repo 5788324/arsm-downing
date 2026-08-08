@@ -230,7 +230,7 @@
 3. **partial 走 resume/reconcile**：`partial` 按钮调用 `resume_download`（`_resume_one`/`resume_job`），`library_index` 已存在也不会被 duplicate guard 拦截。
 4. **Working 核验后分页**：`DownloadService.fetch_working_page` over-fetch → 核验降级/丢弃 → 再分页并重算 `total_items/page_count`。
 - 全量回归：`377 passed, 3 skipped`；PyInstaller SHA-256 `169d71fe808d14690a0edeb8d5a9b31213e88ee8b674008ba2f1c914e52d7444`。
-- CI（head `02350af`）：Windows **380 passed**；Ubuntu **379 passed, 1 skipped**。Ubuntu 的 15 分钟超时两次均为 runner 资源拥挤（同一 head 曾 51s 通过），已在 `tests/conftest.py` 加入 Linux 专属 60s 单测超时守卫作防护。
+- CI（head `4136550`）：Windows **380 passed**；Ubuntu **379 passed, 1 skipped**。Ubuntu 的 15 分钟超时两次均为 runner 资源拥挤（同一 head 曾 51s 通过），已在 `tests/conftest.py` 加入 Linux 专属 60s 单测超时守卫作防护。
 
 ### 交接给下一位执行者
 
