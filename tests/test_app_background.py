@@ -90,6 +90,24 @@ class _NavEvent:
         self.control = type("Control", (), {"selected_index": index})()
 
 
+def test_in_page_navigation_updates_rail_and_uses_lifecycle() -> None:
+    controller = AppController.__new__(AppController)
+    old = _LifecycleView()
+    new = _LifecycleView()
+    controller.views = {0: old, 3: new}
+    controller.current_view = 0
+    controller.views_container = _ViewContainer()
+    controller.nav_rail = type("Rail", (), {"selected_index": 0})()
+    controller.page = type("Page", (), {"update": lambda self: None})()
+
+    controller.navigate_to_view(3)
+
+    assert controller.nav_rail.selected_index == 3
+    assert controller.current_view == 3
+    assert old.states == [False]
+    assert new.states == [True]
+
+
 def test_navigation_deactivates_old_view_and_activates_new_view() -> None:
     controller = AppController.__new__(AppController)
     old = _LifecycleView()
@@ -121,18 +139,26 @@ class _Window:
 class _Page:
     def __init__(self) -> None:
         self.window = _Window()
+        self.updated = False
+
+    def update(self) -> None:
+        self.updated = True
 
 
 def test_close_queue_uses_flet_027_window_api() -> None:
+    import threading
     controller = BaseAppController.__new__(BaseAppController)
     controller.page = _Page()
     controller.ui_queue = queue.Queue()
     controller.ui_processing = False
+    controller._ui_schedule_lock = threading.Lock()
     controller._ui_poller_stop = type("Stop", (), {"set": lambda self: None})()
     controller.ui_queue.put(("close_window", None))
 
     asyncio.run(controller._process_ui_queue())
 
+    assert controller.page.window.prevent_close is False
+    assert controller.page.updated is True
     assert controller.page.window.destroyed is True
     assert controller.page.window.closed is False
 class _Tray:

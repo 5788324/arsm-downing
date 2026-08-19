@@ -1,5 +1,6 @@
 import flet as ft
-from ui.theme import Styles, ACCENT_PRIMARY, SUCCESS, WARNING, ERROR
+from ui.theme import (Styles, ACCENT_PRIMARY, SUCCESS, WARNING, ERROR,
+                      TEXT_PRIMARY, TEXT_SECONDARY)
 import asyncio
 import os
 from pathlib import Path
@@ -34,12 +35,18 @@ class ToolsView(ft.Container):
         # External intake is intentionally read-only until the transactional
         # execution service is implemented and accepted.
         self.external_status = ft.Text(
-            "只读计划模式：请先在 config.json 设置 external_intake_root",
+            "外部资源整理仅生成只读预览。请先到“设置”填写外部资源扫描目录。",
             size=12,
             color=WARNING,
         )
         self.external_report_text = ft.Text("", size=11, color="grey")
         self.external_scan_running = False
+        self.external_settings_btn = ft.TextButton(
+            "去设置扫描目录",
+            icon=ft.Icons.SETTINGS,
+            style=ft.ButtonStyle(color=TEXT_PRIMARY),
+            on_click=self._open_settings,
+        )
 
         self.backlog_source = ft.Dropdown(
             width=120, value="ignored",
@@ -60,25 +67,34 @@ class ToolsView(ft.Container):
         self.content = ft.Column([
             ft.Text("\u7cfb\u7edf\u5de5\u5177", size=28, weight=ft.FontWeight.BOLD),
 
-            ft.Text("\u8bca\u65ad", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
+            ft.Text(
+                "日常使用建议：遇到问题先运行一键诊断；新增或移动资源后再扫描仓库。",
+                size=13,
+                color=TEXT_SECONDARY,
+            ),
+
+            ft.Text("\u8bca\u65ad", size=18, weight=ft.FontWeight.BOLD, color=TEXT_PRIMARY),
+            ft.Text("优先从这里开始，只检查状态，不修改媒体文件。", size=12, color=TEXT_SECONDARY),
             ft.Row([
-                ft.ElevatedButton("\u8fd0\u884c\u4e00\u952e\u8bca\u65ad", icon=ft.Icons.HEALTH_AND_SAFETY, on_click=self.run_diagnostic),
-                ft.ElevatedButton("\u6d4b\u8bd5\u7f51\u7edc", icon=ft.Icons.NETWORK_CHECK, on_click=self.test_network),
+                ft.ElevatedButton("\u8fd0\u884c\u4e00\u952e\u8bca\u65ad", color=TEXT_PRIMARY, icon=ft.Icons.HEALTH_AND_SAFETY, on_click=self.run_diagnostic),
+                ft.ElevatedButton("\u6d4b\u8bd5\u7f51\u7edc", color=TEXT_PRIMARY, icon=ft.Icons.NETWORK_CHECK, on_click=self.test_network),
             ], spacing=12, wrap=True),
 
-            ft.Text("\u4ed3\u5e93\u4e0e\u5143\u6570\u636e", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
+            ft.Text("\u4ed3\u5e93\u4e0e\u5143\u6570\u636e", size=18, weight=ft.FontWeight.BOLD, color=TEXT_PRIMARY),
+            ft.Text("扫描设置中的仓库目录并刷新索引，不删除媒体文件。", size=12, color=TEXT_SECONDARY),
             ft.Row([
-                ft.ElevatedButton("\u626b\u63cf\u4ed3\u5e93", icon=ft.Icons.FOLDER_SPECIAL, on_click=self.scan_library,
-                    tooltip="\u626b\u63cf library_paths \u4e2d\u7684 RJ \u76ee\u5f55\u5e76\u66f4\u65b0 library_index"),
-                ft.ElevatedButton("\u8bca\u65ad\u5931\u8d25\u4efb\u52a1", icon=ft.Icons.BUG_REPORT, on_click=self.diagnose_failed,
-                    tooltip="\u5206\u6790 downloads \u8868\u4e2d\u7684\u5931\u8d25\u72b6\u6001"),
+                ft.ElevatedButton("\u626b\u63cf\u4ed3\u5e93", color=TEXT_PRIMARY, icon=ft.Icons.FOLDER_SPECIAL, on_click=self.scan_library,
+                    tooltip="扫描设置中的仓库目录并更新资源库索引，不删除媒体文件"),
+                ft.ElevatedButton("\u8bca\u65ad\u5931\u8d25\u4efb\u52a1", color=TEXT_PRIMARY, icon=ft.Icons.BUG_REPORT, on_click=self.diagnose_failed,
+                    tooltip="汇总失败任务及原因，不修改任务状态"),
             ], spacing=12, wrap=True),
 
-            ft.Text("\u8fc1\u79fb", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
+            ft.Text("\u8fc1\u79fb", size=18, weight=ft.FontWeight.BOLD, color=TEXT_PRIMARY),
+            ft.Text("旧目录整理工具：先预览计划，再执行验证。", size=12, color=TEXT_SECONDARY),
             ft.Row([
-                ft.ElevatedButton("预览迁移计划", icon=ft.Icons.DRIVE_FILE_MOVE, on_click=self.migrate_dry_run,
+                ft.ElevatedButton("预览迁移计划", color=TEXT_PRIMARY, icon=ft.Icons.DRIVE_FILE_MOVE, on_click=self.migrate_dry_run,
                     tooltip="后台扫描 completed/verified 作品；仅生成计划，不移动文件、不修改数据库"),
-                ft.ElevatedButton("\u9a8c\u8bc1\u8fc1\u79fb", icon=ft.Icons.VERIFIED_USER, on_click=self.verify_migrated),
+                ft.ElevatedButton("\u9a8c\u8bc1\u8fc1\u79fb", color=TEXT_PRIMARY, icon=ft.Icons.VERIFIED_USER, on_click=self.verify_migrated),
             ], spacing=12, wrap=True),
             ft.Row([self.keep_source_checkbox, self.delete_source_checkbox], spacing=12, wrap=True),
 
@@ -87,26 +103,30 @@ class ToolsView(ft.Container):
                 content=ft.Column([
                     ft.Row([
                         ft.Icon(ft.Icons.SECURITY, color=WARNING),
-                        ft.Text("外部资源整理", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
+                        ft.Text("外部资源整理", size=18, weight=ft.FontWeight.BOLD, color=TEXT_PRIMARY),
                         ft.Container(expand=True),
                         ft.Text("READ-ONLY", size=11, color=WARNING, weight=ft.FontWeight.BOLD),
                     ]),
                     self.external_status,
+                    self.external_settings_btn,
                     ft.Row([
                         ft.ElevatedButton(
                             "扫描计划",
+                            color=TEXT_PRIMARY,
                             icon=ft.Icons.FOLDER_SPECIAL,
                             on_click=self.external_scan,
                             tooltip="读取配置路径并分类，不移动文件、不修改数据库",
                         ),
                         ft.ElevatedButton(
                             "生成完整 DRY-RUN 报告",
+                            color=TEXT_PRIMARY,
                             icon=ft.Icons.DESCRIPTION,
                             on_click=self.external_dry_run,
-                            tooltip="后台扫描并保存完整 JSON/文本报告，actions 不截断",
+                            tooltip="后台扫描并保存完整的只读整理报告",
                         ),
                         ft.ElevatedButton(
                             "真实执行已冻结",
+                            color=TEXT_PRIMARY,
                             icon=ft.Icons.BLOCK,
                             disabled=True,
                             tooltip="等待事务、回滚和沙盒验收完成后才会重新开放",
@@ -121,15 +141,15 @@ class ToolsView(ft.Container):
 
             ft.Text("\u961f\u5217\u6e05\u7406", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
             ft.Row([
-                ft.ElevatedButton("预览队列清理", icon=ft.Icons.CLEANING_SERVICES, on_click=self.clean_queue,
+                ft.ElevatedButton("预览队列清理", color=TEXT_PRIMARY, icon=ft.Icons.CLEANING_SERVICES, on_click=self.clean_queue,
                     tooltip="只读统计终态记录；存在活动或可恢复任务时不允许删除"),
             ], spacing=12, wrap=True),
 
             ft.Text("\u7f13\u5b58\u4e0e\u6570\u636e\u5e93", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
             ft.Row([
-                ft.ElevatedButton("检查并压缩数据库", icon=ft.Icons.STORAGE, on_click=self.repair_db,
+                ft.ElevatedButton("检查并压缩数据库", color=TEXT_PRIMARY, icon=ft.Icons.STORAGE, on_click=self.repair_db,
                     tooltip="后台检查；存在 queued/paused/downloading/failed 等任务时拒绝 VACUUM"),
-                ft.ElevatedButton("安全清理元数据缓存", icon=ft.Icons.DELETE_SWEEP, on_click=self.clear_cache,
+                ft.ElevatedButton("安全清理元数据缓存", color=TEXT_PRIMARY, icon=ft.Icons.DELETE_SWEEP, on_click=self.clear_cache,
                     tooltip="仅删除过期且不属于活动、暂停、失败或恢复任务的缓存"),
             ], spacing=12, wrap=True),
 
@@ -139,8 +159,8 @@ class ToolsView(ft.Container):
             ft.Row([
                 self.backlog_source,
                 self.backlog_batch_size,
-                ft.ElevatedButton("\u9884\u89c8", icon=ft.Icons.PREVIEW, on_click=self.backlog_preview),
-                ft.ElevatedButton("\u6062\u590d\u961f\u5217", icon=ft.Icons.REFRESH, on_click=self.backlog_reenable, bgcolor=WARNING),
+                ft.ElevatedButton("\u9884\u89c8", color=TEXT_PRIMARY, icon=ft.Icons.PREVIEW, on_click=self.backlog_preview),
+                ft.ElevatedButton("\u6062\u590d\u961f\u5217", color=TEXT_PRIMARY, icon=ft.Icons.REFRESH, on_click=self.backlog_reenable, bgcolor=WARNING),
             ], spacing=10),
             ft.Container(self.backlog_preview_text, padding=10, border_radius=8, bgcolor="#1a1a2e"),
 
@@ -149,10 +169,17 @@ class ToolsView(ft.Container):
             Styles.glass_container(self.log_area, padding=10),
         ], spacing=12, scroll=ft.ScrollMode.AUTO, expand=True)
 
-        self.content.controls.insert(1, self.advanced_mode_panel)
+        self.content.controls.insert(2, self.advanced_mode_panel)
         self._refresh_advanced_visibility()
 
         self._active = False
+
+    def _open_settings(self, _event=None):
+        navigate = getattr(self.app_controller, "navigate_to_view", None)
+        if callable(navigate):
+            navigate(3)
+            return
+        self.app_controller.show_snack("请从左侧导航打开“设置”，填写外部资源扫描目录")
 
     def _on_advanced_mode_change(self, _event=None):
         requested = bool(self.advanced_mode_switch.value)

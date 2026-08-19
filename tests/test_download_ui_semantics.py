@@ -2,6 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import flet as ft
 
 import ui.views.download_view as download_module
 from core.database import LibraryVault
@@ -72,6 +73,9 @@ class FakeController:
             "file-1", meta.rj_id, "track.mp3",
             str(work_path / "track.mp3"), "paused", 3, 10,
         )
+        # P0-D: progress is disk-verified, so a real .part must exist on disk
+        # for the snapshot to report 30% instead of 0%.
+        (work_path / "track.mp3.part").write_bytes(b"abc")
 
     def start_download(self, rj_id, **kwargs):
         self.calls.append(("start", rj_id, kwargs))
@@ -130,6 +134,58 @@ def test_load_queue_uses_aggregate_snapshot_progress(view_controller) -> None:
     assert data["tracks"] == {}
 
 
+def test_cancel_keeps_resumable_terminal_card_visible(view_controller, monkeypatch) -> None:
+    view, controller = view_controller
+    rj_id = "RJ00000001"
+    rebuilt = []
+    monkeypatch.setattr(
+        view, "build_queue_item",
+        lambda rj, *args, **kwargs: rebuilt.append(rj),
+    )
+
+    view.cancel_item(rj_id)
+
+    assert controller.calls[-1] == ("cancel", rj_id, {})
+    assert rj_id in view.active_downloads
+    assert view.active_downloads[rj_id]["status"] == "已取消"
+    assert view.queue_model is None
+    assert "已取消 1" in view.queue_summary.value
+    assert rebuilt == [rj_id]
+
+
+def test_cancel_freezes_progress_and_clears_stale_speed(view_controller) -> None:
+    view, controller = view_controller
+    rj_id = "RJ00000001"
+    data = view.active_downloads[rj_id]
+    data["status"] = "下载中"
+    data["_live_tracks"] = {
+        "file-1": {
+            "track_id": "file-1", "title": "track.mp3",
+            "downloaded": 6, "total": 10, "status": "downloading",
+        }
+    }
+    data["last_speed_bps"] = 2 * 1024 * 1024
+    data["last_track_speed"] = 2 * 1024 * 1024
+    data["last_eta"] = 4
+
+    view.cancel_item(rj_id)
+
+    assert controller.calls[-1] == ("cancel", rj_id, {})
+    assert view._get_progress_value(data) == 0.6
+    assert data["last_speed_bps"] == 0
+    assert data["last_track_speed"] == 0
+    assert data["last_eta"] is None
+
+    late = ProgressEvent(
+        rj_id=rj_id, track_id="file-1", track_title="track.mp3",
+        downloaded_bytes=4, total_bytes=10, percent=40.0,
+        work_speed_bps=1024, track_speed_bps=1024,
+        global_speed_bps=0, eta_seconds=9, status="cancelled",
+    )
+    view.update_track_progress(late)
+    assert view._get_progress_value(data) == 0.6
+    assert data["last_speed_bps"] == 0
+
 def test_force_duplicate_reaches_core_flag(view_controller, monkeypatch) -> None:
     view, controller = view_controller
     monkeypatch.setattr(view, "build_queue_item", lambda *_args, **_kwargs: None)
@@ -163,6 +219,8 @@ def test_settings_edit_real_concurrency_fields(tmp_path: Path) -> None:
     controller.config.save = lambda: None
     try:
         view = SettingsView(controller)
+        assert view.save_top_btn.text == "保存设置"
+        assert view.save_bottom_btn.text == "保存设置"
         assert view.work_concurrency_slider.value == 1
         assert view.metadata_concurrency_slider.value == 2
         assert view.file_concurrency_slider.value == 4
@@ -191,6 +249,23 @@ def test_queue_summary_shows_counts_speed_and_button_availability(view_controlle
     assert "总速度 6.0 MB/s" in view.queue_summary.value
     assert view.btn_pause_all.disabled is False
     assert view.btn_resume_all.disabled is False
+
+
+def test_queue_summary_has_dedicated_line_and_empty_filter_hides_detail(
+    view_controller,
+) -> None:
+    view, _controller = view_controller
+    split = view.content.controls[4]
+    left_pane = split.controls[0]
+
+    assert view.queue_summary in left_pane.controls
+    assert view.queue_summary not in left_pane.controls[0].controls
+
+    assert view.detail_panel.visible is True
+
+    view.active_downloads = {}
+    view._render_queue_page()
+    assert view.detail_panel.visible is False
 
 
 def test_progress_uses_work_speed_for_card_and_global_speed_for_header(
@@ -403,3 +478,11 @@ def test_batch_paste_dialog_reopens_empty_after_cancel(view_controller) -> None:
 
     assert second is not first
     assert view._batch_paste_input.value in (None, "")
+
+
+def test_cancelled_task_primary_action_has_visible_label(view_controller) -> None:
+    view, _controller = view_controller
+    actions = view._build_compact_actions("cancelled", "RJ00000001")
+    assert actions[0].text == "继续下载"
+    assert actions[0].tooltip == "继续已取消任务"
+    assert actions[0].icon == ft.Icons.REPLAY

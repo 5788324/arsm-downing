@@ -8,12 +8,12 @@ Python + Flet 0.27.6 + SQLite + asyncio + aiohttp
 
 ## 当前状态
 
-- PR1 直接源码候选基线：`main@50346f9da9a5d24dda99f7d8c6c21e2f9210c1a6`。
-- 当前发布候选为 `1.0.0`；已完成 Windows 构建与隔离安装/卸载验收，等待 Git PR、CI、合并和正式 Release。
-- V6 已在真实 Windows detached worktree 成功应用；随后改为直接维护完整源码，不再使用补丁应用器。
-- 已修复维护状态语义冲突：`cancelled` 是终态，不阻止 VACUUM 或队列清理预览，但继续保护显式重试所需的 metadata cache。
-- 当前便携环境验证：PR1 聚焦回归 `49 passed`，非 Flet 主体回归 `234 passed`，非 UI 导入烟测 `19 passed`，维护专项 `10 passed`，compileall 与 release_check 静态门禁通过。
-- 完整 Windows/Flet pytest、PyInstaller、GUI、DPI、托盘与退出生命周期仍是发布硬门禁；当前结论为 **发布候选通过，等待远端 CI**。
+- v1.0.1 修复分支：`fix/v1.0.1-download-freeze-ui`，PR #21（Draft，Fixes #19 #20）。
+- 已修复 Issue #20（UI 冻结 / 签名 URL 重试风暴 / 虚假总进度）与 Issue #19（下载页布局闪烁）。
+- PR 四轮代码审查阻塞已修复：并发签名刷新单飞、refresh/transport budget 分离、磁盘核验移出 UI 线程且启动只跑一次、真实进度贯通 read model、UI 单调度器、文件树详情与同名文件实时更新、实时总进度统一（全作品基线）、registered/completed 磁盘不完整降级、partial 走 resume/reconcile、Working 核验后分页、交付文档。
+- 全量回归：`377 passed, 3 skipped`；CI（head `facf351`）：Windows **380 passed**、Ubuntu **379 passed, 1 skipped**；release_check `ready: true`；PyInstaller `ARSM-Suite-1.0.1-windows-x64.zip`。
+- 当前为 **NO-GO**：真实 GUI/DPI/托盘、9 任务约 2700 文件压力与 300 个集中 400 场景验收通过前不转 Ready、不发布。
+- 2026-08-19 正在收口取消恢复、空资源库引导、设置保存、系统工具易用性和退出可靠性；浏览器扩展作为独立后续功能，不混入 v1.0.1。
 
 ## T10 已完成
 
@@ -101,6 +101,7 @@ python -m pytest -q
 - [`AI_WORKFLOW.md`](AI_WORKFLOW.md)
 - [`docs/TAKEOVER_T10_QUEUE_SERVICE.md`](docs/TAKEOVER_T10_QUEUE_SERVICE.md)
 - [`docs/T10_BATCH_PASTE_FIX.md`](docs/T10_BATCH_PASTE_FIX.md)
+- [`docs/BROWSER_EXTENSION_TASKS.md`](docs/BROWSER_EXTENSION_TASKS.md)
 - [`docs/CODEX_WINDOWS_ACCEPTANCE_RC1_RESULT.md`](docs/CODEX_WINDOWS_ACCEPTANCE_RC1_RESULT.md)
 
 ## License
@@ -177,3 +178,10 @@ Windows 下点击标题栏关闭会隐藏到系统托盘。右键托盘图标可
 ## PR1 维护安全候选（2026-08-02）
 
 已取消任务是可显式恢复的终态：它不阻止数据库 VACUUM 或队列清理预览，但会保护 metadata cache，避免重试前丢失元数据。该候选已在隔离 Windows 环境通过 294 项自动测试、PyInstaller 与基础 GUI/托盘退出验收；仍需在用户实际高 DPI 缩放下做视觉复核，当前不是正式 Release。
+
+## v1.0.1 P0 修复（2026-08-05/06）
+
+- 同一分支 `fix/v1.0.1-download-freeze-ui`、同一 PR #21（Draft）内完成 Issue #20 与 #19。
+- 关键修复：bounded worker pool；签名 URL 单飞刷新 + `ensure_refreshed_once`；refresh/transport budget 分离（二次签名失效 fail-closed，`retry_count=1` 也尝试新 URL，日志脱敏）；磁盘核验移出 UI 线程（`run_blocking` + generation token）；真实进度使用 `verified_bytes`、`registered` 非终态、成功保持 `completed`、混合大小分母修复；UI 单调度器守卫 + 数量/时间双预算；下载页稳定列表 + 右侧文件树详情（相对路径 key、失败原因、`.part` 状态、每状态唯一按钮）。
+- 新增回归测试覆盖并发单飞刷新、二次 403、日志脱敏、混合进度、非阻塞刷新、单调度器真实 asyncio 调度、文件树与按钮、同名不同目录文件的 track_id 实时更新、registered/completed 磁盘不完整降级、实时总进度统一，以及恢复任务全作品进度、mixed 完整性、partial resume 与 Working 核验后分页。
+- 全量回归：`377 passed, 3 skipped`。正式 E:\arsm 与既有运行数据零接触。

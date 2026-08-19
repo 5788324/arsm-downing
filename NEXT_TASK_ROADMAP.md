@@ -218,3 +218,70 @@ RC2 网速/完成移除/全部暂停继续无回归
 - Windows 隔离验收：安装、启动、--shutdown 协作退出、运行中卸载、用户数据保留及零残留进程均通过。
 - 最终安装器 SHA-256：2a7df244d6c07d289c7dea3a9788a271c48b6eb33f296b4a5de81e8c27b171e6。
 - 当前状态：等待 Git PR、CI、合并、v1.0.0 标签和正式 GitHub Release；正式 E:\arsm 与既有运行数据零接触。
+
+## v1.0.1（Issue #20 + #19）：PR #21 Draft，待真实验收
+
+状态：`NO-GO / WAITING_REAL_GUI_AND_STRESS`
+
+已完成：
+
+- [x] P0-A UI 背压（`UiDispatcher` + 预算化 dispatch）；
+- [x] P0-B 固定 worker 池（`DownloadWorkerPool`）；
+- [x] P0-C 签名 URL 单飞刷新 + `SignedUrlExpired`（400/401/403）；
+- [x] P0-D 磁盘核验进度（`verified_download_progress`）；
+- [x] #19 下载页稳定列表 + 右侧文件树详情面板；
+- [x] PR #21 审查 7 项 NO-GO 全部修复：
+  - [x] `ensure_refreshed_once` 真单飞；
+  - [x] refresh/transport budget 分离 + 二次签名 fail-closed + 日志脱敏；
+  - [x] 磁盘核验移出 UI 线程 + generation token；
+  - [x] UI 显示 verified 字节、`registered` 非终态、成功保持 `completed`、混合分母修复；
+  - [x] UI 单调度器守卫 + 数量/时间双预算；
+  - [x] 文件树/相对路径 key/失败原因/.part/每状态唯一按钮；
+  - [x] 交付文档同步。
+- [x] PR #21 第二轮审查 4 项全部修复：
+  - [x] unknown-size 进度贯通 read model（`verified_progress`/known-size 字节）；
+  - [x] 启动只执行一次磁盘核验；
+  - [x] 同名文件实时更新按 track_id 解析；
+  - [x] 文档顶部事实源与 head/SHA/371 passed 同步。
+- [x] PR #21 第三轮审查 2 组全部修复：
+  - [x] 实时总进度统一（track_id 键控 known-size 聚合，live 优先于快照）；
+  - [x] registered/completed 磁盘不完整在 read model 降级为 partial。
+- [x] PR #21 第四轮审查 4 项全部修复：
+  - [x] 恢复任务全作品实时总进度（完整 per-track 基线）；
+  - [x] mixed known/unknown 完整性判定（`complete_files == file_count`）；
+  - [x] partial 卡片改走 resume/reconcile；
+  - [x] Working 核验后分页（`fetch_working_page`）。
+- [x] 全量回归：`377 passed, 3 skipped`；release_check `ready: true`；CI（head `facf351`）：Windows **380 passed**、Ubuntu **379 passed, 1 skipped**。
+
+待完成（需 Windows 宿主，通过前不转 Ready）：
+
+- [ ] 真实 GUI / DPI 125–200% / 托盘 / 退出验收；
+- [ ] 9 任务约 2700 文件 30 分钟压力验收；
+- [ ] 300 个集中 HTTP 400 场景；
+- [ ] 远端完整 pytest/CI、release_check、PyInstaller；
+- [ ] 验收通过后再决定是否转 Ready。
+
+## 2026-08-19：真实用户体验收口
+
+- [x] 取消任务保留可恢复卡片，并冻结进度、速度和 ETA；
+- [x] “已取消”任务提供明确的“继续下载”主操作；
+- [x] 下载筛选无结果时隐藏无效详情面板；
+- [x] 空资源库提供“去设置仓库目录”入口；
+- [x] 设置页顶部和底部均可保存，长页面无需滚到底部；
+- [x] 系统工具改为面向普通用户的说明和安全边界；
+- [x] 页内跳转同步导航栏并执行页面激活/停用生命周期；
+- [x] Windows 协作退出信号按应用数据目录隔离；
+- [x] 运行定向测试（49 passed）、完整 pytest（387 passed, 3 skipped）、compileall 和 release_check；
+- [x] 将集中修复作为一个提交推送到 PR #21，等待双平台 CI；
+- [ ] CI 和真实 GUI 验收通过前保持 Draft / NO-GO。
+
+## 后续独立功能：asmr.one 浏览器扩展
+
+- [x] 确定产品方向：海报列表显示入库状态，海报和详情页可提交下载；
+- [x] 确定架构边界：扩展不直接下载文件，只把 RJ 交给 ARSM；
+- [x] 建立分阶段任务和验收矩阵；
+- [ ] PR #21 完成后，从主线创建独立功能分支；
+- [ ] 实现 loopback 安全桥接、Manifest V3 扩展和设置页安装引导；
+- [ ] 完成 Chrome/Edge、动态页面、多标签页和重复下载拦截验收。
+
+详细任务见 [`docs/BROWSER_EXTENSION_TASKS.md`](docs/BROWSER_EXTENSION_TASKS.md)。

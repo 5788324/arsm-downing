@@ -1,9 +1,20 @@
 # ARSM Suite 当前状态
 
-> 更新时间：2026-08-02 22:03 +08:00
-> PR1 修复基线：`main@50346f9da9a5d24dda99f7d8c6c21e2f9210c1a6`
-> 当前版本：`0.9.0-rc.3`（PR1 直接源码候选，未发布）
-> 当前阶段：`PR1 自动门禁待 Windows/Flet 完整复验；NO-GO`
+> 更新时间：2026-08-19
+> v1.0.1 修复分支：`fix/v1.0.1-download-freeze-ui`（PR #21，Draft，Fixes #19 #20）
+> 当前版本：`1.0.1`（Draft，未转 Ready，未合并，未发布）
+> 当前阶段：`PR #21 在既有修复上补充真实用户体验收口；本地回归与远端 CI 通过前维持 Draft / NO-GO`
+
+> 历史记录见下文各章节；本文件顶部为当前事实源。
+
+## 2026-08-19 用户体验收口与后续扩展规划
+
+- 当前 v1.0.1 修复分支补充了取消任务可恢复、停止任务速度/ETA 清零、空资源库设置引导、设置页顶部保存入口、系统工具新手文案、页内导航生命周期和 Windows 退出事件隔离；均带有回归测试。
+- 上述内容属于 PR #21 的缺陷和可用性收口，不改变数据库 schema，不访问正式 `E:\arsm`，不执行迁移、清理或媒体写操作。
+- `asmr.one` 入库状态标签与“下载到 ARSM”属于后续独立功能，不混入 v1.0.1 候选。
+- 独立任务清单：[`docs/BROWSER_EXTENSION_TASKS.md`](docs/BROWSER_EXTENSION_TASKS.md)。
+- 浏览器扩展只提交 RJ 和显示状态；下载、重复保护、队列和文件写入继续由 ARSM 现有核心完成。
+- 本地验证：定向回归 `49 passed`；完整回归 `387 passed, 3 skipped`（仅符号链接环境限制）；compileall PASS；release_check `ready: true`；`git diff --check` PASS。
 
 ## 0. PR1 直接源码修复状态
 
@@ -226,7 +237,8 @@ Windows 修复前基线：231 passed，3 skipped
 ## 2026-08-02 PR1 直接源码候选：Windows 验收完成（条件 GO）
 
 - 维护语义已拆分为维护阻断、metadata 保护和终态队列三个集合；已取消任务不阻止 VACUUM/队列预览，但继续保护 metadata 以支持显式重试。
-- 在全新隔离 Python 3.12 环境：focused 49 passed，full 294 passed, 3 skipped，elease_check --skip-tests ready=true，PyInstaller one-folder 与 EXE 非空通过。
+- 在全新隔离 Python 3.12 环境：focused 49 passed，full 294 passed, 3 skipped，
+elease_check --skip-tests ready=true，PyInstaller one-folder 与 EXE 非空通过。
 - 隔离 EXE：8,320,551 bytes，SHA-256 6c84d11e7b028cbb96ffa5b58cba56c91ae09ceb7fcc2af8abaebd3c928ad580。
 - GUI：四页导航、批量粘贴取消、维护保护可见性和三轮启动/关闭通过；托盘彻底退出后无 ARSM/Flet/Python 残留。
 - 未改变 main、正式 E:\arsm、正式数据库、队列、任务或 .part。高 DPI（125%/150%/200%）视觉检查仍需在用户显示缩放下完成。
@@ -238,3 +250,56 @@ Windows 修复前基线：231 passed，3 skipped
 - Windows 隔离验收：安装、启动、--shutdown 协作退出、运行中卸载、用户数据保留及零残留进程均通过。
 - 最终安装器 SHA-256：2a7df244d6c07d289c7dea3a9788a271c48b6eb33f296b4a5de81e8c27b171e6。
 - 当前状态：等待 Git PR、CI、合并、v1.0.0 标签和正式 GitHub Release；正式 E:\arsm 与既有运行数据零接触。
+
+## 2026-08-06：v1.0.1 P0 修复（Issue #20 / #19）——PR #21 Draft
+
+> 更新时间：2026-08-06
+> 分支：`fix/v1.0.1-download-freeze-ui`
+> 当前版本：`1.0.1`（Draft，未转 Ready，未发布）
+> 当前阶段：`PR #21 第三轮审查 2 组已修复；待重新审查与真实 GUI/压力验收；NO-GO`
+
+### 第一轮审查 7 项（已修复）
+
+1. **Signed URL 竞态**：`SignedUrlRefresher.ensure_refreshed_once()` 真正单飞——in-flight 共用同一 future，成功结果复用，失败返回同一失败；并发 403 文件不再因计数猜测误判失败。
+2. **二次签名失效**：refresh budget 与 transport retry budget 分离，每文件 `refresh_used`；新 URL 至少尝试一次，二次 400/401/403 立即 fail-closed；`retry_count=1` 下新 URL 仍被尝试；日志不再泄漏 `fresh_url` 签名参数。
+3. **磁盘核验离开 UI 线程**：`load_queue`/`refresh_queue_async` 经 `run_blocking`（`asyncio.to_thread`）执行；generation token 丢弃过期快照，多余请求合并为一次重拉。
+4. **真实进度**：UI 容量/摘要使用 verified 字节；`registered` 不再当作终态 100%/绿色；orchestrator 成功保持 `completed`；`verified_download_progress` 的 unknown-size 字节不再污染已知文件进度分母。
+5. **UI 调度**：`_ui_schedule_lock` 单调度器守卫 + 数量/时间双预算 + `await asyncio.sleep(0)`；真实 asyncio 测试证明任意时刻最多一个 drain、backlog 归零。
+6. **#19 详情面板**：相对路径 key 的文件树（目录缩进）、失败原因、`.part` 状态；重复文件名不碰撞；每状态唯一操作按钮。
+7. **交付记录**：本文档、WORKLOG、DECISIONS、ROADMAP、HANDOFF、README 已同步。
+
+### 第二轮审查 4 项（已修复）
+
+1. **unknown-size 进度贯通到 read model**：`VerifiedDownloadSummary` 新增 `known_verified_bytes/known_expected_bytes`；`DownloadQueueItem` 新增 `verified_known_bytes/verified_expected_bytes/verified_progress`，`progress` 属性优先返回磁盘核验的 known-size 比率。卡片与详情的进度条/容量均使用该值；`completed/registered` 展示完成态也服从磁盘核验，不再无条件强制 100%。
+2. **启动只执行一次磁盘核验**：`load_queue()` 并入 `refresh_queue_async` 的同一 `_queue_refreshing`/generation 管道；子类构造末尾不再二次调用 `reload_queue_from_database`。测试断言初始化后 pending query 恰为 1，后续请求被合并而非再开一轮 I/O。
+3. **重复文件名的实时更新**：`update_track_progress` 维护 track_id 键控的 `_live_tracks`；`_file_details` 用 download id（`_make_dl_id` 关联）优先、basename 回退把 live 进度映射到正确的树节点；实时更新经 `_detail_key_by_track` 按 track_id 解析。同名不同目录各自更新自己的行，重绘不产生重复顶层节点。
+4. **文档事实源**：本文件顶部状态、head SHA、远端 Windows CI `371 passed`、最新构建完整 SHA 已同步。
+
+### 第三轮审查 2 组（已修复）
+
+1. **实时总进度统一为单一权威来源**：`_get_progress_value`（卡片与详情共用）改为以 track_id 键控的 `_live_tracks` 聚合，只把 known-size 文件计入字节分子/分母，同名文件分别统计；live 数据一旦建立就优先于旧磁盘快照（恢复任务的进度条会动，不再停在上次扫描值），快照仅作为 live 建立前的基线。
+2. **registered/completed 磁盘不完整降级**：`apply_disk_verification` 新增 `status_filter` 参数；对磁盘核验未齐全的 `completed/registered` 下载作品在 presentation/read-model 层降级为 `partial`（非终态、`is_terminal=False`、`can_resume=True`、`ui_status="部分完成"`），不再显示绿色 100%；working 筛选把这类作品作为候选纳入并在核验后保留不完整项、丢弃真正完成项。正式数据库未改动。
+
+### 第四轮审查 4 项（已修复）
+
+1. **恢复任务显示全作品实时总进度**：`_live_tracks` 改为完整 per-track 基线——新一轮下载/准备/恢复开始时 `update_work_status` 使旧 live 缓存失效，首个进度事件经 `_seed_live_baseline` 用数据库全部文件行重建基线（含已完成文件），`_apply_live_event` 按 title/dl_id 关联把实时增量合并进去。恢复 9 完成 + 1 续传的任务显示 90% → 95% → 100%，不再退化成“剩余文件 0%→100%”。
+2. **mixed known/unknown 完整性判定**：`_disk_confirms_complete` 现在同时要求 `complete_files == file_count`、无 overage、known-size 比率为 100%；已知完整 + 未知缺失不会被误判完成。
+3. **partial 卡片改走 resume/reconcile**：`partial` 按钮调用 `app_controller.resume_download`（`_resume_one`/`resume_job` 核验 completed/registered/.part/缺失文件，仅在 `metadata_required`/缓存损坏时重新获取 metadata），不再走 `prepare_work` 的 duplicate guard，`library_index` 已存在也不会被拦截。
+4. **Working 核验后分页**：新增 `DownloadService.fetch_working_page`——先 over-fetch 全部 working 候选（≤200），磁盘核验降级/丢弃后再分页并重算 `total_items/page_count`；前 24 个完整、第 25 个不完整时，不完整作品直接出现在默认 Working 页。
+
+### 当前验证
+
+- 全量回归：`377 passed, 3 skipped`（3 项为 Windows 符号链接不可用）。
+- 远端 CI（最终 head `facf351`）：Windows **380 passed**；Ubuntu **379 passed, 1 skipped**。
+- release_check：`ready: true`，`failures: []`。
+- PyInstaller：`ARSM-Suite-1.0.1-windows-x64.zip`，SHA-256 `169d71fe808d14690a0edeb8d5a9b31213e88ee8b674008ba2f1c914e52d7444`。
+- **无头压力验收（scripts/v101_stress_acceptance.py，30 分钟）通过**：
+  - 9 作品 × 300 文件 + 300 文件 400/401/403 集中风暴 = 3000 文件，全部完成（0 失败）；
+  - single-flight：每个 RJ 恰好 1 次刷新；3000 个过期 URL 各命中 1 次（无重试风暴）；
+  - 恢复场景：9/10 完成 + 50% `.part` 经 HTTP 206 Range 续传至 100%，进度单调不回退；
+  - RSS 48.8 → 62.3 MB 后稳定（无界增长无），CPU 峰值 92%、平均 1.2%（180 个 10s 采样）。
+
+### 待验收（通过前 NO-GO）
+
+- 真实 Windows GUI 视觉验收（1366×768 / 1920×1080、DPI 125%/150%/200%、托盘、暂停/继续/取消、连续三次退出无残留）——需人工在桌面完成；
+- 其余自动门禁已通过（CI、release_check、PyInstaller、无头压力）。

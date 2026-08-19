@@ -236,3 +236,72 @@ Git 远端写入：无
 - Windows 隔离验收：安装、启动、--shutdown 协作退出、运行中卸载、用户数据保留及零残留进程均通过。
 - 最终安装器 SHA-256：2a7df244d6c07d289c7dea3a9788a271c48b6eb33f296b4a5de81e8c27b171e6。
 - 当前状态：等待 Git PR、CI、合并、v1.0.0 标签和正式 GitHub Release；正式 E:\arsm 与既有运行数据零接触。
+
+## 2026-08-05：v1.0.1 P0 修复（Issue #20 / #19，同分支同 PR）
+
+- 在同一分支 `fix/v1.0.1-download-freeze-ui`、同一 PR（#21，Draft）内完成 Issue #20（冻结/签名 URL 重试风暴/虚假总进度）与 Issue #19（下载页布局闪烁）修复，符合 owner 对 #19 必须与 #20 同 PR 的要求。
+- P0-A：`core/ui_dispatch.py` 按 `(rj_id, track_id)` 去重、保护终态事件，`ui/app_base.py` 预算化 dispatch（256 条 + 50ms 时间双预算）。
+- P0-B：`core/download_workers.py` 固定 worker 池，orchestrator `_process_download` 以稳定 `id(task)` 关联结果。
+- P0-C：`core/url_refresh.py` 单飞刷新 + `core/download_errors.py` `SignedUrlExpired`（HTTP 400/401/403）。
+- P0-D：`core/progress.py` 磁盘核验进度，`DownloadQueueItem` 增加 verified 字段，UI 百分比全部钳制 ≤100%。
+- 提交：`872ef7c`（P0 #20）、`dde1ed9`（#19）、`98e3b07`（bump 1.0.1）。
+- 全量回归 `347 passed, 3 skipped`；release_check `ready: true`；PyInstaller `ARSM-Suite-1.0.1-windows-x64.zip` 已构建。
+
+## 2026-08-06：PR #21 审查 NO-GO 集中修复
+
+- 代码审查发现 7 个发布阻塞并全部修复（当前分支，Draft 保持）：
+  1. Signed URL 竞态：`SignedUrlRefresher.ensure_refreshed_once()` 让并发 403 全部 await 同一 future；成功复用、失败返回同一失败结果，不再靠计数猜测完成状态。
+  2. 二次签名失效：transport retry budget 与 signed-URL refresh budget 分离；每文件 `refresh_used` 只授一次新 URL 尝试；新 URL 再次 400/401/403 立即 fail-closed；`retry_count=1` 时新 URL 仍会被尝试；日志不再输出 `fresh_url`（只记 host + 稳定键 + attempt）。
+  3. 磁盘核验移出 UI 线程：`refresh_queue_async`/`load_queue` 经 `run_blocking`（`asyncio.to_thread`）执行，generation token 丢弃过期快照，多余请求合并为一次重拉。
+  4. 真实进度：UI 容量/摘要改用 `verified_bytes`；`registered` 不再被当作终态 100%/绿色；orchestrator 成功保持 `completed` 不再改写 `registered`；`verified_download_progress` 只把已知大小文件计入进度分母，unknown-size 字节不会把未完成已知文件推到 100%。
+  5. UI 调度：`_ui_schedule_lock` 单调度器守卫（poller 与 drain 共享），数量+时间双预算，`await asyncio.sleep(0)` 让出；真实 asyncio 测试验证任意时刻最多一个 drain、backlog 归零、控制消息可响应。
+  6. #19 详情面板：文件树（相对路径 key + 目录缩进）、每文件失败原因、`.part` 恢复状态；重复文件名不再碰撞；每状态唯一操作按钮（不再同时出现暂停/继续）。
+  7. 交付记录：本文档、CURRENT_STATE、DECISIONS、ROADMAP、HANDOFF、README 同步；PR 描述测试数更新为 `350 passed`（远端 CI）。
+- 新增回归：多文件并发 403 共享单次刷新、`retry_count=1` 新 URL 尝试、二次 403 fail-closed、日志脱敏、unknown+known 混合进度、非阻塞队列刷新 + generation、单调度器真实 asyncio、文件树重复名/错误/.part、每状态唯一按钮。
+- 全量回归：`367 passed, 3 skipped`；3 项 skipped 均为 Windows 无法创建符号链接。
+- 仍保持 Draft；真实 GUI/DPI/托盘验收、9 任务约 2700 文件 30 分钟压力与 300 个集中 400 场景在通过前保持 NO-GO。
+
+## 2026-08-06：PR #21 第二轮审查 4 项修复
+
+- **unknown-size 进度贯通**：`VerifiedDownloadSummary` 新增 `known_verified_bytes/known_expected_bytes`；`DownloadQueueItem` 新增 `verified_known_bytes/verified_expected_bytes/verified_progress`，`progress` 属性优先返回磁盘核验的 known-size 比率。卡片与详情的进度条/容量都使用该值；`completed/registered` 展示完成态服从磁盘核验，不再无条件强制 100%。
+- **启动单次磁盘核验**：`load_queue()` 并入 `refresh_queue_async` 同一管道，子类构造末尾不再二次调用 `reload_queue_from_database`；初始化后 pending query 恰为 1，后续请求合并而非再开一轮 SQLite+stat I/O。
+- **重复文件名实时更新**：`update_track_progress` 维护 track_id 键控 `_live_tracks`；`_file_details` 以 download id（`_make_dl_id`）优先、basename 回退映射 live 进度；实时更新经 `_detail_key_by_track` 按 track_id 解析，同名不同目录各自更新自己的行，重绘不产生重复顶层节点。
+- **文档事实源**：CURRENT_STATE 顶部状态、head SHA、远端 Windows CI `371 passed`、最新构建 SHA `dfa29fc1…` 已同步。
+- 全量回归：`368 passed, 3 skipped`；release_check `ready: true`；PyInstaller `ARSM-Suite-1.0.1-windows-x64.zip` SHA-256 `dfa29fc1adafcdf0476c6f00a98ce97f368774b8734591ac33955528ed1e7d0f`。
+- 保持 Draft；真实 GUI/DPI/托盘、9 任务约 2700 文件 30 分钟压力、300 个集中 400 场景通过前保持 NO-GO。
+
+## 2026-08-06：PR #21 第三轮审查 2 组修复
+
+- **实时总进度统一**：`_get_progress_value`（左侧卡片与右侧总进度共用单一来源）改为以 track_id 键控的 `_live_tracks` 聚合：只把 known-size 文件计入字节分子/分母，同名文件分别统计；live 数据一旦建立就优先于旧磁盘快照（恢复任务的进度条实时动），快照仅在 live 建立前作为基线。
+- **registered/completed 磁盘不完整降级**：`apply_disk_verification` 增加 `status_filter` 参数；磁盘核验未齐全的 `completed/registered` 下载作品在 presentation/read-model 层降级为 `partial`（`is_terminal=False`、`can_resume=True`、`ui_status="部分完成"`、黄色警示），不再显示绿色 100%；working 筛选纳入这类候选，核验后保留不完整项、丢弃真正完成项。不修改正式数据库。
+- 新增端到端测试：live 进度推进卡片与详情、unknown-size 不虚高总进度、同名文件分别计入、registered 缺文件被服务链降级且 UI 非绿色 100%。
+- 全量回归：`373 passed, 3 skipped`；release_check `ready: true`；PyInstaller `ARSM-Suite-1.0.1-windows-x64.zip` SHA-256 `fada0cc4afabdaabf33871987559d5ab4316e4a2acf6a746b1f20cf17cb612b0`。
+- 保持 Draft；待重新审查；真实 GUI/DPI/托盘、9 任务约 2700 文件 30 分钟压力、300 个集中 400 场景通过前保持 NO-GO。
+
+## 2026-08-08：第五轮审查 CONDITIONAL GO + 无头压力验收通过
+
+- 第五轮代码审查：第四轮 4 个阻塞全部通过，产品代码层 **CONDITIONAL GO**。
+- 新增 `scripts/v101_stress_acceptance.py` 无头压力验收（真实 Orchestrator + DownloadWorkerPool + SignedUrlRefresher + 本地 aiohttp 服务器），运行 30 分钟：**ACCEPTANCE PASS**。
+  - 9 作品 × 300 文件 + 300 文件 400/401/403 集中风暴 = 3000 文件全部完成（0 失败）；
+  - single-flight：10 个 RJ 各恰好 1 次刷新；3000 个过期 URL 各命中 1 次（无重试风暴）；
+  - 恢复场景：9/10 完成 + 50% `.part` 经 HTTP 206 Range 续传至 100%，DB 比率 0.9 → 1.0，进度单调不回退；
+  - RSS 48.8 → 62.3 MB 后稳定，CPU 峰值 92%、平均 1.2%；180 个 10s 采样（连续 ≥30 分钟）。
+- 最终 head `facf351` 双平台 CI 全绿：Windows **380 passed**、Ubuntu **379 passed, 1 skipped**。
+- 保持 Draft；仅剩真实 Windows 视觉 GUI 验收（1366×768/1920×1080、DPI 125/150/200%、托盘、暂停/继续/取消、三次退出无残留）需人工在桌面完成；通过前 NO-GO。
+
+## 2026-08-06：PR #21 第四轮审查 4 项修复
+
+- **恢复任务全作品实时总进度**：`_live_tracks` 改为完整 per-track 基线；新一轮下载/准备/恢复开始时 `update_work_status` 使旧 live 缓存失效，首个进度事件用数据库全部文件行重建基线（含已完成文件），`_apply_live_event` 按 title/dl_id 关联合并实时增量。恢复 9 完成 + 1 续传显示 90% → 95% → 100%，不再退化为剩余文件进度。
+- **mixed known/unknown 完整性判定**：`_disk_confirms_complete` 同时要求 `complete_files == file_count`、无 overage、known-size 比率 100%；已知完整 + 未知缺失不再误判完成。
+- **partial 卡片改走 resume/reconcile**：`partial` 按钮调用 `resume_download`（`_resume_one`/`resume_job` 核验 completed/registered/.part/缺失文件，仅在 `metadata_required`/缓存损坏时重新获取 metadata），不再被 `prepare_work` duplicate guard 拦截 `library_index` 已存在作品。
+- **Working 核验后分页**：新增 `DownloadService.fetch_working_page`——over-fetch working 候选（≤200）→ 磁盘核验降级/丢弃 → 再分页并重算 `total_items/page_count`；前 24 个完整、第 25 个不完整时，不完整作品出现在默认页。
+- 新增端到端测试：恢复 90/95/100、mixed 完整性、partial 走 resume（含 library_index）、working 分页填充。
+- 全量回归：`377 passed, 3 skipped`；release_check `ready: true`；PyInstaller `ARSM-Suite-1.0.1-windows-x64.zip` SHA-256 `169d71fe808d14690a0edeb8d5a9b31213e88ee8b674008ba2f1c914e52d7444`。
+- 保持 Draft；待 CI 与重新审查；真实 GUI/DPI/托盘、9 任务约 2700 文件 30 分钟压力、300 个集中 400 场景通过前保持 NO-GO。
+
+## 2026-08-07：PR #21 第四轮修复 CI 通过 + 超时诊断
+
+- CI（head `02350af`）通过：Windows **380 passed**；Ubuntu **379 passed, 1 skipped**。
+- Ubuntu 曾两次在 15 分钟 workflow 超时被取消；经排查为 CI runner CPU 资源拥挤（同一 head 曾以 51s 通过，Windows/Python 3.11/3.12 本地与各文件独立运行均无挂起），并非代码缺陷。
+- 为 `tests/conftest.py` 加入 Linux 专属 60s 单测超时守卫（POSIX `SIGALRM`，Windows 为 no-op），后续此类问题会直接点名超时测试，避免整段 CI 静默超时。
+- 保持 Draft；待重新审查；真实 GUI/DPI/托盘、9 任务约 2700 文件 30 分钟压力、300 个集中 400 场景通过前保持 NO-GO。

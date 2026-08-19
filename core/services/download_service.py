@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
 from collections.abc import Iterable, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from core.progress import ObservedFile, VerifiedDownloadSummary, verified_download_progress
 from core.read_models import (
     BatchEnqueuePreview,
     DownloadQueueItem,
@@ -101,11 +104,24 @@ class DownloadService:
         if status_filter == "all":
             return True
         if status_filter == "working":
-            return not item.is_terminal and item.queue_state != "unknown"
+            if item.queue_state == "unknown":
+                return False
+            if not item.is_terminal:
+                return True
+            # Terminal download works (completed/registered) are candidates for
+            # disk re-verification: apply_disk_verification downgrades the ones
+            # that are incomplete on disk to partial (kept visible) and drops
+            # the genuinely-complete ones from the active queue.  Library
+            # states (verified/external/indexed) are never re-checked.
+            return (item.queue_state == "completed"
+                    and str(item.work_status or "").lower()
+                    in {"completed", "registered"})
         return item.queue_state == status_filter
 
     @staticmethod
-    def _sort_key(item: DownloadQueueItem) -> tuple[int, str, str]:
+    def _sort_key(item: DownloadQueueItem) -> tuple[int, str]:
+        # Issue #19: order must be stable across refreshes, not re-sorted by a
+        # changing updated_at.  Priority, then a deterministic RJ id tiebreak.
         priority = {
             "active": 0,
             "queued": 1,
@@ -119,7 +135,7 @@ class DownloadService:
             "cancelled": 9,
             "completed": 10,
         }.get(item.queue_state, 10)
-        return (priority, item.updated_at or "", item.rj_id)
+        return (priority, item.rj_id)
 
     @staticmethod
     def _aggregate_sql() -> str:
@@ -212,6 +228,37 @@ class DownloadService:
         with lock:
             return self._fetch_queue_page_unlocked(status_filter, page, page_size)
 
+    def fetch_working_page(self, *, page: int = 1,
+                           page_size: int = 24) -> DownloadQueuePage:
+        """Fetch + disk-verify + paginate the active queue in one pass.
+
+        Terminal download candidates (completed/registered) are included as
+        re-verification candidates, downgraded to ``partial`` when incomplete
+        on disk, and dropped when genuinely complete — all BEFORE final
+        pagination.  A Working page is therefore never emptied by post-filter
+        drops and ``total_items``/``page_count`` reflect the verified state
+        (review #2c).
+        """
+        page_size = max(1, min(int(page_size), 200))
+        # Bounded over-fetch: every Working candidate (active + terminal
+        # download works) is verified before the requested slice is chosen.
+        candidates = self.fetch_queue_page(
+            status_filter="working", page=1, page_size=200)
+        verified = self.apply_disk_verification(
+            candidates, status_filter="working")
+        items = [item for item in verified.items if not item.is_terminal]
+        total_items = len(items)
+        page_count = max(1, (total_items + page_size - 1) // page_size)
+        page = max(1, min(int(page), page_count))
+        start = (page - 1) * page_size
+        return DownloadQueuePage(
+            items=tuple(items[start:start + page_size]),
+            summary=candidates.summary,
+            page=page,
+            page_size=page_size,
+            total_items=total_items,
+        )
+
     def _fetch_queue_page_unlocked(self, status_filter: str, page: int,
                                    page_size: int) -> DownloadQueuePage:
         rows = self.connection.execute(self._aggregate_sql()).fetchall()
@@ -248,6 +295,132 @@ class DownloadService:
             page_size=page_size,
             total_items=total_items,
         )
+
+    @staticmethod
+    def _safe_stat(path: Path) -> int | None:
+        try:
+            if path.is_file():
+                return path.stat().st_size
+        except OSError:
+            pass
+        return None
+
+    def apply_disk_verification(
+            self, page: DownloadQueuePage, *, status_filter: str | None = None
+    ) -> DownloadQueuePage:
+        """Return a copy of ``page`` whose items carry P0-D disk-verified
+        progress (never >100%) and whose terminal works that are incomplete on
+        disk are downgraded to ``partial`` for presentation.
+
+        Kept separate from ``fetch_queue_page`` so the two-SELECT contract of
+        the queue snapshot is preserved; callers run it off the UI thread.  One
+        additional SELECT fetches the per-file paths for the page's works only,
+        bounded by the page size.  ``status_filter == "working"`` additionally
+        drops terminal items that ARE complete (they belong to the completed
+        view, not the active queue).
+        """
+        items_by_rj = {item.rj_id: item for item in page.items
+                       if item.local_path}
+        if not items_by_rj:
+            return page
+        placeholders = ",".join("?" * len(items_by_rj))
+        rows = self.connection.execute(
+            f"SELECT rj_id, local_path, total_bytes FROM downloads "
+            f"WHERE rj_id IN ({placeholders})",
+            tuple(items_by_rj),
+        ).fetchall()
+        grouped: dict[str, list[tuple[str, int]]] = {}
+        for rj, local_path, total in rows:
+            grouped.setdefault(str(rj), []).append((str(local_path or ""),
+                                                    int(total or 0)))
+
+        summaries: dict[str, VerifiedDownloadSummary] = {}
+        for rj_id in items_by_rj:
+            by_abs: dict[str, int] = {}
+            for local_path, total in grouped.get(rj_id, []):
+                try:
+                    norm = os.path.normcase(str(Path(local_path).resolve()))
+                except OSError:
+                    norm = os.path.normcase(local_path)
+                by_abs[norm] = max(by_abs.get(norm, 0), total)
+            observed = []
+            for key, expected in by_abs.items():
+                final = Path(key)
+                part = final.with_suffix(final.suffix + ".part")
+                observed.append(ObservedFile(
+                    expected_bytes=expected,
+                    final_bytes=self._safe_stat(final),
+                    part_bytes=self._safe_stat(part),
+                ))
+            summaries[rj_id] = verified_download_progress(observed)
+
+        updated = []
+        for item in page.items:
+            summary = summaries.get(item.rj_id)
+            if summary is None:
+                updated.append(item)
+                continue
+            updated.append(self._apply_verified_state(item, summary))
+        if status_filter == "working":
+            # Terminal items still present are genuinely complete (or library
+            # states) — drop them from the active queue; incomplete ones were
+            # already downgraded to partial above.
+            updated = [item for item in updated if not item.is_terminal]
+        return DownloadQueuePage(
+            items=tuple(updated),
+            summary=page.summary,
+            page=page.page,
+            page_size=page.page_size,
+            total_items=page.total_items,
+        )
+
+    @staticmethod
+    def _apply_verified_state(item: DownloadQueueItem,
+                              summary: VerifiedDownloadSummary) -> DownloadQueueItem:
+        """Attach disk-verified metrics and, if a completed/registered work is
+        NOT actually complete on disk, downgrade its PRESENTATION state so it
+        never shows as a green terminal 100%.  The production DB is untouched.
+        """
+        replaced = replace(
+            item,
+            verified_bytes=summary.verified_bytes,
+            verified_files=summary.complete_files,
+            overage_file_count=summary.overage_files,
+            verified_known_bytes=summary.known_verified_bytes,
+            verified_expected_bytes=summary.known_expected_bytes,
+            verified_progress=summary.progress,
+        )
+        if item.queue_state != "completed":
+            return replaced
+        # Library-indexed states are validated elsewhere; never downgrade them.
+        if str(item.work_status or "").lower() in {"verified", "external", "indexed"}:
+            return replaced
+        if DownloadService._disk_confirms_complete(summary, item.file_count):
+            return replaced
+        return replace(
+            replaced,
+            queue_state="partial",
+            ui_status="部分完成",
+            is_terminal=False,
+            can_resume=True,
+            can_retry=True,
+        )
+
+    @staticmethod
+    def _disk_confirms_complete(summary: VerifiedDownloadSummary,
+                                file_count: int) -> bool:
+        """A terminal work is only truly complete when EVERY expected file row
+        is confirmed present/complete on disk: all files observed complete, no
+        overage, and a 100% known-size ratio."""
+        if file_count <= 0:
+            return False
+        if summary.overage_files > 0:
+            return False
+        if summary.complete_files < file_count:
+            return False
+        if summary.known_expected_bytes > 0 and summary.progress < 1.0:
+            return False
+        return True
 
     def _existing_tables(self) -> set[str]:
         return {
