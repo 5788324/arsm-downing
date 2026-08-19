@@ -1,0 +1,151 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, "Segoe UI", system-ui, sans-serif;
+  background: #0f172a;
+  color: #f8fafc;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 480px;
+}
+
+.shell {
+  margin: 0 auto;
+  max-width: 760px;
+  padding: 40px 24px;
+}
+
+.panel {
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 16px;
+  box-shadow: 0 22px 60px rgba(2, 6, 23, 0.35);
+  padding: 32px;
+}
+
+.eyebrow {
+  color: #a78bfa;
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: 0.14em;
+  margin: 0 0 8px;
+}
+
+h1 {
+  font-size: 28px;
+  margin: 0 0 10px;
+}
+
+.intro,
+.help {
+  color: #94a3b8;
+  line-height: 1.55;
+}
+
+.connection {
+  display: grid;
+  gap: 10px;
+  margin: 24px 0;
+}
+
+.connection div {
+  align-items: center;
+  background: #0f172a;
+  border-radius: 10px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 110px 1fr;
+  padding: 12px 14px;
+}
+
+dt {
+  color: #94a3b8;
+}
+
+dd {
+  font-family: Consolas, monospace;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+label {
+  display: block;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.token-row,
+.actions {
+  display: flex;
+  gap: 10px;
+}
+
+input {
+  background: #0f172a;
+  border: 1px solid #475569;
+  border-radius: 9px;
+  color: #f8fafc;
+  flex: 1;
+  font: inherit;
+  min-height: 42px;
+  padding: 10px 12px;
+}
+
+input:focus {
+  border-color: #8b5cf6;
+  outline: 2px solid rgba(139, 92, 246, 0.3);
+}
+
+button {
+  background: #7c3aed;
+  border: 1px solid #8b5cf6;
+  border-radius: 9px;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  min-height: 42px;
+  padding: 10px 16px;
+}
+
+button:hover {
+  background: #6d28d9;
+}
+
+button.secondary {
+  background: #334155;
+  border-color: #475569;
+}
+
+.actions {
+  margin-top: 22px;
+}
+
+.status {
+  border-radius: 9px;
+  min-height: 42px;
+  padding: 11px 13px;
+}
+
+.status[data-tone="success"] {
+  background: rgba(16, 185, 129, 0.14);
+  color: #34d399;
+}
+
+.status[data-tone="error"] {
+  background: rgba(239, 68, 68, 0.14);
+  color: #f87171;
+}
+
+.steps {
+  border-top: 1px solid #334155;
+  color: #cbd5e1;
+  line-height: 1.7;
+  margin: 26px 0 0;
+  padding: 22px 0 0 24px;
+}

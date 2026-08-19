@@ -1,7 +1,15 @@
+import os
+import secrets
+import webbrowser
 import flet as ft
 from pathlib import Path
 
-from ui.theme import ACCENT_PRIMARY, ERROR
+from ui.theme import ACCENT_PRIMARY, ERROR, SUCCESS, WARNING
+from core.browser_bridge import (
+    BROWSER_BRIDGE_PORT as DEFAULT_PORT,
+    BROWSER_EXTENSION_ID as EXTENSION_ID,
+)
+from core.paths import resource_path
 from core.settings_validation import (
     normalize_library_paths, validate_proxy_uri,
     validate_writable_directory,
@@ -86,6 +94,30 @@ class SettingsView(ft.Container):
             label="按文件类型自动分类",
             value=getattr(config, "sort_files", False),
         )
+        self.browser_bridge_switch = ft.Switch(
+            label="允许浏览器扩展连接到 ARSM",
+            value=bool(getattr(config, "browser_bridge_enabled", False)),
+            tooltip="只监听本机 127.0.0.1，不向网页暴露文件路径。",
+        )
+        self.browser_bridge_status = ft.Text("正在读取连接状态…", size=12)
+        self.browser_token_input = ft.TextField(
+            label="扩展连接令牌",
+            value=str(getattr(config, "browser_extension_token", "") or ""),
+            password=True,
+            can_reveal_password=True,
+            read_only=True,
+            expand=True,
+            tooltip="仅复制到扩展设置页；不要发给他人。",
+        )
+        self.browser_endpoint_input = ft.TextField(
+            label="本机连接地址",
+            value=f"http://127.0.0.1:{int(getattr(config, 'browser_bridge_port', DEFAULT_PORT))}",
+            read_only=True,
+            expand=True,
+        )
+        self.browser_extension_id_input = ft.TextField(
+            label="固定扩展 ID", value=EXTENSION_ID, read_only=True, expand=True,
+        )
 
         self.lib_paths = list(getattr(config, "library_paths", []) or [str(config.output_dir)])
         self.lib_path_list = ft.Column(spacing=6)
@@ -124,6 +156,46 @@ class SettingsView(ft.Container):
                 ft.Row([self.external_intake_root_input]),
                 ft.Row([self.external_quarantine_root_input]),
                 ft.Divider(height=8, color="transparent"),
+                ft.Text("浏览器扩展", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
+                ft.Text(
+                    "在 asmr.one 的销量旁显示是否已入库，并把下载请求安全交给 ARSM。扩展不会直接读写媒体文件。",
+                    size=12, color="white70",
+                ),
+                ft.Row([self.browser_bridge_switch]),
+                self.browser_bridge_status,
+                ft.Row([self.browser_endpoint_input]),
+                ft.Row([self.browser_extension_id_input]),
+                ft.Row([self.browser_token_input]),
+                ft.Row(
+                    [
+                        ft.ElevatedButton(
+                            "打开扩展安装目录",
+                            icon=ft.Icons.FOLDER_OPEN,
+                            on_click=self._open_browser_extension_folder,
+                        ),
+                        ft.OutlinedButton(
+                            "管理 / 卸载扩展",
+                            icon=ft.Icons.SETTINGS,
+                            on_click=self._open_browser_extension_manager,
+                        ),
+                        ft.OutlinedButton(
+                            "检查连接",
+                            icon=ft.Icons.REFRESH,
+                            on_click=self._check_browser_bridge,
+                        ),
+                        ft.TextButton(
+                            "重新生成令牌",
+                            icon=ft.Icons.KEY,
+                            on_click=self._confirm_regenerate_browser_token,
+                        ),
+                    ],
+                    wrap=True,
+                ),
+                ft.Text(
+                    "安装：在 Chrome/Edge 扩展管理页开启开发者模式，选择“加载已解压的扩展程序”，指向上面的目录。卸载也在扩展管理页完成。",
+                    size=12, color="white70",
+                ),
+                ft.Divider(height=8, color="transparent"),
                 ft.Text("代理设置", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
                 ft.Row([self.metadata_proxy_input]),
                 ft.Row([self.cover_proxy_input]),
@@ -153,6 +225,88 @@ class SettingsView(ft.Container):
 
     def set_active(self, active: bool) -> None:
         self._active = bool(active)
+        if self._active:
+            self._refresh_browser_bridge_status(update=True)
+
+    def _refresh_browser_bridge_status(self, *, update: bool = False) -> None:
+        snapshot = self.app_controller.browser_bridge_snapshot()
+        self.browser_endpoint_input.value = snapshot.endpoint
+        if snapshot.running:
+            self.browser_bridge_status.value = "已连接：ARSM 正在等待扩展请求"
+            self.browser_bridge_status.color = SUCCESS
+        elif snapshot.enabled and snapshot.last_error:
+            self.browser_bridge_status.value = f"连接失败：{snapshot.last_error}"
+            self.browser_bridge_status.color = ERROR
+        elif snapshot.enabled:
+            self.browser_bridge_status.value = "已启用，保存设置后将启动本机连接"
+            self.browser_bridge_status.color = WARNING
+        else:
+            self.browser_bridge_status.value = "未启用：网页不会连接 ARSM"
+            self.browser_bridge_status.color = "white70"
+        if update:
+            try:
+                self.browser_bridge_status.update()
+                self.browser_endpoint_input.update()
+            except Exception:
+                pass
+
+    def _open_browser_extension_folder(self, _event) -> None:
+        folder = resource_path("browser_extension")
+        if not folder.is_dir():
+            self.app_controller.show_snack(f"扩展目录不存在：{folder}")
+            return
+        os.startfile(str(folder))
+        self.app_controller.show_snack("已打开扩展目录，请在浏览器中选择该文件夹")
+
+    def _open_browser_extension_manager(self, _event) -> None:
+        if not webbrowser.open("chrome://extensions/"):
+            webbrowser.open("edge://extensions/")
+        self.app_controller.show_snack("请在扩展管理页启用、更新或卸载 ARSM 扩展")
+
+    def _check_browser_bridge(self, _event) -> None:
+        self._refresh_browser_bridge_status(update=True)
+        snapshot = self.app_controller.browser_bridge_snapshot()
+        if snapshot.running:
+            self.app_controller.show_snack("本机桥接运行正常；请在扩展设置页保存同一个令牌")
+        elif snapshot.enabled:
+            self.app_controller.show_snack(snapshot.last_error or "本机桥接尚未启动，请保存设置后重试")
+        else:
+            self.app_controller.show_snack("请先启用浏览器扩展连接并保存设置")
+
+    def _confirm_regenerate_browser_token(self, _event) -> None:
+        def close_dialog(_click=None) -> None:
+            closer = getattr(self.app_controller.page, "close", None)
+            if callable(closer):
+                closer(dialog)
+            else:
+                dialog.open = False
+                self.app_controller.page.update()
+
+        def regenerate(_click) -> None:
+            self.browser_token_input.value = secrets.token_urlsafe(36)
+            self.browser_token_input.update()
+            close_dialog()
+            self.app_controller.show_snack("新令牌已生成；保存设置后，请同步到扩展设置页")
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("重新生成扩展令牌？"),
+            content=ft.Text(
+                "旧令牌会立即失效。保存后需要把新令牌复制到 Chrome/Edge 扩展设置页。"
+            ),
+            actions=[
+                ft.TextButton("取消", on_click=close_dialog),
+                ft.TextButton("重新生成", on_click=regenerate),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        opener = getattr(self.app_controller.page, "open", None)
+        if callable(opener):
+            opener(dialog)
+        else:
+            self.app_controller.page.dialog = dialog
+            dialog.open = True
+            self.app_controller.page.update()
 
     def _refresh_lib_paths(self):
         self.lib_path_list.controls.clear()
@@ -194,7 +348,8 @@ class SettingsView(ft.Container):
             "download_proxy", "cover_fallback_to_direct",
             "download_fallback_to_proxy", "proxy", "work_concurrency",
             "metadata_concurrency", "file_concurrency", "max_concurrent",
-            "tag_audio", "sort_files",
+            "tag_audio", "sort_files", "browser_bridge_enabled",
+            "browser_bridge_port", "browser_extension_token",
         )
         previous = {name: getattr(config, name, None) for name in attrs}
         download_view = getattr(self.app_controller, "views", {}).get(0)
@@ -205,6 +360,10 @@ class SettingsView(ft.Container):
         ) if service is not None else None
         created_output_dir = None
         try:
+            browser_token = str(self.browser_token_input.value or "").strip()
+            if self.browser_bridge_switch.value and len(browser_token) < 32:
+                raise ValueError("浏览器扩展连接令牌无效，请重新生成")
+
             raw_output = str(self.dir_input.value or "").strip()
             if not raw_output:
                 raise ValueError("下载保存目录不能为空")
@@ -265,7 +424,11 @@ class SettingsView(ft.Container):
             config.max_concurrent = config.file_concurrency
             config.tag_audio = bool(self.tag_audio_switch.value)
             config.sort_files = bool(self.sort_files_switch.value)
+            config.browser_bridge_enabled = bool(self.browser_bridge_switch.value)
+            config.browser_bridge_port = DEFAULT_PORT
+            config.browser_extension_token = browser_token
             config.save()
+            self.app_controller.apply_browser_bridge_settings()
 
             # The service is read-only, but it snapshots paths for duplicate scans.
             # Refresh those snapshots immediately; existing active targets stay fixed.
@@ -273,7 +436,7 @@ class SettingsView(ft.Container):
                 service.output_dir = Path(config.output_dir)
                 service.library_paths = tuple(Path(value) for value in config.library_paths)
             self.app_controller.show_snack(
-                "设置已保存；路径与代理对后续任务生效，并发线程数重启后完整生效"
+                "设置已保存；浏览器扩展连接已同步，并发线程数重启后完整生效"
             )
         except Exception as exc:
             for name, value in previous.items():

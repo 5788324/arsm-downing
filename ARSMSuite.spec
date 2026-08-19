@@ -32,6 +32,7 @@ datas = flet_datas + desktop_datas + [
     (str(ROOT / "config.example.json"), "."),
     (str(ROOT / "README.md"), "."),
     (str(ROOT / "LICENSE"), "."),
+    (str(ROOT / "browser_extension"), "browser_extension"),
 ]
 
 binaries = flet_binaries + desktop_binaries

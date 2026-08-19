@@ -1,5 +1,20 @@
 # ARSM Suite 当前任务路线图
 
+## T17：asmr.one 浏览器扩展
+
+状态：`IMPLEMENTED / WAITING_CHROME_EDGE_MANUAL_ACCEPTANCE`
+
+- [x] loopback 安全桥接、固定扩展 ID、令牌、限流和安全返回模型；
+- [x] 列表/详情状态标签与下载到 ARSM；
+- [x] 设置页安装、连接、令牌和卸载引导；
+- [x] 397 项 portable 回归和当前站点 DOM 只读核对；
+- [ ] Chrome 稳定版人工加载与视觉验收；
+- [ ] Edge 稳定版人工加载与视觉验收；
+- [ ] 多标签、缩放、退出/重启和卸载矩阵；
+- [ ] 人工矩阵通过后再决定 Draft PR 是否转 Ready。
+
+详见 `docs/BROWSER_EXTENSION_TASKS.md` 与 `docs/BROWSER_EXTENSION_ACCEPTANCE.md`。
+
 
 ## PR1：直接源码 Windows 发布阻断验收
 

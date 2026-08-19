@@ -1,5 +1,13 @@
 # ARSM Suite T10 交接
 
+## 2026-08-19 浏览器扩展独立分支交接
+
+- 分支：`codex/asmr-browser-extension`；基线：`cc41d94`；
+- 功能：asmr.one 入库标签、下载按钮、loopback 桥接、设置页安装/停用/令牌管理；
+- 自动门禁：`397 passed, 3 skipped`，JS/Python 语法和 `git diff --check` 通过；
+- 当前只剩 Chrome/Edge 人工安装矩阵；未访问真实 `E:\arsm`；
+- 在用户确认安装前，不把浏览器人工项写成 PASS，也不合并或发布。
+
 
 ## 2026-08-02 PR1 直接源码候选交接
 

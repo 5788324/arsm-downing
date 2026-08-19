@@ -85,3 +85,25 @@ def test_portable_frozen_build_keeps_data_beside_executable(tmp_path: Path, monk
     monkeypatch.setattr(paths_module.sys, "frozen", True, raising=False)
     monkeypatch.setattr(paths_module.sys, "executable", str(executable))
     assert application_dir() == executable.parent
+
+
+def test_browser_bridge_config_round_trips_without_lockfile_or_source_drift(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_file = tmp_path / "config.json"
+    monkeypatch.setattr(config_module, "CONFIG_FILE", config_file)
+    monkeypatch.setattr(
+        config_module, "CONFIG_EXAMPLE_FILE", tmp_path / "missing-example.json"
+    )
+    config = ConfigManager()
+    token = config.ensure_browser_extension_token()
+    assert len(token) >= 32
+    config.browser_bridge_enabled = True
+    config.browser_bridge_port = 17641
+    config.save()
+
+    loaded = ConfigManager.load()
+    assert loaded.browser_bridge_enabled is True
+    assert loaded.browser_bridge_port == 17641
+    assert loaded.browser_extension_token == token
+    assert loaded.dir_template == "{rj_id} {title}"

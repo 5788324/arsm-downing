@@ -40,6 +40,9 @@ class FakeController:
             dir_template="{rj_id} {title}",
             work_concurrency=1,
             metadata_concurrency=2,
+            browser_bridge_enabled=False,
+            browser_bridge_port=17641,
+            browser_extension_token="t" * 48,
             file_concurrency=4,
             max_concurrent=4,
             metadata_proxy=None,
@@ -52,6 +55,7 @@ class FakeController:
             external_intake_root=None,
             external_quarantine_root=None,
         )
+        self.browser_apply_calls = 0
         self.page = FakePage()
         self.orc = SimpleNamespace(active_tasks={}, queued_rj_ids=set())
         self.calls = []
@@ -79,6 +83,17 @@ class FakeController:
 
     def start_download(self, rj_id, **kwargs):
         self.calls.append(("start", rj_id, kwargs))
+
+    def browser_bridge_snapshot(self):
+        return SimpleNamespace(
+            endpoint="http://127.0.0.1:17641",
+            running=False,
+            enabled=False,
+            last_error="",
+        )
+
+    def apply_browser_bridge_settings(self):
+        self.browser_apply_calls += 1
 
     def reconnect_download(self, rj_id):
         self.calls.append(("reconnect", rj_id, {}))

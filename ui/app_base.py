@@ -7,6 +7,7 @@ import time
 import logging
 from pathlib import Path
 
+from core.browser_bridge import BrowserBridge
 from core.paths import app_path
 from core.shutdown_signal import ShutdownSignal
 from core.version import display_title
@@ -112,6 +113,15 @@ class AppController:
         self.config = ConfigManager.load()
         self.db = LibraryVault()
         self.kernel = NetworkKernel(self.config)
+        self.config.ensure_browser_extension_token()
+        self.browser_bridge = BrowserBridge(
+            self.db,
+            self._browser_queue_download,
+            self._browser_open_view,
+            token=self.config.browser_extension_token,
+            enabled=self.config.browser_bridge_enabled,
+            port=self.config.browser_bridge_port,
+        )
         self.orc = Orchestrator(self.kernel, self.config, self.db)
 
         # ── Async event loop on a dedicated thread ──
@@ -153,6 +163,11 @@ class AppController:
         # ── Start UI message queue poller ──
         self._start_ui_poller()
 
+
+        if self.config.browser_bridge_enabled:
+            self._submit_background(
+                self.browser_bridge.start(), "启动浏览器扩展连接"
+            )
     # ──────────────────────────────────────────────────────
     #  Event loop thread
     # ──────────────────────────────────────────────────────
@@ -172,6 +187,7 @@ class AppController:
 
     async def _shutdown_backend(self):
         """Stop workers and close backend resources exactly once."""
+        await self.browser_bridge.stop()
         await self.orc.shutdown()
         self.db.close()
 
@@ -459,6 +475,53 @@ class AppController:
                     shutdown_signal.close()
         except Exception as exc:
             logging.debug("UI queue message error: %s", exc)
+
+    async def _browser_queue_download(self, rj_id: str):
+        """Use the same duplicate guards and queue path as the desktop UI."""
+        return await self.orc.queue_job(rj_id)
+
+    def _browser_open_view(self, rj_id: str, view: str) -> None:
+        """Marshal an extension open request back to the Flet UI thread."""
+        target = 1 if view == "library" else 0
+
+        def navigate(_result):
+            navigate_to_view = getattr(self, "navigate_to_view", None)
+            if callable(navigate_to_view):
+                navigate_to_view(target)
+            else:
+                self.nav_rail.selected_index = target
+                self.on_nav_change(type("NavEvent", (), {
+                    "control": type(
+                        "NavControl", (), {"selected_index": target}
+                    )()
+                })())
+                self.page.update()
+            self.show_snack(f"已从浏览器打开 {rj_id}")
+
+        self.ui_queue.put(("ui_callback", navigate, None))
+
+    def browser_bridge_snapshot(self):
+        return self.browser_bridge.snapshot()
+
+    def apply_browser_bridge_settings(self):
+        """Restart only the local bridge after settings are saved."""
+        async def _apply():
+            await self.browser_bridge.stop()
+            self.browser_bridge.configure(
+                enabled=bool(self.config.browser_bridge_enabled),
+                token=self.config.browser_extension_token,
+                port=int(self.config.browser_bridge_port),
+            )
+            if self.config.browser_bridge_enabled:
+                snapshot = await self.browser_bridge.start()
+                self._enqueue_snack(
+                    f"浏览器扩展连接已启动：{snapshot.host}:{snapshot.port}"
+                )
+            else:
+                self._enqueue_snack("浏览器扩展连接已停用")
+            return self.browser_bridge.snapshot()
+
+        return self._submit_background(_apply(), "应用浏览器扩展设置")
 
     def run_blocking(self, function, on_success=None, *, action_label: str = "后台任务"):
         """Run blocking filesystem/SQLite presentation work off the Flet loop.

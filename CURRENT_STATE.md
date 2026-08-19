@@ -5,14 +5,23 @@
 > 当前版本：`1.0.1`（Draft，未转 Ready，未合并，未发布）
 > 当前阶段：`PR #21 在既有修复上补充真实用户体验收口；本地回归与远端 CI 通过前维持 Draft / NO-GO`
 
+
+## 浏览器扩展独立功能分支（2026-08-19）
+
+- 分支：`codex/asmr-browser-extension`，基于 v1.0.1 已验收检查点 `cc41d94`；
+- 已实现：Manifest V3、固定扩展 ID、loopback 令牌桥接、批量入库状态、下载入队、设置页安装/停用/令牌管理；
+- 自动验证：完整 portable `397 passed, 3 skipped`，JavaScript 语法、compileall、`git diff --check` 通过；
+- 侧边浏览器已只读核对 asmr.one 当前列表卡片、详情 H1 和销量 DOM；
+- Windows 隔离 Profile 已看到浏览器扩展设置分区；真实 `E:\arsm` 零接触；
+- Chrome/Edge 加载未打包扩展属于待用户确认的人工验收，不得提前写成 PASS。
 > 历史记录见下文各章节；本文件顶部为当前事实源。
 
 ## 2026-08-19 用户体验收口与后续扩展规划
 
 - 当前 v1.0.1 修复分支补充了取消任务可恢复、停止任务速度/ETA 清零、空资源库设置引导、设置页顶部保存入口、系统工具新手文案、页内导航生命周期和 Windows 退出事件隔离；均带有回归测试。
 - 上述内容属于 PR #21 的缺陷和可用性收口，不改变数据库 schema，不访问正式 `E:\arsm`，不执行迁移、清理或媒体写操作。
-- `asmr.one` 入库状态标签与“下载到 ARSM”属于后续独立功能，不混入 v1.0.1 候选。
-- 独立任务清单：[`docs/BROWSER_EXTENSION_TASKS.md`](docs/BROWSER_EXTENSION_TASKS.md)。
+- `asmr.one` 入库状态标签与“下载到 ARSM”已在独立分支实现，不混入 v1.0.1 候选。
+- 独立任务清单与证据：[`docs/BROWSER_EXTENSION_TASKS.md`](docs/BROWSER_EXTENSION_TASKS.md)、[`docs/BROWSER_EXTENSION_ACCEPTANCE.md`](docs/BROWSER_EXTENSION_ACCEPTANCE.md)。
 - 浏览器扩展只提交 RJ 和显示状态；下载、重复保护、队列和文件写入继续由 ARSM 现有核心完成。
 - 本地验证：定向回归 `49 passed`；完整回归 `387 passed, 3 skipped`（仅符号链接环境限制）；compileall PASS；release_check `ready: true`；`git diff --check` PASS。
 

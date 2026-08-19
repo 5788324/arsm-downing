@@ -389,6 +389,37 @@ class LibraryVault:
             logging.error(f"get_works_status error for {rj_id}: {e}")
             return ""
 
+    def get_rj_state_batch(self, rj_ids: Iterable[str]) -> dict[str, dict[str, object]]:
+        """Read library and queue states for many RJ ids with three SELECTs."""
+        canonical = tuple(dict.fromkeys(str(value).upper() for value in rj_ids if value))
+        result = {
+            rj_id: {"in_library": False, "statuses": set()}
+            for rj_id in canonical
+        }
+        if not canonical:
+            return result
+        placeholders = ",".join("?" for _ in canonical)
+        with self._lock:
+            for row in self.conn.execute(
+                f"SELECT DISTINCT rj_id FROM library_index "
+                f"WHERE rj_id IN ({placeholders}) "
+                "AND LOWER(COALESCE(status, '')) != 'missing'",
+                canonical,
+            ).fetchall():
+                result[str(row["rj_id"]).upper()]["in_library"] = True
+            for row in self.conn.execute(
+                f"SELECT rj_id, status FROM downloads "
+                f"WHERE rj_id IN ({placeholders})",
+                canonical,
+            ).fetchall():
+                result[str(row["rj_id"]).upper()]["statuses"].add(row["status"])
+            for row in self.conn.execute(
+                f"SELECT rj_id, status FROM works WHERE rj_id IN ({placeholders})",
+                canonical,
+            ).fetchall():
+                result[str(row["rj_id"]).upper()]["statuses"].add(row["status"])
+        return result
+
     def get_pending_rj_ids(self) -> set:
         """Return RJ ids that should appear in the active download queue.
 

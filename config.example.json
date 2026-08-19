@@ -24,5 +24,8 @@
     "file_concurrency": 4,
     "chunk_size": 1048576,
     "retry_count": 5,
-    "retry_backoff": 2
+    "retry_backoff": 2,
+    "browser_bridge_enabled": false,
+    "browser_bridge_port": 17641,
+    "browser_extension_token": null
 }

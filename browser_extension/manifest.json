@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "ARSM 网页助手",
+  "version": "1.0.0",
+  "description": "在 asmr.one 标记已入库作品，并把未入库作品交给 ARSM Suite 下载。",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA5Gxjwm5i+eEoL5xGjx4T2xddJcDkP/WtwiiyxZvg2g2czMS8zV99tH6jVQ0pDqGD+95iBRkIiLtwXeXSi3kc6E0S5fTfcXzna01mV+4qJ9CfVSxfR60hFgGypYoZbkmOdewYy8LEAescWhUfESWfazJQFMq81C/X4Lb8THY1psLS2HGzlpsW0V5eZE8HZPbkax1nVP37cG92lok+on+MuwQlgWe+9BiRsipSUmXGQrbhWpdYM0JemEjU+HeQJt7Xrd1bf0Ix1SkLQ7PGps3bXomK4PoOMTpqexVHvR0kiWh78epBeygFWV7KkHVzIPdvxhKd42lia4M6aHpVeD21LQIDAQAB",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:17641/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_title": "ARSM 网页助手"
+  },
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://asmr.one/*"
+      ],
+      "js": [
+        "shared.js",
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

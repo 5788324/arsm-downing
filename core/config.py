@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import secrets
 from pathlib import Path
 from typing import Optional
 
@@ -69,10 +70,20 @@ class ConfigManager:
         # ── Features ──
         self.tag_audio = True
         self.sort_files = False
+        self.browser_bridge_enabled: bool = False
+        self.browser_bridge_port: int = 17641
+        self.browser_extension_token: str = ""
         self.dir_template = "{rj_id} {title}"
 
         # ── Game-ish ──
         self.achievements: list = []
+
+
+    def ensure_browser_extension_token(self) -> str:
+        """Return a durable-quality local bridge token without logging it."""
+        if len(str(self.browser_extension_token or "")) < 32:
+            self.browser_extension_token = secrets.token_urlsafe(36)
+        return self.browser_extension_token
 
     # ── Proxy helpers ──
     def get_proxy_for(self, purpose: str) -> Optional[str]:
@@ -133,6 +144,12 @@ class ConfigManager:
                     data.get('retry_backoff', 2))
                 config.tag_audio = bool(
                     data.get('tag_audio', True))
+                config.browser_bridge_enabled = bool(
+                    data.get('browser_bridge_enabled', False))
+                config.browser_bridge_port = max(1024, min(int(
+                    data.get('browser_bridge_port', 17641)), 65535))
+                config.browser_extension_token = str(
+                    data.get('browser_extension_token') or "")
                 config.sort_files = bool(
                     data.get('sort_files', False))
                 config.mirror = data.get(
@@ -196,7 +213,10 @@ class ConfigManager:
             "auth_token": self.auth_token,
             "timeout": self.timeout,
             "dns": self.dns,
-            "achievements": self.achievements
+            "achievements": self.achievements,
+            "browser_bridge_enabled": self.browser_bridge_enabled,
+            "browser_bridge_port": self.browser_bridge_port,
+            "browser_extension_token": self.browser_extension_token,
         }
         config_file = _config_file()
         temp_file = config_file.with_suffix(config_file.suffix + ".tmp")
