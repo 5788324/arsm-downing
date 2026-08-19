@@ -2,6 +2,7 @@ import asyncio
 from dataclasses import dataclass
 
 import aiohttp
+import pytest
 
 from core.browser_bridge import (
     BROWSER_EXTENSION_ID,
@@ -261,3 +262,136 @@ def test_batch_state_reader_uses_three_selects_for_many_cards(tmp_path):
         assert "path" not in repr(states).lower()
     finally:
         db.close()
+
+
+@pytest.mark.parametrize(
+    ("downloads", "work_status", "expected"),
+    [
+        (["queued"], "", "queued"),
+        (["downloading"], "", "downloading"),
+        (["paused"], "", "paused"),
+        (["failed"], "", "failed"),
+        (["cancelled"], "", "cancelled"),
+        (["completed"], "", "completed"),
+        ([], "prepared", "queued"),
+        ([], "partial", "failed"),
+        ([], "", "not_in_library"),
+    ],
+)
+def test_sanitized_state_matrix(downloads, work_status, expected):
+    db = _FakeDb()
+    db.downloads["RJ00000001"] = downloads
+    if work_status:
+        db.works["RJ00000001"] = work_status
+    assert sanitized_rj_state(db, "RJ00000001")["state"] == expected
+
+
+def test_multitab_fast_clicks_create_only_one_queue_entry():
+    async def scenario():
+        db = _FakeDb()
+        core_lock = asyncio.Lock()
+        queued = set()
+
+        async def queue_download(rj_id):
+            async with core_lock:
+                await asyncio.sleep(0)
+                if rj_id in queued:
+                    return {"status": "already_queued", "rj_id": rj_id}
+                queued.add(rj_id)
+                db.downloads[rj_id] = ["queued"]
+                return {"status": "queued", "rj_id": rj_id}
+
+        bridge = BrowserBridge(
+            db,
+            queue_download,
+            lambda _rj_id, _view: None,
+            token="m" * 48,
+            enabled=True,
+            port=0,
+        )
+        await bridge.start()
+        headers = {
+            "Origin": BROWSER_EXTENSION_ORIGIN,
+            "X-ARSM-Extension-Id": BROWSER_EXTENSION_ID,
+            "X-ARSM-Token": "m" * 48,
+        }
+        endpoint = f"http://127.0.0.1:{bridge.bound_port}"
+        try:
+            async with aiohttp.ClientSession() as session:
+                responses = await asyncio.gather(*(
+                    session.post(
+                        f"{endpoint}/v1/downloads",
+                        headers=headers,
+                        json={"rj_id": "RJ00000001"},
+                    )
+                    for _ in range(12)
+                ))
+                statuses = [response.status for response in responses]
+                payloads = [await response.json() for response in responses]
+                assert statuses.count(202) == 1
+                assert statuses.count(409) == 11
+                assert queued == {"RJ00000001"}
+                assert all(
+                    payload.get("ok") is True
+                    or payload.get("error", {}).get("code") == "already_queued"
+                    for payload in payloads
+                )
+        finally:
+            await bridge.stop()
+
+    asyncio.run(scenario())
+
+
+def test_bridge_stop_restart_and_large_batch_recovery():
+    async def scenario():
+        db = _FakeDb()
+
+        async def queue_download(rj_id):
+            return {"status": "queued", "rj_id": rj_id}
+
+        bridge = BrowserBridge(
+            db,
+            queue_download,
+            lambda _rj_id, _view: None,
+            token="s" * 48,
+            enabled=True,
+            port=0,
+        )
+        headers = {
+            "Origin": BROWSER_EXTENSION_ORIGIN,
+            "X-ARSM-Extension-Id": BROWSER_EXTENSION_ID,
+            "X-ARSM-Token": "s" * 48,
+        }
+        await bridge.start()
+        first_endpoint = f"http://127.0.0.1:{bridge.bound_port}"
+        async with aiohttp.ClientSession() as session:
+            assert (await session.get(
+                f"{first_endpoint}/v1/health", headers=headers
+            )).status == 200
+        await bridge.stop()
+        assert bridge.running is False
+
+        await bridge.start()
+        second_endpoint = f"http://127.0.0.1:{bridge.bound_port}"
+        batch = [f"RJ{value:08d}" for value in range(1, 201)]
+        try:
+            async with aiohttp.ClientSession() as session:
+                response = await session.post(
+                    f"{second_endpoint}/v1/library/status",
+                    headers=headers,
+                    json={"rj_ids": batch},
+                )
+                assert response.status == 200
+                assert len((await response.json())["states"]) == 200
+
+                response = await session.post(
+                    f"{second_endpoint}/v1/library/status",
+                    headers=headers,
+                    json={"rj_ids": batch + ["RJ00000201"]},
+                )
+                assert response.status == 400
+                assert (await response.json())["error"]["code"] == "invalid_request"
+        finally:
+            await bridge.stop()
+
+    asyncio.run(scenario())
