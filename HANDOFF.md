@@ -241,3 +241,10 @@
    - 300 个集中 HTTP 400 场景；
    - 远端完整 pytest/CI、release_check、PyInstaller。
 3. 验收通过后再讨论是否转 Ready。
+
+## 2026-08-19 用户体验收口交接
+
+- 在 PR #21 同一分支集中修复：取消后卡片和断点恢复入口、终态速度/ETA 清零、空资源库设置引导、设置页双保存入口、系统工具新手文案、页内导航生命周期和按应用目录隔离的 Windows shutdown signal。
+- 每项生产改动均补充对应测试；提交前必须运行定向测试、完整 pytest、compileall、release_check 和 `git diff --check`。
+- 该收口不访问正式 `E:\arsm`，不执行 External Intake、迁移、VACUUM、backlog 或媒体文件操作。
+- `asmr.one` 状态标签与“下载到 ARSM”已建立独立任务文档：[`docs/BROWSER_EXTENSION_TASKS.md`](docs/BROWSER_EXTENSION_TASKS.md)。它是新功能，必须在 PR #21 结束后从主线另开分支，不得塞入 v1.0.1 修复候选。

@@ -91,11 +91,20 @@ class SettingsView(ft.Container):
         self.lib_path_list = ft.Column(spacing=6)
         self._refresh_lib_paths()
 
-        save_btn = ft.ElevatedButton("保存设置", icon=ft.Icons.SAVE, on_click=self.on_save)
+        self.save_top_btn = ft.ElevatedButton(
+            "保存设置", icon=ft.Icons.SAVE, on_click=self.on_save
+        )
+        self.save_bottom_btn = ft.ElevatedButton(
+            "保存设置", icon=ft.Icons.SAVE, on_click=self.on_save
+        )
 
         self.content = ft.Column(
             [
-                ft.Text("设置", size=28, weight=ft.FontWeight.BOLD),
+                ft.Row([
+                    ft.Text("设置", size=28, weight=ft.FontWeight.BOLD),
+                    ft.Container(expand=True),
+                    self.save_top_btn,
+                ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 ft.Text("下载目录", size=18, weight=ft.FontWeight.BOLD, color=ACCENT_PRIMARY),
                 ft.Row([self.dir_input]),
                 ft.Divider(height=8, color="transparent"),
@@ -133,7 +142,7 @@ class SettingsView(ft.Container):
                 self.tag_audio_switch,
                 self.sort_files_switch,
                 ft.Divider(color="transparent"),
-                save_btn,
+                self.save_bottom_btn,
             ],
             spacing=10,
             scroll=ft.ScrollMode.AUTO,

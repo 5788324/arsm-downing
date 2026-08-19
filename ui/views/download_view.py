@@ -21,7 +21,7 @@ from core.read_models import BatchEnqueuePreview, DownloadQueueItem, DownloadQue
 from core.services.download_service import DownloadService
 from core.status import WorkStatus
 from ui.theme import (ACCENT_PRIMARY, ACCENT_SECONDARY, SUCCESS, WARNING,
-                      ERROR, Styles)
+                      ERROR, TEXT_SECONDARY, Styles)
 from ui.views.download_view_base import DownloadView as BaseDownloadView
 
 QUEUE_FILE = base_module.QUEUE_FILE
@@ -165,8 +165,18 @@ class DownloadView(BaseDownloadView):
         )
 
         heading = self.content.controls[4]
+        # Keep the queue summary on its own line.  The previous right-aligned
+        # placement squeezed it into the detail heading at common laptop
+        # widths and made both labels difficult to read.
+        heading.controls = heading.controls[:1]
+        self.queue_summary.max_lines = 2
+        self.queue_summary.size = 13
+        self.queue_summary.color = TEXT_SECONDARY
         left_pane = ft.Column(
-            [heading, toolbar, self.queue_list], expand=True, spacing=6)
+            [heading, self.queue_summary, toolbar, self.queue_list],
+            expand=True,
+            spacing=6,
+        )
         split = ft.Row(
             [left_pane, self.detail_panel], expand=True, spacing=8)
         self.content.controls = [
@@ -370,6 +380,11 @@ class DownloadView(BaseDownloadView):
         self._update_queue_summary()
         self._update_pagination()
         self._render_detail_panel_if_selected()
+        # An empty filter has no selectable work. Hiding the unused detail
+        # pane removes a contradictory "作品详情" area and lets the empty
+        # guidance use the available width.
+        self.detail_panel.visible = bool(ordered)
+        self._safe_update(self.detail_panel)
         self._safe_update(self.queue_list)
 
     def _on_filter_change(self, event):
@@ -500,6 +515,10 @@ class DownloadView(BaseDownloadView):
         snapshot is only the baseline before live data is established, so a
         resuming work's bar moves instead of sitting on the last scan.
         """
+        if self.normalize_status(item_data.get("status", "")) == "cancelled":
+            frozen = item_data.get("_terminal_progress")
+            if frozen is not None:
+                return max(0.0, min(1.0, float(frozen)))
         live_downloaded, live_total = self._live_known_totals(item_data)
         if live_total > 0:
             return max(0.0, min(1.0, live_downloaded / live_total))
@@ -672,54 +691,58 @@ class DownloadView(BaseDownloadView):
                 icon_color=ERROR,
                 on_click=lambda e, r=rj_id: self.cancel_item(r))
 
+        def primary_btn(label, icon, color, callback, tooltip=None):
+            return ft.ElevatedButton(
+                text=label,
+                icon=icon,
+                tooltip=tooltip or label,
+                color="white",
+                bgcolor=color,
+                height=36,
+                on_click=callback,
+            )
+
         if ns in {"downloading", "queued", "resuming"}:
-            push(ft.IconButton(icon=ft.Icons.PAUSE, tooltip="暂停",
-                               icon_color=ACCENT_PRIMARY,
-                               on_click=lambda e, r=rj_id: self.toggle_pause(r)))
+            push(primary_btn("暂停", ft.Icons.PAUSE, ACCENT_PRIMARY,
+                             lambda e, r=rj_id: self.toggle_pause(r)))
             push(open_btn())
             push(remove_btn())
         elif ns == "paused":
-            push(ft.IconButton(icon=ft.Icons.PLAY_ARROW, tooltip="继续下载",
-                               icon_color=SUCCESS,
-                               on_click=lambda e, r=rj_id: self.toggle_pause(r)))
+            push(primary_btn("继续下载", ft.Icons.PLAY_ARROW, SUCCESS,
+                             lambda e, r=rj_id: self.toggle_pause(r)))
             push(open_btn())
             push(remove_btn())
         elif ns == "failed":
-            push(ft.IconButton(icon=ft.Icons.REPLAY, tooltip="重试下载",
-                               icon_color=ACCENT_PRIMARY,
-                               on_click=lambda e, r=rj_id: self._retry_failed(r)))
+            push(primary_btn("重试", ft.Icons.REPLAY, ACCENT_PRIMARY,
+                             lambda e, r=rj_id: self._retry_failed(r), "重试下载"))
             push(open_btn())
             push(remove_btn())
         elif ns in {"metadata_failed", "no_pending"}:
-            push(ft.IconButton(icon=ft.Icons.REFRESH, tooltip="重新准备",
-                               icon_color=ACCENT_PRIMARY,
-                               on_click=lambda e, r=rj_id: self._retry_prepare(r)))
+            push(primary_btn("重新准备", ft.Icons.REFRESH, ACCENT_PRIMARY,
+                             lambda e, r=rj_id: self._retry_prepare(r)))
             push(open_btn())
             push(remove_btn())
         elif ns == "partial":
             # Disk-incomplete work: go through resume/reconcile (verifies
             # completed/registered/.part/missing files and only re-prepares
-            # metadata when reconciliation reports metadata_required).  Avoids
+            # metadata when reconciliation reports metadata_required). Avoids
             # the prepare_work duplicate-guard blocking a library-indexed work.
-            push(ft.IconButton(icon=ft.Icons.PLAY_ARROW, tooltip="补全下载",
-                               icon_color=WARNING,
-                               on_click=lambda e, r=rj_id:
-                                   self.app_controller.resume_download(r)))
+            push(primary_btn("补全下载", ft.Icons.PLAY_ARROW, WARNING,
+                             lambda e, r=rj_id:
+                                 self.app_controller.resume_download(r)))
             push(open_btn())
             push(remove_btn("清理"))
         elif ns == "duplicate":
-            push(ft.IconButton(icon=ft.Icons.FORCE_GRAPH_3, tooltip="仍然下载",
-                               icon_color=WARNING,
-                               on_click=lambda e, r=rj_id: self._force_download(r)))
+            push(primary_btn("仍然下载", ft.Icons.FORCE_GRAPH_3, WARNING,
+                             lambda e, r=rj_id: self._force_download(r)))
             push(remove_btn("清理"))
         elif ns == "cancelled":
-            push(ft.IconButton(icon=ft.Icons.REPLAY, tooltip="继续已取消任务",
-                               icon_color=SUCCESS,
-                               on_click=lambda e, r=rj_id:
-                                   self.app_controller.resume_cancelled_download(r)))
+            push(primary_btn("继续下载", ft.Icons.REPLAY, SUCCESS,
+                             lambda e, r=rj_id:
+                                 self.app_controller.resume_cancelled_download(r),
+                             "继续已取消任务"))
             push(open_btn())
         return actions
-
     @staticmethod
     def _format_bytes(size: int) -> str:
         size = max(0, int(size or 0))
@@ -1073,6 +1096,16 @@ class DownloadView(BaseDownloadView):
 
     def update_work_status(self, rj_id: str, status: str):
         normalized = self.normalize_status(status)
+        data = self.active_downloads.get(rj_id)
+        was_cancelled = bool(
+            data is not None
+            and self.normalize_status(data.get("status", "")) == "cancelled"
+        )
+        if data is not None and normalized == "cancelled":
+            data["_terminal_progress"] = self._get_progress_value(data)
+            # The fetched read model is now stale. Use the optimistic in-memory
+            # state for an honest summary until the persisted event refreshes it.
+            self.queue_model = None
         if normalized in {"queued", "downloading", "paused", "failed", "partial", "completed", "cancelled"}:
             self._transient_rj_ids = [
                 value for value in self._transient_rj_ids if value != rj_id
@@ -1091,10 +1124,20 @@ class DownloadView(BaseDownloadView):
             return
         if self._active:
             self._update_queue_summary()
+            if normalized == "cancelled" and was_cancelled:
+                # The second cancelled notification comes from the core after
+                # SQLite is durable. Re-apply the active filter now: the card
+                # leaves "活动任务" and remains available under "已取消".
+                self.refresh_queue_async(force=True)
 
     def update_track_progress(self, event):
         if not self._active:
             self.global_speed_bps = event.global_speed_bps
+            return
+        data = self.active_downloads.get(event.rj_id)
+        if data is not None and self.normalize_status(data.get("status", "")) == "cancelled":
+            self.global_speed_bps = event.global_speed_bps
+            self._update_queue_summary()
             return
         card_event = copy.copy(event)
         card_event.global_speed_bps = event.work_speed_bps

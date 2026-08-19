@@ -13,6 +13,7 @@ Python + Flet 0.27.6 + SQLite + asyncio + aiohttp
 - PR 四轮代码审查阻塞已修复：并发签名刷新单飞、refresh/transport budget 分离、磁盘核验移出 UI 线程且启动只跑一次、真实进度贯通 read model、UI 单调度器、文件树详情与同名文件实时更新、实时总进度统一（全作品基线）、registered/completed 磁盘不完整降级、partial 走 resume/reconcile、Working 核验后分页、交付文档。
 - 全量回归：`377 passed, 3 skipped`；CI（head `facf351`）：Windows **380 passed**、Ubuntu **379 passed, 1 skipped**；release_check `ready: true`；PyInstaller `ARSM-Suite-1.0.1-windows-x64.zip`。
 - 当前为 **NO-GO**：真实 GUI/DPI/托盘、9 任务约 2700 文件压力与 300 个集中 400 场景验收通过前不转 Ready、不发布。
+- 2026-08-19 正在收口取消恢复、空资源库引导、设置保存、系统工具易用性和退出可靠性；浏览器扩展作为独立后续功能，不混入 v1.0.1。
 
 ## T10 已完成
 
@@ -100,6 +101,7 @@ python -m pytest -q
 - [`AI_WORKFLOW.md`](AI_WORKFLOW.md)
 - [`docs/TAKEOVER_T10_QUEUE_SERVICE.md`](docs/TAKEOVER_T10_QUEUE_SERVICE.md)
 - [`docs/T10_BATCH_PASTE_FIX.md`](docs/T10_BATCH_PASTE_FIX.md)
+- [`docs/BROWSER_EXTENSION_TASKS.md`](docs/BROWSER_EXTENSION_TASKS.md)
 - [`docs/CODEX_WINDOWS_ACCEPTANCE_RC1_RESULT.md`](docs/CODEX_WINDOWS_ACCEPTANCE_RC1_RESULT.md)
 
 ## License

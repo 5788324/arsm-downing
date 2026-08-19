@@ -782,6 +782,13 @@ class DownloadView(ft.Container):
             data["status"] = cn_status
             ns = self.normalize_status(status)
 
+            if ns in ("paused", "cancelled", "completed", "failed"):
+                # A stopped task must never keep advertising stale throughput
+                # or an ETA from the final in-flight progress callback.
+                data["last_speed_bps"] = 0
+                data["last_track_speed"] = 0
+                data["last_eta"] = None
+
             # Cache hit detection
             if "cached" in status.lower():
                 data["cache_hit"] = True
@@ -952,20 +959,13 @@ class DownloadView(ft.Container):
         self.save_queue()
 
     def cancel_item(self, rj_id: str):
-        """Cancel durably, remove the card, and preserve partial bytes."""
+        """Cancel durably while keeping the resumable terminal card visible."""
         data = self.active_downloads.get(rj_id)
         if not data:
             return
         if not self._is_terminal(data["status"]):
             self.app_controller.cancel_download(rj_id)
-        if data.get("control") and data["control"] in self.queue_list.controls:
-            self.queue_list.controls.remove(data["control"])
-        self.active_downloads.pop(rj_id, None)
-        try:
-            if self.queue_list.page:
-                self.queue_list.update()
-        except Exception:
-            pass
+            self.update_work_status(rj_id, "Cancelled")
         self.save_queue()
 
     # ══════════════════════════════════════════════

@@ -421,11 +421,30 @@ class LibraryView(ft.Container):
         self.btn_next.disabled = self._current_page + 1 >= total_pages
 
         items = snapshot.get("items", [])
+        self.detail_panel.visible = bool(items)
         if not items:
+            has_query = bool(search) or category != "all"
+            message = "没有匹配的资源库记录" if has_query else "资源库还是空的"
+            controls: list[ft.Control] = [
+                ft.Icon(ft.Icons.LIBRARY_MUSIC_OUTLINED, size=42, color=ACCENT_PRIMARY),
+                ft.Text(message, color="grey", size=14),
+            ]
+            navigate = getattr(self.app_controller, "navigate_to_view", None)
+            if not has_query and callable(navigate):
+                controls.extend([
+                    ft.Text("先在设置中添加仓库目录，再到系统工具扫描索引。",
+                            color="grey", size=12),
+                    ft.ElevatedButton(
+                        "去设置仓库目录", icon=ft.Icons.SETTINGS,
+                        on_click=lambda _e: navigate(3),
+                    ),
+                ])
             self.grid.controls.append(ft.Container(
                 alignment=ft.alignment.center,
                 padding=40,
-                content=ft.Text("没有匹配的资源库记录", color="grey", size=14),
+                content=ft.Column(controls,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=10),
             ))
             return
 

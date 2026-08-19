@@ -438,6 +438,14 @@ class AppController:
                 error = msg[1] if len(msg) > 1 else None
                 if error:
                     logger.error("Closing after shutdown error: %s", error)
+                # A user close is guarded so it can hide to tray. Explicit
+                # exit has already finished cleanup, so release that guard
+                # before destroying the native Flet window.
+                try:
+                    self.page.window.prevent_close = False
+                    self.page.update()
+                except Exception:
+                    logging.debug("Unable to release window close guard", exc_info=True)
                 try:
                     self.page.window.destroy()
                 except Exception:
