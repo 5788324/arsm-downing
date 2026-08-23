@@ -138,7 +138,7 @@ EXE SHA-256：D3B5C5182C84D595B9EC88C6621B80819E53F6E4C24B9F8974DBEEF334E353F3
 
 ## 2026-08-23 收口状态
 
-- HEAD：`0fe8afcb0a45f4f554f923b62f68581c7e3ad723`；
+- 功能代码检查点：`0fe8afcb0a45f4f554f923b62f68581c7e3ad723`；当前 HEAD 以远端分支最新提交为准；
 - 用户确认已推送到 `codex/asmr-browser-extension`；本机因 GitHub 网络中断未独立回读；
 - 全量回归：`410 passed, 3 skipped`；扩展打包文件 9/9 哈希一致；
 - 仓库内旧 build/dist、日志和缓存已清理，已提交的截图与验收报告保留；

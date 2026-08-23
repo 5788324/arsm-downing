@@ -4,7 +4,7 @@
 > 仓库：`5788324/arsm-downing`
 > 工作区：`G:\Codex\Yang Kura\arsm-v101-fix-audit`
 > 分支：`codex/asmr-browser-extension`
-> HEAD：`0fe8afcb0a45f4f554f923b62f68581c7e3ad723`
+> 功能代码检查点：`0fe8afcb0a45f4f554f923b62f68581c7e3ad723`；当前 HEAD 以远端分支最新提交为准，其后仅允许存在交接文档提交
 > 推送：用户确认已完成；当前工作区无法因网络原因独立回读 GitHub
 
 ## 一、这轮完成了什么
@@ -84,7 +84,7 @@ Windows 可见验证：
 工作区：G:\Codex\Yang Kura\arsm-v101-fix-audit
 仓库：5788324/arsm-downing
 分支：codex/asmr-browser-extension
-固定 HEAD：0fe8afcb0a45f4f554f923b62f68581c7e3ad723
+功能代码检查点：0fe8afcb0a45f4f554f923b62f68581c7e3ad723（当前 HEAD 以远端分支最新提交为准，并确认它包含此检查点）
 
 先完整阅读：
 1. HANDOFF.md

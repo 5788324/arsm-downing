@@ -11,7 +11,7 @@
 - [x] Windows 桌面真人审计与 Escape 弹窗修复；
 - [x] `410 passed, 3 skipped`、compileall、4 个扩展脚本语法及 `git diff --check`；
 - [x] Edge 双域名注入和列表页连接状态；
-- [x] 用户确认分支已推送，HEAD `0fe8afcb0a45f4f554f923b62f68581c7e3ad723`；
+- [x] 用户确认分支已推送；功能代码检查点为 `0fe8afcb0a45f4f554f923b62f68581c7e3ad723`，其后仅为交接文档提交；
 - [ ] 修复 Codex Browser 原生通信后补 Edge 详情页、空库入队、重复保护和 ARSM 重启恢复；
 - [ ] Chrome 稳定版最小矩阵；
 - [ ] 多标签、缩放、深浅外观和扩展卸载矩阵；

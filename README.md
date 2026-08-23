@@ -8,7 +8,7 @@ Python + Flet 0.27.6 + SQLite + asyncio + aiohttp
 
 ## 当前状态
 
-> 2026-08-23 最新功能分支：`codex/asmr-browser-extension`，HEAD `0fe8afcb0a45f4f554f923b62f68581c7e3ad723`。用户已完成远端推送；本机因 GitHub 网络中断未独立回读远端 SHA。
+> 2026-08-23 最新功能分支：`codex/asmr-browser-extension`；功能代码检查点为 `0fe8afcb0a45f4f554f923b62f68581c7e3ad723`，其后仅追加交接文档提交。以远端分支最新 HEAD 为准。
 
 - v1.0.1 修复分支：`fix/v1.0.1-download-freeze-ui`，PR #21（Draft，Fixes #19 #20）。
 - 已修复 Issue #20（UI 冻结 / 签名 URL 重试风暴 / 虚假总进度）与 Issue #19（下载页布局闪烁）。

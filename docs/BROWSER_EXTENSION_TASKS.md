@@ -109,7 +109,7 @@
 ## 交接状态
 
 - 当前分支：`codex/asmr-browser-extension`；
-- 当前 HEAD：`0fe8afcb0a45f4f554f923b62f68581c7e3ad723`；
+- 功能代码检查点：`0fe8afcb0a45f4f554f923b62f68581c7e3ad723`；当前 HEAD 以远端分支最新提交为准；
 - 用户确认已推送；
 - 自动化和 Edge 列表页连接完成；详情页入队/恢复、Chrome、多标签/缩放/卸载仍为待办；
 - 继续工作前先阅读根目录 `HANDOFF.md`，不得把 NOT RUN 改写为 PASS。
