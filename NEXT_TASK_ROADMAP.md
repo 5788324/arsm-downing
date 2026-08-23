@@ -2,19 +2,22 @@
 
 ## T17：asmr.one 浏览器扩展
 
-状态：`IMPLEMENTED / WAITING_CHROME_EDGE_MANUAL_ACCEPTANCE`
+状态：`IMPLEMENTED / PUSHED_BY_USER / PARTIAL_BROWSER_ACCEPTANCE`
 
 - [x] loopback 安全桥接、固定扩展 ID、令牌、限流和安全返回模型；
-- [x] 列表/详情状态标签与下载到 ARSM；
-- [x] 设置页安装、连接、令牌和卸载引导；
-- [x] 397 项 portable 回归和当前站点 DOM 只读核对；
-- [ ] Chrome 稳定版人工加载与视觉验收；
-- [ ] Edge 稳定版人工加载与视觉验收；
-- [ ] 多标签、缩放、退出/重启和卸载矩阵；
-- [ ] 人工矩阵通过后再决定 Draft PR 是否转 Ready。
+- [x] `asmr.one` / `www.asmr.one` 列表与详情状态标签、下载入口；
+- [x] 设置页安装、连接、地址/令牌复制、重新生成令牌和卸载引导；
+- [x] 断开状态 10 秒恢复轮询，活动状态 4 秒刷新；
+- [x] Windows 桌面真人审计与 Escape 弹窗修复；
+- [x] `410 passed, 3 skipped`、compileall、4 个扩展脚本语法及 `git diff --check`；
+- [x] Edge 双域名注入和列表页连接状态；
+- [x] 用户确认分支已推送，HEAD `0fe8afcb0a45f4f554f923b62f68581c7e3ad723`；
+- [ ] 修复 Codex Browser 原生通信后补 Edge 详情页、空库入队、重复保护和 ARSM 重启恢复；
+- [ ] Chrome 稳定版最小矩阵；
+- [ ] 多标签、缩放、深浅外观和扩展卸载矩阵；
+- [ ] 核对远端分支/CI/main 差异后再决定 Draft PR，不自动合并或发布。
 
-详见 `docs/BROWSER_EXTENSION_TASKS.md` 与 `docs/BROWSER_EXTENSION_ACCEPTANCE.md`。
-
+详见 `HANDOFF.md`、`docs/BROWSER_EXTENSION_TASKS.md`、`docs/BROWSER_EXTENSION_ACCEPTANCE.md` 与 `docs/ARSM_UX_AUDIT_20260823.md`。
 
 ## PR1：直接源码 Windows 发布阻断验收
 

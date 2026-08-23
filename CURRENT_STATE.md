@@ -1,20 +1,35 @@
 # ARSM Suite 当前状态
 
-> 更新时间：2026-08-19
-> v1.0.1 修复分支：`fix/v1.0.1-download-freeze-ui`（PR #21，Draft，Fixes #19 #20）
-> 当前版本：`1.0.1`（Draft，未转 Ready，未合并，未发布）
-> 当前阶段：`PR #21 在既有修复上补充真实用户体验收口；本地回归与远端 CI 通过前维持 Draft / NO-GO`
+> 更新时间：2026-08-23
+> 当前工作分支：`codex/asmr-browser-extension`
+> 当前 HEAD：`0fe8afcb0a45f4f554f923b62f68581c7e3ad723`
+> 推送状态：用户已完成 GitHub 推送；本机网络故障期间未独立回读远端 SHA
+> 数据边界：真实 `E:\arsm` 零访问、零写入、零移动、零删除
 
+## 当前结论
 
-## 浏览器扩展独立功能分支（2026-08-19）
+浏览器扩展 MVP 和本轮桌面易用性修复已实现并完成本地 Windows 验证，工作区在提交后 clean。自动门禁为 `410 passed, 3 skipped`；3 个跳过项均为当前 Windows 环境不能创建符号链接。扩展源码与隔离打包目录 9 个文件逐项 SHA-256 一致。
 
-- 分支：`codex/asmr-browser-extension`，基于 v1.0.1 已验收检查点 `cc41d94`；
-- 已实现：Manifest V3、固定扩展 ID、loopback 令牌桥接、批量入库状态、下载入队、设置页安装/停用/令牌管理；
-- 自动验证：完整 portable `397 passed, 3 skipped`，JavaScript 语法、compileall、`git diff --check` 通过；
-- 侧边浏览器已只读核对 asmr.one 当前列表卡片、详情 H1 和销量 DOM；
-- Windows 隔离 Profile 已看到浏览器扩展设置分区；真实 `E:\arsm` 零接触；
-- Chrome/Edge 加载未打包扩展属于待用户确认的人工验收，不得提前写成 PASS。
-> 历史记录见下文各章节；本文件顶部为当前事实源。
+已实机确认：
+
+- Edge `https://www.asmr.one/works?page=21` 注入 8 组状态控件；
+- 保存隔离 Profile 的连接地址和令牌后，8 组控件均显示“未入库 / 下载到 ARSM”；
+- ARSM 四个主页面无黑屏、异常水平滚动或关键按钮裁切；
+- Windows 批量粘贴弹窗按 Escape 可关闭，取消后队列仍为 0；
+- 设置页提供本机地址和令牌复制按钮；
+- ARSM 正常关闭后本轮进程与 `127.0.0.1:17641` 监听归零。
+
+尚未执行，不能写成 PASS：
+
+- Edge 详情页按钮、隔离空库测试入队、重复任务、退出/重启自动恢复；
+- Chrome 当前稳定版最小矩阵；
+- Chrome/Edge 多标签、100%/125%/150% 缩放、深浅外观与卸载矩阵。
+
+阻塞说明：Codex Browser 的 Edge 控制扩展已安装并启用，但原生通信注册项缺失，导致标签可枚举而无法接管。后续应先从 Codex 插件界面重装 Browser 插件，不要自行修改系统注册表。
+
+权威交接：[`HANDOFF.md`](HANDOFF.md)。浏览器专项证据见 [`docs/BROWSER_EXTENSION_ACCEPTANCE.md`](docs/BROWSER_EXTENSION_ACCEPTANCE.md) 和 [`docs/ARSM_UX_AUDIT_20260823.md`](docs/ARSM_UX_AUDIT_20260823.md)。
+
+## 历史状态记录
 
 ## 2026-08-19 用户体验收口与后续扩展规划
 

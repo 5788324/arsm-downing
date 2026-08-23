@@ -8,12 +8,14 @@ Python + Flet 0.27.6 + SQLite + asyncio + aiohttp
 
 ## 当前状态
 
+> 2026-08-23 最新功能分支：`codex/asmr-browser-extension`，HEAD `0fe8afcb0a45f4f554f923b62f68581c7e3ad723`。用户已完成远端推送；本机因 GitHub 网络中断未独立回读远端 SHA。
+
 - v1.0.1 修复分支：`fix/v1.0.1-download-freeze-ui`，PR #21（Draft，Fixes #19 #20）。
 - 已修复 Issue #20（UI 冻结 / 签名 URL 重试风暴 / 虚假总进度）与 Issue #19（下载页布局闪烁）。
 - PR 四轮代码审查阻塞已修复：并发签名刷新单飞、refresh/transport budget 分离、磁盘核验移出 UI 线程且启动只跑一次、真实进度贯通 read model、UI 单调度器、文件树详情与同名文件实时更新、实时总进度统一（全作品基线）、registered/completed 磁盘不完整降级、partial 走 resume/reconcile、Working 核验后分页、交付文档。
 - 全量回归：`377 passed, 3 skipped`；CI（head `facf351`）：Windows **380 passed**、Ubuntu **379 passed, 1 skipped**；release_check `ready: true`；PyInstaller `ARSM-Suite-1.0.1-windows-x64.zip`。
 - 当前为 **NO-GO**：真实 GUI/DPI/托盘、9 任务约 2700 文件压力与 300 个集中 400 场景验收通过前不转 Ready、不发布。
-- 浏览器扩展已在独立分支 `codex/asmr-browser-extension` 实现：asmr.one 入库标签、下载按钮、本机安全桥接和设置页管理；不混入 v1.0.1 PR #21。
+- 浏览器扩展已在独立分支实现：支持 `asmr.one` / `www.asmr.one` 入库标签、下载按钮、本机安全桥接、设置页安装管理、地址/令牌复制及断线恢复；全量回归 `410 passed, 3 skipped`。Edge 列表页连接已实机通过，Chrome 与详情页入队矩阵仍待补验。
 
 ## T10 已完成
 

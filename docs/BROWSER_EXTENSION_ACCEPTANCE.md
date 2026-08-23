@@ -135,3 +135,11 @@ EXE SHA-256：D3B5C5182C84D595B9EC88C6621B80819E53F6E4C24B9F8974DBEEF334E353F3
 - 最终详情页点击接管被 Codex Browser 原生通信注册项缺失阻塞；扩展已启用且可枚举标签，但接管超时，因此详情、入队和退出/重启视觉恢复均保持 `NOT RUN`；
 - 2026-08-23 Chrome 已安装但未运行，因此 Chrome 最终矩阵未执行，不写成 PASS；
 - 详细界面证据与建议见 `docs/ARSM_UX_AUDIT_20260823.md`。
+
+## 2026-08-23 收口状态
+
+- HEAD：`0fe8afcb0a45f4f554f923b62f68581c7e3ad723`；
+- 用户确认已推送到 `codex/asmr-browser-extension`；本机因 GitHub 网络中断未独立回读；
+- 全量回归：`410 passed, 3 skipped`；扩展打包文件 9/9 哈希一致；
+- 仓库内旧 build/dist、日志和缓存已清理，已提交的截图与验收报告保留；
+- 新对话从根目录 `HANDOFF.md` 接手。

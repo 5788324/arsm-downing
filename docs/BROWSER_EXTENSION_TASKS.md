@@ -105,3 +105,11 @@
 - [x] 用户在扩展设置页保存本机地址与令牌后，Edge 8 组控件均从 `ARSM 未连接` 收敛为 `未入库 / 下载到 ARSM`；
 - [ ] Chrome 当前未运行，启动后补做相同最小矩阵；
 - [ ] 详情页按钮、测试任务入队及 ARSM 退出/重启恢复最终联调；Codex Browser 原生通信注册项缺失，不能把未执行写成 PASS。
+
+## 交接状态
+
+- 当前分支：`codex/asmr-browser-extension`；
+- 当前 HEAD：`0fe8afcb0a45f4f554f923b62f68581c7e3ad723`；
+- 用户确认已推送；
+- 自动化和 Edge 列表页连接完成；详情页入队/恢复、Chrome、多标签/缩放/卸载仍为待办；
+- 继续工作前先阅读根目录 `HANDOFF.md`，不得把 NOT RUN 改写为 PASS。

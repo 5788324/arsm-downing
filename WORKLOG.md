@@ -314,3 +314,14 @@ Git 远端写入：无
 - 聚焦 `24 passed`，全量 `410 passed, 3 skipped`；
 - 测试实例误用 `LOCALAPPDATA` 后生成的 `config.json`、`history.db`、`logs/app.log` 已在正常退出后精确删除；真实媒体未接触；
 - 用户手工保存隔离 Profile 地址与令牌后，Edge 8 组控件均切换为
+
+## 2026-08-23：浏览器扩展分支交接收口
+
+- 最终本地提交：`0fe8afcb0a45f4f554f923b62f68581c7e3ad723`（`feat: finish ARSM browser extension integration`）；
+- 用户确认已完成 GitHub 推送；本机因 GitHub 直连和 7897 上游 TLS 中断未独立回读远端；
+- 全量回归：`410 passed, 3 skipped`；compileall、扩展 JavaScript 语法、`git diff --check` 通过；
+- 扩展源码与隔离打包目录 9/9 文件 SHA-256 一致；
+- Edge 列表页注入和连接状态通过；Chrome、详情页入队和重启恢复保持 NOT RUN；
+- 已更新 README、CURRENT_STATE、两份路线图、扩展任务/验收文档和 HANDOFF；
+- 已清理仓库内忽略的旧 build/dist、运行日志、pytest/Python 缓存及空临时目录，共 195,260,866 bytes；保留 Git 跟踪的 UI 截图和验收报告；
+- 正式 `E:\arsm` 与正式运行数据零接触。
