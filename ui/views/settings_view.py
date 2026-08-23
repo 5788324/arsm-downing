@@ -118,6 +118,16 @@ class SettingsView(ft.Container):
         self.browser_extension_id_input = ft.TextField(
             label="固定扩展 ID", value=EXTENSION_ID, read_only=True, expand=True,
         )
+        self.browser_endpoint_copy_btn = ft.IconButton(
+            icon=ft.Icons.CONTENT_COPY,
+            tooltip="复制本机连接地址",
+            on_click=self._copy_browser_endpoint,
+        )
+        self.browser_token_copy_btn = ft.IconButton(
+            icon=ft.Icons.CONTENT_COPY,
+            tooltip="复制扩展连接令牌",
+            on_click=self._copy_browser_token,
+        )
 
         self.lib_paths = list(getattr(config, "library_paths", []) or [str(config.output_dir)])
         self.lib_path_list = ft.Column(spacing=6)
@@ -163,9 +173,9 @@ class SettingsView(ft.Container):
                 ),
                 ft.Row([self.browser_bridge_switch]),
                 self.browser_bridge_status,
-                ft.Row([self.browser_endpoint_input]),
+                ft.Row([self.browser_endpoint_input, self.browser_endpoint_copy_btn]),
                 ft.Row([self.browser_extension_id_input]),
-                ft.Row([self.browser_token_input]),
+                ft.Row([self.browser_token_input, self.browser_token_copy_btn]),
                 ft.Row(
                     [
                         ft.ElevatedButton(
@@ -249,6 +259,14 @@ class SettingsView(ft.Container):
                 self.browser_endpoint_input.update()
             except Exception:
                 pass
+
+    def _copy_browser_endpoint(self, _event) -> None:
+        self.app_controller.page.set_clipboard(self.browser_endpoint_input.value)
+        self.app_controller.show_snack("本机连接地址已复制")
+
+    def _copy_browser_token(self, _event) -> None:
+        self.app_controller.page.set_clipboard(self.browser_token_input.value)
+        self.app_controller.show_snack("扩展令牌已复制；请只粘贴到 ARSM 网页助手设置")
 
     def _open_browser_extension_folder(self, _event) -> None:
         folder = resource_path("browser_extension")

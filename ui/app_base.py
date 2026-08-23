@@ -69,6 +69,7 @@ class AppController:
         # its downloader loop) alive without a visible window.
         self.page.window.prevent_close = True
         self.page.window.on_event = self._on_window_event
+        self.page.on_keyboard_event = self._on_keyboard_event
         self._closing = False
         self._exit_requested = False
         self._ui_poller_stop = threading.Event()
@@ -199,6 +200,21 @@ class AppController:
             self._hide_to_tray()
             return
         self._begin_shutdown()
+
+    def _on_keyboard_event(self, e) -> None:
+        """Route global keyboard shortcuts to the visible view.
+
+        Flet's Windows desktop host does not consistently dismiss an
+        ``AlertDialog`` when Escape is pressed. Keep the application-level
+        hook deliberately small and let each view decide whether it has an
+        active surface that can be closed safely.
+        """
+        if str(getattr(e, "key", "")) != "Escape":
+            return
+        current = self.views.get(self.current_view)
+        handler = getattr(current, "handle_escape", None)
+        if callable(handler):
+            handler()
 
     def _begin_shutdown(self) -> None:
         """Begin the existing idempotent backend shutdown sequence."""

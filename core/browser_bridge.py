@@ -24,6 +24,7 @@ BROWSER_BRIDGE_HOST = "127.0.0.1"
 BROWSER_BRIDGE_PORT = 17641
 BROWSER_EXTENSION_ID = "mlncnjadnklkihapfcfcmaoookjlclba"
 BROWSER_EXTENSION_ORIGIN = f"chrome-extension://{BROWSER_EXTENSION_ID}"
+BROWSER_EXTENSION_OPAQUE_ORIGIN = "null"
 MAX_REQUEST_BYTES = 16 * 1024
 MAX_BATCH_RJ_IDS = 200
 RATE_LIMIT_REQUESTS = 120
@@ -156,6 +157,7 @@ class BrowserBridge:
         self.allowed_origins = frozenset(
             f"chrome-extension://{value}" for value in self.allowed_extension_ids
         )
+        self.cors_origins = self.allowed_origins | {BROWSER_EXTENSION_OPAQUE_ORIGIN}
         self.rate_limit = max(1, int(rate_limit))
         self._requests: dict[str, deque[float]] = defaultdict(deque)
         self._runner: Optional[web.AppRunner] = None
@@ -269,7 +271,7 @@ class BrowserBridge:
         return web.json_response(
             dict(payload),
             status=status,
-            headers=self._cors_headers(origin) if origin in self.allowed_origins else {
+            headers=self._cors_headers(origin) if origin in self.cors_origins else {
                 "Cache-Control": "no-store",
                 "X-Content-Type-Options": "nosniff",
             },
@@ -311,11 +313,14 @@ class BrowserBridge:
 
         origin = request.headers.get("Origin", "")
         extension_id = request.headers.get("X-ARSM-Extension-Id", "")
-        if origin not in self.allowed_origins:
+        if origin not in self.cors_origins:
             return self._error(request, 403, "origin_denied", "浏览器扩展来源未授权")
         if extension_id not in self.allowed_extension_ids:
             return self._error(request, 403, "extension_denied", "浏览器扩展 ID 未授权")
-        if origin != f"chrome-extension://{extension_id}":
+        if (
+            origin != BROWSER_EXTENSION_OPAQUE_ORIGIN
+            and origin != f"chrome-extension://{extension_id}"
+        ):
             return self._error(request, 403, "origin_mismatch", "扩展来源与 ID 不匹配")
 
         supplied = request.headers.get("X-ARSM-Token", "")
@@ -328,9 +333,10 @@ class BrowserBridge:
     async def _handle_options(self, request: web.Request) -> web.Response:
         origin = request.headers.get("Origin", "")
         extension_id = origin.removeprefix("chrome-extension://")
-        if (
-            origin not in self.allowed_origins
-            or extension_id not in self.allowed_extension_ids
+        if origin == BROWSER_EXTENSION_OPAQUE_ORIGIN:
+            return web.Response(status=204, headers=self._cors_headers(origin))
+        if origin not in self.allowed_origins or (
+            extension_id not in self.allowed_extension_ids
         ):
             return self._error(request, 403, "origin_denied", "浏览器扩展来源未授权")
         return web.Response(status=204, headers=self._cors_headers(origin))

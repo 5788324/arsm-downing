@@ -82,6 +82,7 @@ class DownloadView(BaseDownloadView):
         self.batch_btn.on_click = self._open_batch_paste_dialog
         self._batch_paste_dialog = None
         self._batch_paste_input = None
+        self._active_dialog = None
 
         self.queue_filter_dropdown = ft.Dropdown(
             width=150,
@@ -1329,6 +1330,7 @@ class DownloadView(BaseDownloadView):
 
     def _open_dialog(self, dialog) -> None:
         """Show a dialog through Flet's supported page-level API."""
+        self._active_dialog = dialog
         page = self.app_controller.page
         opener = getattr(page, "open", None)
         if callable(opener):
@@ -1344,9 +1346,22 @@ class DownloadView(BaseDownloadView):
         closer = getattr(page, "close", None)
         if callable(closer):
             closer(dialog)
-            return
-        dialog.open = False
-        page.update()
+        else:
+            dialog.open = False
+            page.update()
+        if self._active_dialog is dialog:
+            self._active_dialog = None
+
+    def handle_escape(self) -> bool:
+        """Close the active batch surface when Windows does not do it."""
+        dialog = self._active_dialog
+        if dialog is None:
+            return False
+        if dialog is self._batch_paste_dialog:
+            self._close_batch_paste_dialog(dialog)
+        else:
+            self._close_dialog(dialog)
+        return True
 
     def _close_batch_paste_dialog(self, dialog) -> None:
         self._close_dialog(dialog)

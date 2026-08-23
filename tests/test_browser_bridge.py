@@ -6,6 +6,7 @@ import pytest
 
 from core.browser_bridge import (
     BROWSER_EXTENSION_ID,
+    BROWSER_EXTENSION_OPAQUE_ORIGIN,
     BROWSER_EXTENSION_ORIGIN,
     BrowserBridge,
     normalize_browser_rj_id,
@@ -131,6 +132,34 @@ def test_browser_bridge_end_to_end_loopback_contract():
                 assert response.headers["Access-Control-Allow-Origin"] == (
                     BROWSER_EXTENSION_ORIGIN
                 )
+
+                opaque_headers = dict(headers)
+                opaque_headers["Origin"] = BROWSER_EXTENSION_OPAQUE_ORIGIN
+                response = await session.options(
+                    f"{endpoint}/v1/library/status",
+                    headers={
+                        "Origin": BROWSER_EXTENSION_OPAQUE_ORIGIN,
+                        "Access-Control-Request-Method": "POST",
+                        "Access-Control-Request-Headers":
+                            "content-type,x-arsm-token,x-arsm-extension-id",
+                    },
+                )
+                assert response.status == 204
+                assert response.headers["Access-Control-Allow-Origin"] == "null"
+
+                response = await session.get(
+                    f"{endpoint}/v1/health", headers=opaque_headers
+                )
+                assert response.status == 200
+                assert response.headers["Access-Control-Allow-Origin"] == "null"
+
+                bad_opaque_headers = dict(opaque_headers)
+                bad_opaque_headers["X-ARSM-Extension-Id"] = "a" * 32
+                response = await session.get(
+                    f"{endpoint}/v1/health", headers=bad_opaque_headers
+                )
+                assert response.status == 403
+                assert (await response.json())["error"]["code"] == "extension_denied"
 
                 response = await session.post(
                     f"{endpoint}/v1/library/status",

@@ -18,9 +18,13 @@ class FakePage:
         self.overlay = []
         self.opened_dialogs = []
         self.closed_dialogs = []
+        self.clipboard_value = None
 
     def update(self):
         return None
+
+    def set_clipboard(self, value):
+        self.clipboard_value = value
 
     def open(self, dialog):
         self.dialog = dialog
@@ -239,6 +243,11 @@ def test_settings_edit_real_concurrency_fields(tmp_path: Path) -> None:
         assert view.work_concurrency_slider.value == 1
         assert view.metadata_concurrency_slider.value == 2
         assert view.file_concurrency_slider.value == 4
+        view._copy_browser_endpoint(None)
+        assert controller.page.clipboard_value == "http://127.0.0.1:17641"
+        view._copy_browser_token(None)
+        assert controller.page.clipboard_value == "t" * 48
+        assert controller.snacks[-1] == "扩展令牌已复制；请只粘贴到 ARSM 网页助手设置"
         view.dir_input.value = str(tmp_path / "output")
         view.work_concurrency_slider.value = 3
         view.metadata_concurrency_slider.value = 5
@@ -493,6 +502,22 @@ def test_batch_paste_dialog_reopens_empty_after_cancel(view_controller) -> None:
 
     assert second is not first
     assert view._batch_paste_input.value in (None, "")
+
+
+def test_escape_closes_batch_paste_dialog_and_clears_transient_state(
+    view_controller,
+) -> None:
+    view, controller = view_controller
+    dialog = view._open_batch_paste_dialog()
+    view._batch_paste_input.value = "RJ00000002"
+
+    assert view.handle_escape() is True
+
+    assert dialog.open is False
+    assert controller.page.closed_dialogs == [dialog]
+    assert view._batch_paste_dialog is None
+    assert view._batch_paste_input is None
+    assert view._active_dialog is None
 
 
 def test_cancelled_task_primary_action_has_visible_label(view_controller) -> None:

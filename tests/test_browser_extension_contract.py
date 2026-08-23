@@ -26,7 +26,10 @@ def test_manifest_is_narrow_mv3_and_has_stable_extension_id() -> None:
     assert manifest["manifest_version"] == 3
     assert manifest["permissions"] == ["storage"]
     assert manifest["host_permissions"] == ["http://127.0.0.1:17641/*"]
-    assert manifest["content_scripts"][0]["matches"] == ["https://asmr.one/*"]
+    assert manifest["content_scripts"][0]["matches"] == [
+        "https://asmr.one/*",
+        "https://www.asmr.one/*",
+    ]
     assert _extension_id_from_key(manifest["key"]) == BROWSER_EXTENSION_ID
     assert "downloads" not in manifest["permissions"]
     assert "cookies" not in manifest["permissions"]
@@ -40,6 +43,8 @@ def test_extension_contract_injects_status_and_delegates_downloads() -> None:
 
     assert "MutationObserver" in content
     assert "statusBatch" in content
+    assert 'state === "disconnected"' in content
+    assert "active ? 4000 : 10000" in content
     assert "downloadStatus" in worker
     assert 'request("/v1/downloads"' in worker
     assert "chrome.storage.local" in worker

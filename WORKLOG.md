@@ -305,3 +305,12 @@ Git 远端写入：无
 - Ubuntu 曾两次在 15 分钟 workflow 超时被取消；经排查为 CI runner CPU 资源拥挤（同一 head 曾以 51s 通过，Windows/Python 3.11/3.12 本地与各文件独立运行均无挂起），并非代码缺陷。
 - 为 `tests/conftest.py` 加入 Linux 专属 60s 单测超时守卫（POSIX `SIGALRM`，Windows 为 no-op），后续此类问题会直接点名超时测试，避免整段 CI 静默超时。
 - 保持 Draft；待重新审查；真实 GUI/DPI/托盘、9 任务约 2700 文件 30 分钟压力、300 个集中 400 场景通过前保持 NO-GO。
+## 2026-08-23：浏览器扩展真人联调与 Escape 修复
+
+- Edge `www.asmr.one` 列表页确认 8 组扩展状态控件，双域名注入已生效；
+- 首次未配置时正确显示“ARSM 未连接”，设置按钮打开扩展内部连接页；
+- 桌面端审计发现批量粘贴弹窗 Escape 不关闭；以当前视图键盘分发做最小修复，不改变批量预览、队列或数据库语义；
+- Windows Flet 实机复测：输入自动聚焦，Escape 一次关闭，队列保持 0；
+- 聚焦 `24 passed`，全量 `410 passed, 3 skipped`；
+- 测试实例误用 `LOCALAPPDATA` 后生成的 `config.json`、`history.db`、`logs/app.log` 已在正常退出后精确删除；真实媒体未接触；
+- 用户手工保存隔离 Profile 地址与令牌后，Edge 8 组控件均切换为

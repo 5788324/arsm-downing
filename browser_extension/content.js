@@ -251,15 +251,17 @@
   }
 
   function schedulePolling() {
-    const active = Array.from(stateByRj.values()).some(
+    const states = Array.from(stateByRj.values());
+    const active = states.some(
       (state) => state === "queued" || state === "downloading" || state === "loading"
     );
+    const disconnected = states.some((state) => state === "disconnected");
     clearTimeout(pollTimer);
-    if (active) {
+    if (active || disconnected) {
       pollTimer = setTimeout(async () => {
         await refreshStatuses();
         schedulePolling();
-      }, 4000);
+      }, active ? 4000 : 10000);
     }
   }
 

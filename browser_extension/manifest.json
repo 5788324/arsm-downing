@@ -20,7 +20,8 @@
   "content_scripts": [
     {
       "matches": [
-        "https://asmr.one/*"
+        "https://asmr.one/*",
+        "https://www.asmr.one/*"
       ],
       "js": [
         "shared.js",
