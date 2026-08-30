@@ -153,6 +153,30 @@ def test_browser_bridge_end_to_end_loopback_contract():
                 assert response.status == 200
                 assert response.headers["Access-Control-Allow-Origin"] == "null"
 
+                missing_origin_headers = dict(headers)
+                missing_origin_headers.pop("Origin")
+                response = await session.get(
+                    f"{endpoint}/v1/health", headers=missing_origin_headers
+                )
+                assert response.status == 200
+                assert "Access-Control-Allow-Origin" not in response.headers
+
+                bad_missing_origin_headers = dict(missing_origin_headers)
+                bad_missing_origin_headers["X-ARSM-Extension-Id"] = "a" * 32
+                response = await session.get(
+                    f"{endpoint}/v1/health", headers=bad_missing_origin_headers
+                )
+                assert response.status == 403
+                assert (await response.json())["error"]["code"] == "extension_denied"
+
+                bad_missing_origin_headers = dict(missing_origin_headers)
+                bad_missing_origin_headers["X-ARSM-Token"] = "wrong"
+                response = await session.get(
+                    f"{endpoint}/v1/health", headers=bad_missing_origin_headers
+                )
+                assert response.status == 401
+                assert (await response.json())["error"]["code"] == "invalid_token"
+
                 bad_opaque_headers = dict(opaque_headers)
                 bad_opaque_headers["X-ARSM-Extension-Id"] = "a" * 32
                 response = await session.get(

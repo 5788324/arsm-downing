@@ -11,6 +11,7 @@
   const stateByRj = new Map();
   let scanTimer = 0;
   let pollTimer = 0;
+  let refreshInFlight = null;
 
   function send(message) {
     return new Promise((resolve) => {
@@ -209,20 +210,30 @@
   }
 
   async function refreshStatuses() {
-    const rjIds = collectRjIds();
-    if (!rjIds.length) {
-      return;
+    if (refreshInFlight) {
+      return refreshInFlight;
     }
-    const response = await send({ type: "statusBatch", rjIds });
-    if (!response.ok || !response.states) {
-      for (const rjId of rjIds) {
-        updateControls(rjId, "disconnected");
+    refreshInFlight = (async () => {
+      const rjIds = collectRjIds();
+      if (!rjIds.length) {
+        return;
       }
-      return;
-    }
-    for (const rjId of rjIds) {
-      const snapshot = response.states[rjId];
-      updateControls(rjId, snapshot ? snapshot.state : "not_in_library");
+      const response = await send({ type: "statusBatch", rjIds });
+      if (!response.ok || !response.states) {
+        for (const rjId of rjIds) {
+          updateControls(rjId, "disconnected");
+        }
+        return;
+      }
+      for (const rjId of rjIds) {
+        const snapshot = response.states[rjId];
+        updateControls(rjId, snapshot ? snapshot.state : "not_in_library");
+      }
+    })();
+    try {
+      await refreshInFlight;
+    } finally {
+      refreshInFlight = null;
     }
   }
 
@@ -265,7 +276,17 @@
     }
   }
 
-  const observer = new MutationObserver(scheduleScan);
+  const observer = new MutationObserver((mutations) => {
+    const hasExternalMutation = mutations.some((mutation) => {
+      const target = mutation.target instanceof Element
+        ? mutation.target
+        : mutation.target.parentElement;
+      return !target || !target.closest(".arsm-extension-controls");
+    });
+    if (hasExternalMutation) {
+      scheduleScan();
+    }
+  });
   observer.observe(document.documentElement, { childList: true, subtree: true });
   scan();
 })();

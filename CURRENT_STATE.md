@@ -1,31 +1,35 @@
 # ARSM Suite 当前状态
 
-> 更新时间：2026-08-23
+> 更新时间：2026-08-30
 > 当前工作分支：`codex/asmr-browser-extension`
-> 功能代码检查点：`0fe8afcb0a45f4f554f923b62f68581c7e3ad723`；当前 HEAD 应为包含该检查点的远端分支最新提交
-> 推送状态：用户已完成 GitHub 推送；本机网络故障期间未独立回读远端 SHA
+> 功能代码检查点：`0fe8afcb0a45f4f554f923b62f68581c7e3ad723`
+> 最终验收前 HEAD / GitHub 分支：`86af94ebba776e9c3be12eb2e00eace62891421f`
+> GitHub `main`：`b628c86f8217854862716fcdc079f27606a5ecd0`；分支相对 `main` 为 `0 behind / 19 ahead`
 > 数据边界：真实 `E:\arsm` 零访问、零写入、零移动、零删除
 
 ## 当前结论
 
-浏览器扩展 MVP 和本轮桌面易用性修复已实现并完成本地 Windows 验证，工作区在提交后 clean。自动门禁为 `410 passed, 3 skipped`；3 个跳过项均为当前 Windows 环境不能创建符号链接。扩展源码与隔离打包目录 9 个文件逐项 SHA-256 一致。
+浏览器扩展最终验收结论为 `PASS WITH NOTES`。实机矩阵和本地自动门禁已收口，可以提交本轮最小修复与文档，并建议由用户创建 Draft PR。当前分支没有 GitHub Actions 运行记录，因此不能写成 CI PASS；不得自动合并、Tag 或 Release。
 
-已实机确认：
+自动与代码证据：
 
-- Edge `https://www.asmr.one/works?page=21` 注入 8 组状态控件；
-- 保存隔离 Profile 的连接地址和令牌后，8 组控件均显示“未入库 / 下载到 ARSM”；
-- ARSM 四个主页面无黑屏、异常水平滚动或关键按钮裁切；
-- Windows 批量粘贴弹窗按 Escape 可关闭，取消后队列仍为 0；
-- 设置页提供本机地址和令牌复制按钮；
-- ARSM 正常关闭后本轮进程与 `127.0.0.1:17641` 监听归零。
+- 聚焦回归：`21 passed`；
+- 完整回归：`411 passed, 3 skipped`；3 个跳过项均为当前 Windows 环境不能创建符号链接；
+- JavaScript 语法和 `git diff --check`：PASS；
+- 修复状态轮询自触发导致的闪烁/限流，以及 Chromium MV3 后台请求缺失 Origin 时的最小安全兼容。
 
-尚未执行，不能写成 PASS：
+实机证据：
 
-- Edge 详情页按钮、隔离空库测试入队、重复任务、退出/重启自动恢复；
-- Chrome 当前稳定版最小矩阵；
-- Chrome/Edge 多标签、100%/125%/150% 缩放、深浅外观与卸载矩阵。
+- Edge 列表页和详情页注入、连接与状态显示通过；
+- 隔离空库使用 `RJ01276295` 完成一次入队；重复请求返回 HTTP 409 `already_queued`，仅 1 个作品进入数据库；
+- Edge 多标签没有创建第二个作品任务；
+- ARSM 完全退出后网页无需刷新自动断开；同一隔离 Profile 重启后无需刷新自动恢复；
+- Edge 100% / 125% / 150% 缩放正常；
+- Chrome 在 `asmr.one` / `www.asmr.one` 详情页均显示“已暂停 / 查看下载”，深浅外观正常；
+- Chrome 移除扩展后网页控件消失；隔离 ARSM 桥接仍返回 HTTP 200，测试库保持 1 个作品 / 60 条下载；
+- `queue.json` 不存在；隔离测试 Profile 位于仓库外 `C:\tmp`。
 
-阻塞说明：Codex Browser 的 Edge 控制扩展已安装并启用，但原生通信注册项缺失，导致标签可枚举而无法接管。后续应先从 Codex 插件界面重装 Browser 插件，不要自行修改系统注册表。
+说明：隔离下载代理故意设为不可用的 `127.0.0.1:9`，媒体实际写入 0 字节；这是保护正式数据的验收配置，不是产品下载失败。
 
 权威交接：[`HANDOFF.md`](HANDOFF.md)。浏览器专项证据见 [`docs/BROWSER_EXTENSION_ACCEPTANCE.md`](docs/BROWSER_EXTENSION_ACCEPTANCE.md) 和 [`docs/ARSM_UX_AUDIT_20260823.md`](docs/ARSM_UX_AUDIT_20260823.md)。
 

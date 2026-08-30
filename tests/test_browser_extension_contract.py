@@ -58,6 +58,16 @@ def test_extension_contract_injects_status_and_delegates_downloads() -> None:
     assert "E:\\arsm" not in combined
 
 
+def test_status_refresh_ignores_own_dom_mutations_and_deduplicates_requests() -> None:
+    content = (EXTENSION / "content.js").read_text(encoding="utf-8")
+
+    assert "let refreshInFlight = null;" in content
+    assert "if (refreshInFlight)" in content
+    assert 'closest(".arsm-extension-controls")' in content
+    assert "new MutationObserver((mutations) =>" in content
+    assert "new MutationObserver(scheduleScan)" not in content
+
+
 def test_extension_files_are_packaged_and_javascript_parses() -> None:
     required = {
         "manifest.json", "shared.js", "service-worker.js", "content.js",

@@ -2,20 +2,23 @@
 
 ## T17：asmr.one 浏览器扩展
 
-状态：`IMPLEMENTED / PUSHED_BY_USER / PARTIAL_BROWSER_ACCEPTANCE`
+状态：`PASS_WITH_NOTES / DRAFT_PR_READY`
 
 - [x] loopback 安全桥接、固定扩展 ID、令牌、限流和安全返回模型；
 - [x] `asmr.one` / `www.asmr.one` 列表与详情状态标签、下载入口；
 - [x] 设置页安装、连接、地址/令牌复制、重新生成令牌和卸载引导；
 - [x] 断开状态 10 秒恢复轮询，活动状态 4 秒刷新；
 - [x] Windows 桌面真人审计与 Escape 弹窗修复；
-- [x] `410 passed, 3 skipped`、compileall、4 个扩展脚本语法及 `git diff --check`；
+- [x] `411 passed, 3 skipped`、compileall、4 个扩展脚本语法及 `git diff --check`；
 - [x] Edge 双域名注入和列表页连接状态；
 - [x] 用户确认分支已推送；功能代码检查点为 `0fe8afcb0a45f4f554f923b62f68581c7e3ad723`，其后仅为交接文档提交；
-- [ ] 修复 Codex Browser 原生通信后补 Edge 详情页、空库入队、重复保护和 ARSM 重启恢复；
-- [ ] Chrome 稳定版最小矩阵；
-- [ ] 多标签、缩放、深浅外观和扩展卸载矩阵；
-- [ ] 核对远端分支/CI/main 差异后再决定 Draft PR，不自动合并或发布。
+- [x] Edge 详情页、隔离空库入队、重复保护、状态回写和 ARSM 重启恢复；
+- [x] Chrome 稳定版双域名最小矩阵；
+- [x] 多标签、缩放、深浅外观和扩展卸载矩阵；
+- [x] 核对 GitHub 分支与 `main`：本地/远端分支均为 `86af94e`，`main@b628c86`，分支 `0 behind / 19 ahead`；
+- [ ] 提交本轮最小修复和最终验收文档，普通 fast-forward push；
+- [ ] 由用户决定是否创建 Draft PR；当前分支无 Actions 运行记录，PR CI 通过前不得转 Ready；
+- [ ] 禁止自动合并、Tag 或 Release。
 
 详见 `HANDOFF.md`、`docs/BROWSER_EXTENSION_TASKS.md`、`docs/BROWSER_EXTENSION_ACCEPTANCE.md` 与 `docs/ARSM_UX_AUDIT_20260823.md`。
 

@@ -313,12 +313,12 @@ class BrowserBridge:
 
         origin = request.headers.get("Origin", "")
         extension_id = request.headers.get("X-ARSM-Extension-Id", "")
-        if origin not in self.cors_origins:
+        if origin and origin not in self.cors_origins:
             return self._error(request, 403, "origin_denied", "浏览器扩展来源未授权")
         if extension_id not in self.allowed_extension_ids:
             return self._error(request, 403, "extension_denied", "浏览器扩展 ID 未授权")
         if (
-            origin != BROWSER_EXTENSION_OPAQUE_ORIGIN
+            origin not in {"", BROWSER_EXTENSION_OPAQUE_ORIGIN}
             and origin != f"chrome-extension://{extension_id}"
         ):
             return self._error(request, 403, "origin_mismatch", "扩展来源与 ID 不匹配")
