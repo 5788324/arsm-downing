@@ -87,9 +87,10 @@ class SettingsView(ft.Container):
             label="{value}",
         )
         self.tag_audio_switch = ft.Switch(
-            label="MP3 自动嵌入封面和简体歌词",
+            label="音频自动嵌入封面和 MP3 简体歌词",
             value=getattr(config, "tag_audio", False),
-            tooltip="保留原 LRC；有同名歌词时嵌入 MP3，并将繁体中文转换为简体中文。",
+            tooltip=("下载后将 VTT 转为同名简体 LRC；WAV 使用外挂 LRC，"
+                     "MP3 还会内嵌歌词。"),
         )
         self.sort_files_switch = ft.Switch(
             label="按文件类型自动分类",

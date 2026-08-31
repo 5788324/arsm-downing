@@ -15,16 +15,13 @@ from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 from uuid import uuid4
 
+from core.media_assets import is_cover_filename
+
 AUDIO_EXTENSIONS = {
     ".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma",
 }
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".avi", ".mov", ".wmv"}
-COVER_NAMES = {
-    "cover.jpg", "cover.jpeg", "cover.png", "cover.webp",
-    "main.jpg", "main.jpeg", "main.png", "main.webp",
-    "package.jpg", "package.jpeg", "package.png", "package.webp",
-}
 ACTIVE_DOWNLOAD_STATUSES = {"queued", "paused", "downloading", "failed", "resuming"}
 
 
@@ -195,7 +192,7 @@ def _scan_work_dir(path: Path, *, rj_id: str, library_root: Path) -> LibraryScan
                     video += 1
                 else:
                     other += 1
-                if lowered in COVER_NAMES:
+                if is_cover_filename(lowered):
                     has_cover = True
                 if suffix == ".part" or lowered.endswith(".part"):
                     warning_set.add("contains_part")

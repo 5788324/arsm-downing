@@ -48,6 +48,20 @@ def test_snapshot_scans_nested_rj_and_file_categories(tmp_path: Path) -> None:
     assert entry.warnings == ()
 
 
+def test_snapshot_recognizes_nested_nonstandard_main_cover(tmp_path: Path) -> None:
+    root = tmp_path / "library"
+    make_work(
+        root,
+        "RJ01234568 Demo",
+        {"audio/track.mp3": b"audio", "images/RJ01234568_img_main.jpg": b"image"},
+    )
+
+    snapshot = scan_library_snapshot([root])
+
+    assert snapshot.entries[0].has_cover == 1
+    assert "no_cover" not in snapshot.entries[0].warnings
+
+
 def test_rebuild_replaces_stale_indexes_and_syncs_work_tables(tmp_path: Path) -> None:
     root = tmp_path / "library"
     work = make_work(root, "RJ01000001 New", {"track.mp3": b"x" * 9})

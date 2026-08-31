@@ -95,6 +95,37 @@ def test_matching_lyrics_prefers_nearest_same_locale(tmp_path: Path) -> None:
     assert AudioProcessor.find_matching_lyrics(audio, [tw, cn]) == cn
 
 
+def test_canonical_lyrics_path_removes_audio_suffix() -> None:
+    source = Path("第1章 『宫殿』 4人章 【序幕 音轨】.wav.vtt")
+    assert AudioProcessor.canonical_lyrics_path(source) == Path(
+        "第1章 『宫殿』 4人章 【序幕 音轨】.lrc")
+
+
+def test_prepare_vtt_creates_simplified_canonical_lrc(tmp_path: Path) -> None:
+    source = tmp_path / "第1章.wav.vtt"
+    source.write_text(
+        "WEBVTT\n\n00:00:01.230 --> 00:00:03.000\n"
+        "<v Narrator>繁體聲音&amp;後臺</v>\n\n"
+        "01:02:03.450 --> 01:02:05.000\n第二行\n",
+        encoding="utf-8",
+    )
+
+    result = AudioProcessor.prepare_lyrics_sidecar(source)
+
+    assert result == tmp_path / "第1章.lrc"
+    assert result.read_text(encoding="utf-8") == (
+        "[00:01.23]繁体声音&后台\n[62:03.45]第二行\n"
+    )
+    assert source.is_file()
+
+
+def test_canonical_lrc_is_not_rewritten(tmp_path: Path) -> None:
+    source = tmp_path / "track.lrc"
+    source.write_text("繁體", encoding="utf-8")
+    assert AudioProcessor.prepare_lyrics_sidecar(source) == source
+    assert source.read_text(encoding="utf-8") == "繁體"
+
+
 def test_vorbis_cover_uses_metadata_block_picture(tmp_path: Path) -> None:
     cover = tmp_path / "cover.jpg"
     cover.write_bytes(b"\xff\xd8\xffimage")

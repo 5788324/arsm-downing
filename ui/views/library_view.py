@@ -15,6 +15,7 @@ from core.library_diagnostics import (
     classify_library_anomalies,
     flatten_anomaly_groups,
 )
+from core.media_assets import find_local_cover
 from ui.theme import (
     ACCENT_PRIMARY,
     ACCENT_SECONDARY,
@@ -28,10 +29,6 @@ from ui.theme import (
 LIBRARY_PAGE_SIZE = 20
 FILE_PREVIEW_LIMIT = 200
 ANOMALY_DISPLAY_LIMIT = 200
-COVER_CANDIDATES = (
-    "cover.jpg", "cover.jpeg", "cover.png", "cover.webp",
-    "main.jpg", "main.png", "package.jpg", "package.png",
-)
 
 # Compatibility map retained for historical diagnostics and any future status
 # badges.  The new card view is index-first, but old scripts still import it.
@@ -469,7 +466,7 @@ class LibraryView(ft.Container):
             ]
             if int(item.get("audio_count", 0)) > 0:
                 badges.append(_badge(f"{int(item['audio_count'])} 音频", SUCCESS))
-            if not item.get("has_cover"):
+            if not cover_src:
                 badges.append(_badge("无本地封面", WARNING))
 
             card = ft.Column([
@@ -743,26 +740,10 @@ def _badge(text: str, color: str) -> ft.Container:
 
 
 def _resolve_local_cover(folder_path: str, has_cover: bool) -> str | None:
-    if not folder_path or not has_cover:
+    if not folder_path:
         return None
-    root = Path(folder_path)
-    if not root.is_dir():
-        return None
-    for name in COVER_CANDIDATES:
-        candidate = root / name
-        if candidate.is_file():
-            return str(candidate)
-    try:
-        for child in root.iterdir():
-            if (
-                child.is_file()
-                and child.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
-                and ("cover" in child.name.lower() or "package" in child.name.lower())
-            ):
-                return str(child)
-    except OSError:
-        return None
-    return None
+    cover = find_local_cover(folder_path)
+    return str(cover) if cover else None
 
 
 def _cover_widget(source: str, height: int = 180) -> ft.Container:

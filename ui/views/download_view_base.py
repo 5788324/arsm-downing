@@ -9,6 +9,7 @@ import time
 from typing import Dict, Any, Optional
 from pathlib import Path
 
+from core.media_assets import find_local_cover
 from ui.theme import Styles, ACCENT_PRIMARY, ACCENT_SECONDARY, SUCCESS, WARNING, ERROR, BG_SURFACE_LIGHT
 from core.status import WorkStatus
 from core.orchestrator import Orchestrator
@@ -18,11 +19,6 @@ QUEUE_FILE = Path("queue.json")
 
 
 class DownloadView(ft.Container):
-    COVER_CANDIDATES = (
-        "cover.jpg", "cover.jpeg", "cover.png", "cover.webp",
-        "main.jpg", "main.png", "package.jpg", "package.png",
-    )
-
     def __init__(self, app_controller):
         super().__init__()
         self.app_controller = app_controller
@@ -466,22 +462,8 @@ class DownloadView(ft.Container):
     def _resolve_cover_source(self, rj_id: str) -> Optional[str]:
         """Return only a local cover path; remote URLs must use NetworkKernel."""
         work_dir = self._find_work_dir(rj_id)
-        if work_dir and work_dir.exists():
-            for name in self.COVER_CANDIDATES:
-                candidate = work_dir / name
-                if candidate.exists():
-                    return str(candidate)
-            try:
-                for child in work_dir.iterdir():
-                    if child.is_file() and child.suffix.lower() in {
-                        ".jpg", ".jpeg", ".png", ".webp",
-                    }:
-                        lower_name = child.name.lower()
-                        if any(token in lower_name for token in ("cover", "package", "main")):
-                            return str(child)
-            except OSError:
-                pass
-        return None
+        cover = find_local_cover(work_dir) if work_dir else None
+        return str(cover) if cover else None
 
     def _build_cover(self, rj_id: str, width: int = 72, height: int = 72):
         src = self._resolve_cover_source(rj_id)

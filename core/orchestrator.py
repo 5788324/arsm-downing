@@ -18,6 +18,7 @@ from core.config import ConfigManager
 from core.database import LibraryVault
 from core.network import NetworkKernel
 from core.audio import AudioProcessor
+from core.media_assets import find_local_cover
 from core.speed import SpeedTracker
 from core.status import WorkStatus
 from core.download_response import local_partial_size, plan_download_response
@@ -1859,25 +1860,44 @@ class Orchestrator:
         )
         results = await pool.run(targets)
 
-        # MP3 and LRC files are downloaded concurrently. Finalize MP3 tags
-        # only after the pool settles so sidecars are visible regardless of
-        # completion order. Original LRC files remain on disk.
+        # Sidecars download concurrently with audio. Once the pool settles,
+        # create canonical LRC files such as ``title.lrc`` from
+        # ``title.wav.vtt`` while retaining the original tracked download.
+        lyric_paths = []
+        for target in targets:
+            if (target.save_path.suffix.casefold() not in {".lrc", ".vtt"}
+                    or results.get(id(target)) is not True
+                    or not target.save_path.is_file()):
+                continue
+            prepared = AudioProcessor.prepare_lyrics_sidecar(target.save_path)
+            if prepared is not None and prepared.is_file():
+                lyric_paths.append(prepared)
+
         if self.config.tag_audio:
-            lrc_paths = [
-                t.save_path for t in targets
-                if t.save_path.suffix.lower() == ".lrc"
-                and results.get(id(t)) is True
-                and t.save_path.is_file()
-            ]
+            # A packaged album image may have a non-standard or nested name.
+            # Prefer the metadata cover, then fall back to a local candidate.
+            effective_cover = (
+                cover_path if cover_path and cover_path.is_file()
+                else find_local_cover(root_path)
+            )
             for target in targets:
-                if (target.save_path.suffix.lower() != ".mp3"
+                if (target.save_path.suffix.casefold()
+                        not in AudioProcessor.SUPPORTED_EXTENSIONS
                         or results.get(id(target)) is not True
                         or not target.save_path.is_file()):
                     continue
                 lyrics = AudioProcessor.find_matching_lyrics(
-                    target.save_path, lrc_paths)
-                AudioProcessor.apply_tags(
-                    target.save_path, meta, cover_path, lyrics)
+                    target.save_path, lyric_paths)
+                if AudioProcessor.apply_tags(
+                        target.save_path, meta, effective_cover, lyrics):
+                    final_size = target.save_path.stat().st_size
+                    dl_id = self._make_dl_id(
+                        meta.rj_id, target.id or target.title,
+                        target.save_path, target.title)
+                    self.db.upsert_download(
+                        dl_id, meta.rj_id, target.title,
+                        str(target.save_path), "completed",
+                        final_size, final_size)
 
         # Clean up in-flight tracking
         self._per_rj_inflight.pop(rj_id, None)

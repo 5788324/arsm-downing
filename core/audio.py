@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import base64
+import html
 import logging
+import os
 from pathlib import Path
+import re
 from typing import Optional
 
 import mutagen
@@ -31,6 +34,9 @@ class AudioProcessor:
         ".wma", ".asf",
     }
     _t2s = OpenCC("t2s")
+    _VTT_TIMESTAMP = re.compile(
+        r"^(?:(\d+):)?(\d{2}):(\d{2})[.,](\d{1,3})"
+    )
 
     @staticmethod
     def apply_tags(path: Path, meta: WorkMetadata, cover: Optional[Path],
@@ -117,19 +123,83 @@ class AudioProcessor:
             return False
 
     @staticmethod
+    def canonical_lyrics_path(path: Path, suffix: str = ".lrc") -> Path:
+        """Strip a trailing audio extension from a lyric sidecar stem."""
+        stem = path.stem
+        while Path(stem).suffix.casefold() in AudioProcessor.SUPPORTED_EXTENSIONS:
+            stem = Path(stem).stem
+        normalized_suffix = suffix if suffix.startswith(".") else f".{suffix}"
+        return path.with_name(f"{stem}{normalized_suffix.lower()}")
+
+    @staticmethod
+    def _decode_text(payload: bytes) -> str:
+        for encoding in ("utf-8-sig", "utf-16", "gb18030", "big5"):
+            try:
+                return payload.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+        return payload.decode("utf-8", errors="replace")
+
+    @staticmethod
+    def vtt_to_lrc_text(text: str) -> str:
+        """Convert WebVTT cues to Simplified-Chinese LRC lines."""
+        lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        output: list[str] = []
+        index = 0
+        while index < len(lines):
+            line = lines[index].strip()
+            if "-->" not in line:
+                index += 1
+                continue
+            start = line.split("-->", 1)[0].strip()
+            match = AudioProcessor._VTT_TIMESTAMP.match(start)
+            index += 1
+            if not match:
+                continue
+            hours = int(match.group(1) or 0)
+            minutes = int(match.group(2)) + hours * 60
+            seconds = int(match.group(3))
+            millis = int(match.group(4).ljust(3, "0")[:3])
+            stamp = f"[{minutes:02d}:{seconds:02d}.{millis // 10:02d}]"
+            while index < len(lines) and lines[index].strip():
+                cue = re.sub(r"<[^>]+>", "", lines[index]).strip()
+                cue = html.unescape(cue)
+                if cue:
+                    output.append(stamp + AudioProcessor._t2s.convert(cue))
+                index += 1
+        return "\n".join(output)
+
+    @staticmethod
+    def prepare_lyrics_sidecar(path: Path) -> Optional[Path]:
+        """Create a canonical LRC while preserving the tracked source file."""
+        if not path.is_file() or path.suffix.casefold() not in {".lrc", ".vtt"}:
+            return None
+        destination = AudioProcessor.canonical_lyrics_path(path, ".lrc")
+        if path.suffix.casefold() == ".lrc" and destination == path:
+            return path
+        try:
+            text = AudioProcessor._decode_text(path.read_bytes())
+            if path.suffix.casefold() == ".vtt":
+                text = AudioProcessor.vtt_to_lrc_text(text)
+            else:
+                text = AudioProcessor._t2s.convert(text)
+            if not text.strip():
+                return None
+            temp = destination.with_name(destination.name + ".tmp")
+            temp.write_text(text.rstrip() + "\n", encoding="utf-8")
+            os.replace(temp, destination)
+            return destination
+        except OSError as exc:
+            logger.warning("Failed to prepare lyric sidecar %s: %s", path, exc)
+            return None
+
+    @staticmethod
     def read_lyrics(path: Optional[Path]) -> Optional[str]:
         """Read an LRC sidecar and normalize Traditional Chinese to Simplified."""
         if not path or not path.is_file():
             return None
         payload = path.read_bytes()
-        for encoding in ("utf-8-sig", "utf-16", "gb18030", "big5"):
-            try:
-                text = payload.decode(encoding)
-                break
-            except UnicodeDecodeError:
-                continue
-        else:
-            text = payload.decode("utf-8", errors="replace")
+        text = AudioProcessor._decode_text(payload)
         return AudioProcessor._t2s.convert(text)
 
     @staticmethod
