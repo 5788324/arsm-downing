@@ -7,7 +7,7 @@ import flet as ft
 import ui.views.download_view as download_module
 from core.database import LibraryVault
 from core.models import ProgressEvent, WorkMetadata
-from core.read_models import BatchEnqueuePreview
+from core.read_models import BatchEnqueuePreview, DownloadQueueSummary
 from ui.views.download_view import DownloadView
 from ui.views.settings_view import SettingsView
 
@@ -273,6 +273,33 @@ def test_queue_summary_shows_counts_speed_and_button_availability(view_controlle
     assert "总速度 6.0 MB/s" in view.queue_summary.value
     assert view.btn_pause_all.disabled is False
     assert view.btn_resume_all.disabled is False
+
+
+def test_summary_keeps_last_full_counts_while_snapshot_refreshes(view_controller) -> None:
+    view, _controller = view_controller
+    view._last_queue_summary = DownloadQueueSummary(
+        total_tasks=832,
+        active_tasks=1,
+        queued_tasks=214,
+        failed_tasks=3,
+        completed_tasks=613,
+        cancelled_tasks=1,
+    )
+    view._last_queue_total_items = 218
+    view.queue_model = None
+    view.active_downloads = {
+        f"RJ{index:08d}": {"status": "队列中", "tracks": {}, "control": None}
+        for index in range(24)
+    }
+    view._last_queue_states = {
+        rj_id: "queued"
+        for rj_id in view.active_downloads
+    }
+
+    view._update_queue_summary()
+
+    assert "当前筛选 218 / 全部 832" in view.queue_summary.value
+    assert "排队 214" in view.queue_summary.value
 
 
 def test_queue_summary_has_dedicated_line_and_empty_filter_hides_detail(

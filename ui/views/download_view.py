@@ -40,6 +40,9 @@ class DownloadView(BaseDownloadView):
         self.queue_page = 1
         self.queue_page_size = 24
         self.queue_model: DownloadQueuePage | None = None
+        self._last_queue_summary = None
+        self._last_queue_total_items = 0
+        self._last_queue_states: Dict[str, str] = {}
         self._transient_rj_ids: list[str] = []
         config = app_controller.config
         self.download_service = DownloadService(
@@ -345,6 +348,12 @@ class DownloadView(BaseDownloadView):
 
         self.active_downloads = current
         self.queue_model = model
+        self._last_queue_summary = model.summary
+        self._last_queue_total_items = model.total_items
+        self._last_queue_states = {
+            item.rj_id: item.queue_state
+            for item in model.items
+        }
         self.queue_page = model.page
         self._render_queue_page()
 
@@ -397,12 +406,14 @@ class DownloadView(BaseDownloadView):
     def _previous_page(self, _event):
         if self.queue_page > 1:
             self.queue_page -= 1
+            self._update_pagination()
             self.refresh_queue_async()
 
     def _next_page(self, _event):
         page_count = self.queue_model.page_count if self.queue_model else 1
         if self.queue_page < page_count:
             self.queue_page += 1
+            self._update_pagination()
             self.refresh_queue_async()
 
     def _update_pagination(self):
@@ -451,7 +462,9 @@ class DownloadView(BaseDownloadView):
         return f"{speed:.0f} B/s"
 
     def _update_queue_summary(self, _visible_items=None):
-        if self.queue_model is None:
+        summary = self.queue_model.summary if self.queue_model else self._last_queue_summary
+        shown = self.queue_model.total_items if self.queue_model else self._last_queue_total_items
+        if summary is None:
             counts = {"active": 0, "queued": 0, "paused": 0, "failed": 0, "cancelled": 0}
             for data in self.active_downloads.values():
                 state = self.normalize_status(data.get("status", ""))
@@ -461,8 +474,8 @@ class DownloadView(BaseDownloadView):
                     counts[state] += 1
             total = len(self.active_downloads)
             completed = 0
+            shown = len(self.active_downloads)
         else:
-            summary = self.queue_model.summary
             counts = {
                 "active": summary.active_tasks,
                 "queued": summary.queued_tasks + len(self._transient_rj_ids),
@@ -472,9 +485,47 @@ class DownloadView(BaseDownloadView):
             }
             total = summary.total_tasks + len(self._transient_rj_ids)
             completed = summary.completed_tasks
+            if self.queue_model is None:
+                def bucket(value):
+                    normalized = self.normalize_status(value)
+                    if normalized in {"downloading", "resuming"}:
+                        return "active"
+                    if normalized in counts or normalized == "completed":
+                        return normalized
+                    return None
+
+                previous_ids = set(self._last_queue_states)
+                for rj_id, old_state in self._last_queue_states.items():
+                    old_bucket = bucket(old_state)
+                    data = self.active_downloads.get(rj_id)
+                    new_bucket = (
+                        bucket(data.get("status", ""))
+                        if data is not None else "completed"
+                    )
+                    if old_bucket == new_bucket:
+                        continue
+                    if old_bucket == "completed":
+                        completed = max(0, completed - 1)
+                    elif old_bucket in counts:
+                        counts[old_bucket] = max(0, counts[old_bucket] - 1)
+                    if new_bucket == "completed":
+                        completed += 1
+                        if self.queue_filter == "working":
+                            shown = max(0, shown - 1)
+                    elif new_bucket in counts:
+                        counts[new_bucket] += 1
+                for rj_id, data in self.active_downloads.items():
+                    if rj_id in previous_ids or rj_id in self._transient_rj_ids:
+                        continue
+                    new_bucket = bucket(data.get("status", ""))
+                    if new_bucket == "completed":
+                        completed += 1
+                    elif new_bucket in counts:
+                        counts[new_bucket] += 1
+                    total += 1
+                    shown += 1
         if counts["active"] == 0:
             self.global_speed_bps = 0.0
-        shown = self.queue_model.total_items if self.queue_model else len(self.active_downloads)
         self.queue_summary.value = (
             f"当前筛选 {shown} / 全部 {total}"
             f"  下载中 {counts['active']}"

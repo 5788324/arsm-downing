@@ -155,3 +155,107 @@ def test_normalize_rj_supports_number_code_and_asmr_one_url() -> None:
     assert normalize_rj_id("https://asmr.one/work/RJ01583845") == "RJ01583845"
     assert normalize_rj_id("RJ123") is None
     assert normalize_rj_id("prefixRJ01583845") is None
+
+
+def test_working_page_does_not_cap_more_than_200_queued_works(tmp_path: Path) -> None:
+    vault = LibraryVault(tmp_path / "history.db")
+    try:
+        count = 214
+        works = []
+        downloads = []
+        for index in range(count):
+            rj_id = f"RJ{index + 1:08d}"
+            works.append((rj_id, f"Title {index}", "queued"))
+            downloads.append((
+                f"{rj_id}:1", rj_id, "track.mp3",
+                str(tmp_path / rj_id / "track.mp3"), "queued", 0, 100,
+            ))
+        vault.conn.executemany(
+            "INSERT INTO works (rj_id,title,status) VALUES (?,?,?)", works)
+        vault.conn.executemany(
+            """INSERT INTO downloads
+               (id,rj_id,track_title,local_path,status,downloaded_bytes,total_bytes)
+               VALUES (?,?,?,?,?,?,?)""",
+            downloads,
+        )
+        vault.conn.commit()
+
+        service = DownloadService(vault)
+        page = service.fetch_working_page(page=9, page_size=24)
+
+        assert page.summary.queued_tasks == 214
+        assert page.total_items == 214
+        assert page.page_count == 9
+        assert page.page == 9
+        assert len(page.items) == 22
+    finally:
+        vault.close()
+
+
+def test_working_page_reuses_terminal_disk_verification(tmp_path: Path, monkeypatch) -> None:
+    vault = LibraryVault(tmp_path / "history.db")
+    try:
+        rj_id = "RJ00999999"
+        work = tmp_path / rj_id
+        work.mkdir()
+        vault.conn.execute(
+            "INSERT INTO works (rj_id,title,status,local_path) VALUES (?,?,?,?)",
+            (rj_id, "Missing", "registered", str(work)),
+        )
+        vault.conn.execute(
+            """INSERT INTO downloads
+               (id,rj_id,track_title,local_path,status,downloaded_bytes,total_bytes)
+               VALUES (?,?,?,?,?,?,?)""",
+            ("d1", rj_id, "missing.mp3", str(work / "missing.mp3"),
+             "registered", 100, 100),
+        )
+        vault.conn.commit()
+        service = DownloadService(vault)
+        calls = []
+        original = service.apply_disk_verification
+        monkeypatch.setattr(
+            service, "apply_disk_verification",
+            lambda *args, **kwargs: (calls.append(True), original(*args, **kwargs))[1],
+        )
+
+        first = service.fetch_working_page(page=1, page_size=24)
+        second = service.fetch_working_page(page=1, page_size=24)
+
+        assert first.total_items == second.total_items == 1
+        assert len(calls) == 1
+    finally:
+        vault.close()
+
+
+def test_pristine_queued_page_skips_disk_verification(tmp_path: Path, monkeypatch) -> None:
+    vault = LibraryVault(tmp_path / "history.db")
+    try:
+        rj_id = "RJ00888888"
+        work = tmp_path / rj_id
+        work.mkdir()
+        vault.conn.execute(
+            "INSERT INTO works (rj_id,title,status,local_path) VALUES (?,?,?,?)",
+            (rj_id, "Queued", "queued", str(work)),
+        )
+        vault.conn.execute(
+            """INSERT INTO downloads
+               (id,rj_id,track_title,local_path,status,downloaded_bytes,total_bytes)
+               VALUES (?,?,?,?,?,?,?)""",
+            ("d1", rj_id, "track.mp3", str(work / "track.mp3"),
+             "queued", 0, 100),
+        )
+        vault.conn.commit()
+        service = DownloadService(vault)
+        calls = []
+        original = service.apply_disk_verification
+        monkeypatch.setattr(
+            service, "apply_disk_verification",
+            lambda *args, **kwargs: (calls.append(True), original(*args, **kwargs))[1],
+        )
+
+        page = service.fetch_working_page(page=1, page_size=24)
+
+        assert page.total_items == 1
+        assert calls == []
+    finally:
+        vault.close()
