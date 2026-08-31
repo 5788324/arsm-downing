@@ -4,7 +4,7 @@ import base64
 from pathlib import Path
 
 import pytest
-from mutagen.id3 import ID3
+from mutagen.id3 import ID3, USLT
 
 from core.audio import AudioProcessor
 from core.models import WorkMetadata
@@ -56,6 +56,43 @@ def test_write_id3_uses_publisher_and_real_cover_mime(tmp_path: Path) -> None:
     assert tags.getall("TALB")[0].text == ["测试专辑"]
     assert tags.getall("TPUB")[0].text == ["测试社团"]
     assert tags.getall("APIC")[0].mime == "image/png"
+
+
+def test_write_id3_embeds_simplified_lrc_and_cover(tmp_path: Path) -> None:
+    cover = tmp_path / "cover.jpg"
+    cover.write_bytes(b"\xff\xd8\xffimage")
+    lyrics = tmp_path / "track.lrc"
+    lyrics.write_text("[00:01.00]繁體聲音與後臺", encoding="utf-8")
+    tags = ID3()
+
+    AudioProcessor._write_id3(
+        tags, tmp_path / "track.mp3", metadata(), cover, lyrics)
+
+    assert tags.getall("APIC")
+    embedded = tags.getall("USLT")
+    assert len(embedded) == 1
+    assert embedded[0].text == "[00:01.00]繁体声音与后台"
+
+
+def test_write_id3_preserves_existing_lyrics_without_sidecar(tmp_path: Path) -> None:
+    tags = ID3()
+    tags.add(USLT(encoding=3, lang="zho", desc="existing", text="原歌词"))
+
+    AudioProcessor._write_id3(tags, tmp_path / "track.mp3", metadata(), None)
+
+    assert tags.getall("USLT")[0].text == "原歌词"
+
+
+def test_matching_lyrics_prefers_nearest_same_locale(tmp_path: Path) -> None:
+    audio = tmp_path / "CN" / "MP3" / "01 标题.mp3"
+    cn = tmp_path / "CN" / "LRC" / "01 标题.lrc"
+    tw = tmp_path / "TW" / "LRC" / "01 标题.lrc"
+    cn.parent.mkdir(parents=True)
+    tw.parent.mkdir(parents=True)
+    cn.write_text("简体", encoding="utf-8")
+    tw.write_text("繁體", encoding="utf-8")
+
+    assert AudioProcessor.find_matching_lyrics(audio, [tw, cn]) == cn
 
 
 def test_vorbis_cover_uses_metadata_block_picture(tmp_path: Path) -> None:

@@ -8,6 +8,7 @@ from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_sub
 ROOT = Path(SPECPATH)
 
 flet_datas = collect_data_files("flet")
+opencc_datas, opencc_binaries, opencc_hidden = collect_all("opencc")
 flet_binaries, flet_hidden = [], []
 if find_spec("flet_desktop") is not None:
     desktop_datas, desktop_binaries, desktop_hidden = collect_all("flet_desktop")
@@ -17,6 +18,7 @@ else:
 hiddenimports = sorted(set(
     flet_hidden
     + desktop_hidden
+    + opencc_hidden
     + collect_submodules("mutagen")
     + [
         "aiohttp",
@@ -28,14 +30,14 @@ hiddenimports = sorted(set(
     ]
 ))
 
-datas = flet_datas + desktop_datas + [
+datas = flet_datas + desktop_datas + opencc_datas + [
     (str(ROOT / "config.example.json"), "."),
     (str(ROOT / "README.md"), "."),
     (str(ROOT / "LICENSE"), "."),
     (str(ROOT / "browser_extension"), "browser_extension"),
 ]
 
-binaries = flet_binaries + desktop_binaries
+binaries = flet_binaries + desktop_binaries + opencc_binaries
 
 analysis = Analysis(
     [str(ROOT / "main.py")],

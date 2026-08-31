@@ -61,6 +61,7 @@ class DownloadView(BaseDownloadView):
         # UI thread; generation drops stale results.
         self._queue_generation = 0
         self._queue_refresh_pending = False
+        self._queue_snapshot_dirty = False
         super().__init__(app_controller)
 
         self.btn_resume_all.text = "全部继续"
@@ -280,6 +281,7 @@ class DownloadView(BaseDownloadView):
                 return
             self._queue_refreshing = False
             self._apply_queue_page(result)
+            self._queue_snapshot_dirty = False
             self._safe_update(getattr(self, "queue_refresh_btn", None))
             if self._queue_refresh_pending:
                 self.refresh_queue_async(force=True)
@@ -1112,6 +1114,17 @@ class DownloadView(BaseDownloadView):
                 value for value in self._transient_rj_ids if value != rj_id
             ]
         super().update_work_status(rj_id, status)
+        durable_refresh = normalized in {
+            "queued", "paused", "failed", "completed",
+        } or (normalized == "cancelled" and was_cancelled)
+        if durable_refresh:
+            # Durable work-state events invalidate the paged DB snapshot. The
+            # existing one-in-flight + one-pending pipeline coalesces batches,
+            # so this is event-driven rather than periodic polling. Cancelled
+            # waits for the core's second, post-commit notification.
+            self._queue_snapshot_dirty = True
+            if self._active:
+                self.refresh_queue_async(force=True)
         data = self.active_downloads.get(rj_id)
         if data is not None and normalized in {
                 "queued", "downloading", "resuming", "preparing", "prepared"}:

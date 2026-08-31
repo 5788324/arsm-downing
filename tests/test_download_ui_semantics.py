@@ -386,6 +386,25 @@ def test_inactive_download_page_suppresses_card_rebuild(view_controller, monkeyp
     assert view.global_speed_bps == 100
 
 
+def test_durable_queue_events_coalesce_database_refresh(view_controller, monkeypatch) -> None:
+    view, _controller = view_controller
+    launches = []
+
+    def launch(generation):
+        launches.append(generation)
+        view._queue_refreshing = True
+
+    monkeypatch.setattr(view, "_launch_queue_query", launch)
+    view._queue_refreshing = False
+
+    for index in range(20):
+        view.update_work_status(f"RJ{index:08d}", "Queued")
+
+    assert len(launches) == 1
+    assert view._queue_refresh_pending is True
+    assert view._queue_snapshot_dirty is True
+
+
 def _durable_state(controller: FakeController) -> tuple[int, int, tuple[str, ...]]:
     works = int(controller.db.conn.execute("SELECT COUNT(*) FROM works").fetchone()[0])
     downloads = int(

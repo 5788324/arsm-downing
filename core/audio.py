@@ -9,12 +9,13 @@ import mutagen
 from mutagen.aiff import AIFF
 from mutagen.asf import ASF
 from mutagen.flac import FLAC, Picture
-from mutagen.id3 import APIC, ID3, TALB, TIT2, TPE1, TPUB
+from mutagen.id3 import APIC, ID3, TALB, TIT2, TPE1, TPUB, USLT
 from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4, MP4Cover
 from mutagen.oggopus import OggOpus
 from mutagen.oggvorbis import OggVorbis
 from mutagen.wave import WAVE
+from opencc import OpenCC
 
 from core.models import WorkMetadata
 
@@ -29,9 +30,11 @@ class AudioProcessor:
         ".m4a", ".m4b", ".mp4", ".wav", ".wave", ".aif", ".aiff",
         ".wma", ".asf",
     }
+    _t2s = OpenCC("t2s")
 
     @staticmethod
-    def apply_tags(path: Path, meta: WorkMetadata, cover: Optional[Path]) -> bool:
+    def apply_tags(path: Path, meta: WorkMetadata, cover: Optional[Path],
+                   lyrics: Optional[Path] = None) -> bool:
         """Apply metadata and return whether the format was tagged successfully.
 
         Tagging remains best-effort: callers may log the result, but a corrupt or
@@ -44,7 +47,7 @@ class AudioProcessor:
         ext = path.suffix.lower()
         try:
             if ext == ".mp3":
-                AudioProcessor._tag_mp3(path, meta, cover)
+                AudioProcessor._tag_mp3(path, meta, cover, lyrics)
             elif ext == ".flac":
                 AudioProcessor._tag_flac(path, meta, cover)
             elif ext in {".ogg", ".oga"}:
@@ -103,7 +106,60 @@ class AudioProcessor:
         return picture
 
     @staticmethod
-    def _write_id3(tags: ID3, path: Path, meta: WorkMetadata, cover: Optional[Path]) -> None:
+    def is_tagged_mp3(path: Path) -> bool:
+        """Recognize a completed MP3 whose local size includes managed tags."""
+        if path.suffix.lower() != ".mp3" or not path.is_file():
+            return False
+        try:
+            audio = MP3(str(path), ID3=ID3)
+            return bool(audio.tags and audio.tags.getall("APIC"))
+        except Exception:
+            return False
+
+    @staticmethod
+    def read_lyrics(path: Optional[Path]) -> Optional[str]:
+        """Read an LRC sidecar and normalize Traditional Chinese to Simplified."""
+        if not path or not path.is_file():
+            return None
+        payload = path.read_bytes()
+        for encoding in ("utf-8-sig", "utf-16", "gb18030", "big5"):
+            try:
+                text = payload.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            text = payload.decode("utf-8", errors="replace")
+        return AudioProcessor._t2s.convert(text)
+
+    @staticmethod
+    def find_matching_lyrics(audio: Path, candidates: list[Path]) -> Optional[Path]:
+        """Choose the nearest same-stem LRC without crossing locale folders."""
+        matches = [
+            candidate for candidate in candidates
+            if candidate.stem.casefold() == audio.stem.casefold()
+        ]
+        if not matches:
+            return None
+
+        def distance(candidate: Path) -> tuple[int, str]:
+            audio_parts = audio.parent.parts
+            lyric_parts = candidate.parent.parts
+            shared = 0
+            for left, right in zip(audio_parts, lyric_parts):
+                if left.casefold() != right.casefold():
+                    break
+                shared += 1
+            return (
+                len(audio_parts) + len(lyric_parts) - 2 * shared,
+                str(candidate).casefold(),
+            )
+
+        return min(matches, key=distance)
+
+    @staticmethod
+    def _write_id3(tags: ID3, path: Path, meta: WorkMetadata,
+                   cover: Optional[Path], lyrics: Optional[Path] = None) -> None:
         for key in ("TIT2", "TPE1", "TALB", "TPUB", "APIC"):
             tags.delall(key)
         tags.add(TIT2(encoding=3, text=[path.stem]))
@@ -120,13 +176,23 @@ class AudioProcessor:
                 desc="Cover",
                 data=picture.data,
             ))
+        lyrics_text = AudioProcessor.read_lyrics(lyrics)
+        if lyrics_text is not None:
+            tags.delall("USLT")
+            tags.add(USLT(
+                encoding=3,
+                lang="zho",
+                desc="Simplified Chinese LRC",
+                text=lyrics_text,
+            ))
 
     @staticmethod
-    def _tag_mp3(path: Path, meta: WorkMetadata, cover: Optional[Path]) -> None:
+    def _tag_mp3(path: Path, meta: WorkMetadata, cover: Optional[Path],
+                 lyrics: Optional[Path] = None) -> None:
         audio = MP3(str(path), ID3=ID3)
         if audio.tags is None:
             audio.add_tags()
-        AudioProcessor._write_id3(audio.tags, path, meta, cover)
+        AudioProcessor._write_id3(audio.tags, path, meta, cover, lyrics)
         audio.save(v2_version=3)
 
     @staticmethod

@@ -816,7 +816,11 @@ class Orchestrator:
             final_path = Path(row.get("local_path") or target.save_path)
             target.save_path = final_path
             part_path = final_path.with_suffix(final_path.suffix + ".part")
-            expected = int(target.size or row.get("total_bytes", 0) or 0)
+            stored_expected = int(row.get("total_bytes", 0) or 0)
+            expected = (
+                stored_expected if status in {"completed", "registered"} and stored_expected > 0
+                else int(target.size or stored_expected or 0)
+            )
 
             if status in {"stale", "ignored"}:
                 continue
@@ -840,7 +844,17 @@ class Orchestrator:
             # Missing or truncated completed/registered files are repaired using the
             # same partial/zero-byte policy as failed rows.
             if status in {"completed", "registered"}:
-                if final_size > 0 and (expected <= 0 or final_size == expected):
+                tagged_overage = (
+                    final_size > expected > 0
+                    and self.config.tag_audio
+                    and AudioProcessor.is_tagged_mp3(final_path)
+                )
+                if final_size > 0 and (
+                        expected <= 0 or final_size == expected or tagged_overage):
+                    if tagged_overage:
+                        self.db.upsert_download(
+                            dl_id, rj_id, target.title, str(final_path),
+                            "completed", final_size, final_size)
                     summary["already_complete"] += 1
                     if part_path.exists():
                         try:
@@ -1370,6 +1384,24 @@ class Orchestrator:
         dl_id = self._make_dl_id(
             meta.rj_id, track.id or track.title, final_path, track.title)
 
+        persisted = self.db.conn.execute(
+            "SELECT status, total_bytes FROM downloads WHERE id=?", (dl_id,)
+        ).fetchone()
+        persisted_status = str(persisted["status"] or "").lower() if persisted else ""
+        persisted_size = int(persisted["total_bytes"] or 0) if persisted else 0
+        if (persisted_status in {"completed", "registered"}
+                and persisted_size > 0 and final_path.is_file()
+                and final_path.stat().st_size == persisted_size):
+            self.stats.skipped += 1
+            self._emit_progress(
+                meta.rj_id, track.id or track.title, track.title,
+                persisted_size, persisted_size, "completed")
+            if part_path.exists():
+                try:
+                    part_path.unlink()
+                except OSError:
+                    pass
+            return True
         try:
             final_path.parent.mkdir(parents=True, exist_ok=True)
         except OSError as e:
@@ -1540,10 +1572,10 @@ class Orchestrator:
                         self.stats.success += 1
                         self.db.upsert_download(
                             dl_id, meta.rj_id, track.title, str(final_path),
-                            'completed', final_size, track.size or final_size)
+                            'completed', final_size, final_size)
                         self._emit_progress(
                             meta.rj_id, track.id or track.title, track.title,
-                            final_size, track.size or final_size, "completed")
+                            final_size, final_size, "completed")
                         return True
                     finally:
                         self._per_rj_inflight[meta.rj_id] = max(
@@ -1827,6 +1859,26 @@ class Orchestrator:
         )
         results = await pool.run(targets)
 
+        # MP3 and LRC files are downloaded concurrently. Finalize MP3 tags
+        # only after the pool settles so sidecars are visible regardless of
+        # completion order. Original LRC files remain on disk.
+        if self.config.tag_audio:
+            lrc_paths = [
+                t.save_path for t in targets
+                if t.save_path.suffix.lower() == ".lrc"
+                and results.get(id(t)) is True
+                and t.save_path.is_file()
+            ]
+            for target in targets:
+                if (target.save_path.suffix.lower() != ".mp3"
+                        or results.get(id(target)) is not True
+                        or not target.save_path.is_file()):
+                    continue
+                lyrics = AudioProcessor.find_matching_lyrics(
+                    target.save_path, lrc_paths)
+                AudioProcessor.apply_tags(
+                    target.save_path, meta, cover_path, lyrics)
+
         # Clean up in-flight tracking
         self._per_rj_inflight.pop(rj_id, None)
 
@@ -1865,9 +1917,13 @@ class Orchestrator:
                 for t in targets:
                     dl_id = self._make_dl_id(
                         rj_id, t.id or t.title, t.save_path, t.title)
+                    actual_size = (
+                        t.save_path.stat().st_size
+                        if t.save_path.is_file() else int(t.size or 0)
+                    )
                     self.db.upsert_download(
                         dl_id, rj_id, t.title, str(t.save_path),
-                        'completed', t.size, t.size)
+                        'completed', actual_size, actual_size)
                 self._emit_work_status(rj_id, "Completed")
             elif cancelled_count > 0:
                 # Distinguish a durable user cancellation from a pause.
@@ -1891,8 +1947,12 @@ class Orchestrator:
                     for t in success_targets:
                         dl_id = self._make_dl_id(
                             rj_id, t.id or t.title, t.save_path, t.title)
+                        actual_size = (
+                            t.save_path.stat().st_size
+                            if t.save_path.is_file() else int(t.size or 0)
+                        )
                         self.db.upsert_download(
                             dl_id, rj_id, t.title, str(t.save_path),
-                            'completed', t.size, t.size)
+                            'completed', actual_size, actual_size)
         except Exception as e:
             logging.error(f"Failed to register work {rj_id}: {e}")
