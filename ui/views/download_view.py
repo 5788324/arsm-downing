@@ -619,7 +619,8 @@ class DownloadView(BaseDownloadView):
         pct_text = ft.Text("0%", size=11, color="grey")
         progress_row = ft.Row([prog_bar, pct_text], spacing=6,
                               vertical_alignment=ft.CrossAxisAlignment.CENTER)
-        actions_row = ft.Row(spacing=0)
+        actions_row = ft.Row(
+            spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
         main_info = ft.Column([
             ft.Row([title_text], spacing=0),
@@ -737,12 +738,18 @@ class DownloadView(BaseDownloadView):
             return ft.IconButton(
                 icon=ft.Icons.FOLDER_OPEN, tooltip=tooltip,
                 icon_color=ACCENT_SECONDARY,
+                width=36,
+                height=36,
+                style=ft.ButtonStyle(padding=0),
                 on_click=lambda e, r=rj_id: self._open_work_dir(r))
 
         def remove_btn(tooltip="移除"):
             return ft.IconButton(
                 icon=ft.Icons.DELETE_OUTLINE, tooltip=tooltip,
                 icon_color=ERROR,
+                width=36,
+                height=36,
+                style=ft.ButtonStyle(padding=0),
                 on_click=lambda e, r=rj_id: self.cancel_item(r))
 
         def primary_btn(label, icon, color, callback, tooltip=None):
@@ -752,6 +759,7 @@ class DownloadView(BaseDownloadView):
                 tooltip=tooltip or label,
                 color="white",
                 bgcolor=color,
+                width=112,
                 height=36,
                 on_click=callback,
             )
@@ -767,7 +775,7 @@ class DownloadView(BaseDownloadView):
             push(open_btn())
             push(remove_btn())
         elif ns == "failed":
-            push(primary_btn("重试", ft.Icons.REPLAY, ACCENT_PRIMARY,
+            push(primary_btn("重试下载", ft.Icons.REPLAY, ACCENT_PRIMARY,
                              lambda e, r=rj_id: self._retry_failed(r), "重试下载"))
             push(open_btn())
             push(remove_btn())
@@ -781,7 +789,7 @@ class DownloadView(BaseDownloadView):
             # completed/registered/.part/missing files and only re-prepares
             # metadata when reconciliation reports metadata_required). Avoids
             # the prepare_work duplicate-guard blocking a library-indexed work.
-            push(primary_btn("补全下载", ft.Icons.PLAY_ARROW, WARNING,
+            push(primary_btn("重试/补全", ft.Icons.PLAY_ARROW, WARNING,
                              lambda e, r=rj_id:
                                  self.app_controller.resume_download(r)))
             push(open_btn())

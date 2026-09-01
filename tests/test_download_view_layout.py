@@ -253,6 +253,28 @@ def test_queued_card_has_pause_but_no_resume_button(view_controller) -> None:
     assert ft.Icons.PLAY_ARROW not in icons
 
 
+def test_failed_card_has_visible_retry_button_with_aligned_size(
+    view_controller,
+) -> None:
+    view, _controller = view_controller
+    actions = view._build_compact_actions("failed", "RJ00000001")
+
+    assert actions[0].text == "重试下载"
+    assert actions[0].icon == ft.Icons.REPLAY
+    assert actions[0].width == 112
+    assert actions[0].height == 36
+    assert all(action.height == 36 for action in actions)
+
+
+def test_partial_card_labels_retry_and_completion(view_controller) -> None:
+    view, _controller = view_controller
+    actions = view._build_compact_actions("partial", "RJ00000001")
+
+    assert actions[0].text == "重试/补全"
+    assert actions[0].width == 112
+    assert actions[0].height == 36
+
+
 # ══════════════════════════════════════════════
 #  Review #6: file tree — relative-path keys, error, .part
 # ══════════════════════════════════════════════
