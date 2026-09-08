@@ -393,7 +393,7 @@ class LibraryVault:
         """Read library and queue states for many RJ ids with three SELECTs."""
         canonical = tuple(dict.fromkeys(str(value).upper() for value in rj_ids if value))
         result = {
-            rj_id: {"in_library": False, "statuses": set()}
+            rj_id: {"in_library": False, "statuses": set(), "download_statuses": set()}
             for rj_id in canonical
         }
         if not canonical:
@@ -412,7 +412,9 @@ class LibraryVault:
                 f"WHERE rj_id IN ({placeholders})",
                 canonical,
             ).fetchall():
-                result[str(row["rj_id"]).upper()]["statuses"].add(row["status"])
+                item = result[str(row["rj_id"]).upper()]
+                item["statuses"].add(row["status"])
+                item["download_statuses"].add(row["status"])
             for row in self.conn.execute(
                 f"SELECT rj_id, status FROM works WHERE rj_id IN ({placeholders})",
                 canonical,
@@ -1197,3 +1199,6 @@ class LibraryVault:
         except Exception as exc:
             logging.error("get_library_diagnostic_rows error: %s", exc)
             return {"works": [], "library_items": [], "works_count": 0, "summary": {}}
+
+
+

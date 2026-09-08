@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from core.media_assets import find_local_cover, is_cover_filename
 
@@ -34,3 +35,24 @@ def test_multiple_unnamed_images_do_not_guess(tmp_path: Path) -> None:
 
     assert find_local_cover(album) is None
     assert is_cover_filename("scene01.jpg") is False
+
+
+def test_cover_inside_named_directory_is_used(tmp_path: Path) -> None:
+    album = tmp_path / "RJ01234567"
+    cover = album / "封面图片" / "01.jpg"
+    cover.parent.mkdir(parents=True)
+    cover.write_bytes(b"image")
+
+    assert find_local_cover(album) == cover
+
+
+def test_visual_fallback_ignores_scene_and_uses_cover_shaped_image(tmp_path: Path) -> None:
+    album = tmp_path / "RJ01234567"
+    album.mkdir()
+    scene = album / "scene" / "001.jpg"
+    scene.parent.mkdir()
+    Image.new("RGB", (1200, 800)).save(scene)
+    candidate = album / "artwork01.jpg"
+    Image.new("RGB", (600, 800)).save(candidate)
+
+    assert find_local_cover(album) == candidate

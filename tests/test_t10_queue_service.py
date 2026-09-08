@@ -192,7 +192,7 @@ def test_working_page_does_not_cap_more_than_200_queued_works(tmp_path: Path) ->
         vault.close()
 
 
-def test_working_page_reuses_terminal_disk_verification(tmp_path: Path, monkeypatch) -> None:
+def test_working_page_excludes_completed_without_disk_verification(tmp_path: Path, monkeypatch) -> None:
     vault = LibraryVault(tmp_path / "history.db")
     try:
         rj_id = "RJ00999999"
@@ -221,8 +221,8 @@ def test_working_page_reuses_terminal_disk_verification(tmp_path: Path, monkeypa
         first = service.fetch_working_page(page=1, page_size=24)
         second = service.fetch_working_page(page=1, page_size=24)
 
-        assert first.total_items == second.total_items == 1
-        assert len(calls) == 1
+        assert first.total_items == second.total_items == 0
+        assert calls == []
     finally:
         vault.close()
 

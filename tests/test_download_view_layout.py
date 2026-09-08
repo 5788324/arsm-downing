@@ -240,17 +240,17 @@ def test_detail_summary_uses_verified_bytes(view_controller) -> None:
 def test_paused_card_has_resume_but_no_pause_button(view_controller) -> None:
     view, _controller = view_controller
     import flet as ft
-    icons = [b.icon for b in view._build_compact_actions("paused", "RJ00000001")]
-    assert ft.Icons.PLAY_ARROW in icons
-    assert ft.Icons.PAUSE not in icons
+    actions = view._build_compact_actions("paused", "RJ00000001")
+    assert actions[0].text == "继续下载"
+    assert actions[0].icon is None
 
 
 def test_queued_card_has_pause_but_no_resume_button(view_controller) -> None:
     view, _controller = view_controller
     import flet as ft
-    icons = [b.icon for b in view._build_compact_actions("queued", "RJ00000001")]
-    assert ft.Icons.PAUSE in icons
-    assert ft.Icons.PLAY_ARROW not in icons
+    actions = view._build_compact_actions("queued", "RJ00000001")
+    assert actions[0].text == "暂停"
+    assert actions[0].icon is None
 
 
 def test_failed_card_has_visible_retry_button_with_aligned_size(
@@ -260,10 +260,10 @@ def test_failed_card_has_visible_retry_button_with_aligned_size(
     actions = view._build_compact_actions("failed", "RJ00000001")
 
     assert actions[0].text == "重试下载"
-    assert actions[0].icon == ft.Icons.REPLAY
+    assert actions[0].icon is None
     assert actions[0].width == 112
-    assert actions[0].height == 36
-    assert all(action.height == 36 for action in actions)
+    assert actions[0].height == 40
+    assert all(action.height == 40 for action in actions)
 
 
 def test_partial_card_labels_retry_and_completion(view_controller) -> None:
@@ -272,7 +272,7 @@ def test_partial_card_labels_retry_and_completion(view_controller) -> None:
 
     assert actions[0].text == "重试/补全"
     assert actions[0].width == 112
-    assert actions[0].height == 36
+    assert actions[0].height == 40
 
 
 # ══════════════════════════════════════════════
@@ -527,85 +527,31 @@ def test_same_title_files_contribute_separately_to_work_total(view_controller) -
     assert view._get_progress_value(data) == (50 + 75) / 200
 
 
-def test_registered_incomplete_work_downgraded_by_service_pipeline(tmp_path) -> None:
-    """Review #3 (full chain): SQLite registered → DownloadService → disk
-    verification → read model.  Missing files must downgrade the presentation
-    state to partial (non-terminal, visible), never green completed 100%."""
+def test_registered_work_stays_out_of_active_queue_even_if_file_moves(tmp_path) -> None:
     from core.database import LibraryVault
     from core.services.download_service import DownloadService
-
     vault = LibraryVault(tmp_path / "history.db")
     try:
         work_path = tmp_path / "RJ00000002"
-        meta = WorkMetadata(
-            rj_id="RJ00000002", title="Reg T", circle="", cv=[], tags=[],
-            price=0, dl_count=0, source_url="", rating=0.0,
-            release_date="", cover_url="")
+        meta = WorkMetadata(rj_id="RJ00000002", title="Reg T", circle="", cv=[], tags=[], price=0, dl_count=0, source_url="", rating=0.0, release_date="", cover_url="")
         vault.register(meta, 100, work_path, status="registered")
-        vault.upsert_download(
-            "d1", "RJ00000002", "a.mp3", str(work_path / "a.mp3"),
-            "registered", 100, 100)
-        service = DownloadService(vault, output_dir=tmp_path)
-        page = service.apply_disk_verification(
-            service.fetch_queue_page(status_filter="working"),
-            status_filter="working")
-        item = {i.rj_id: i for i in page.items}["RJ00000002"]
-        assert item.queue_state == "partial"
-        assert item.is_terminal is False
-        assert item.ui_status == "部分完成"
-        assert item.verified_progress == 0.0
-        assert item.can_resume is True
-        # A genuinely complete registered work stays terminal.
-        complete_path = tmp_path / "RJ00000003"
-        complete_path.mkdir(parents=True, exist_ok=True)
-        (complete_path / "b.mp3").write_bytes(b"x" * 100)
-        meta3 = WorkMetadata(
-            rj_id="RJ00000003", title="Reg Complete", circle="", cv=[], tags=[],
-            price=0, dl_count=0, source_url="", rating=0.0,
-            release_date="", cover_url="")
-        vault.register(meta3, 100, complete_path, status="registered")
-        vault.upsert_download(
-            "d2", "RJ00000003", "b.mp3", str(complete_path / "b.mp3"),
-            "registered", 100, 100)
-        page3 = service.apply_disk_verification(
-            service.fetch_queue_page(status_filter="working"),
-            status_filter="working")
-        complete_items = {i.rj_id: i for i in page3.items}
-        # Complete registered work is dropped from the active queue (terminal).
-        assert "RJ00000003" not in complete_items
+        vault.upsert_download("d1", "RJ00000002", "a.mp3", str(work_path / "a.mp3"), "registered", 100, 100)
+        page = DownloadService(vault).fetch_working_page()
+        assert page.items == ()
+        assert page.total_items == 0
     finally:
         vault.close()
 
-
-def test_registered_incomplete_card_is_not_green_100(view_controller, tmp_path) -> None:
-    """Review #3 UI end-to-end: a registered work with missing files renders as
-    partial (warning color, verified 0%), never a green 100% card."""
+def test_registered_work_is_not_rendered_as_active_card(view_controller, tmp_path) -> None:
     view, controller = view_controller
     work_path = tmp_path / "RJ00000002"
-    meta = WorkMetadata(
-        rj_id="RJ00000002", title="Reg T", circle="", cv=[], tags=[],
-        price=0, dl_count=0, source_url="", rating=0.0,
-        release_date="", cover_url="")
+    meta = WorkMetadata(rj_id="RJ00000002", title="Reg T", circle="", cv=[], tags=[], price=0, dl_count=0, source_url="", rating=0.0, release_date="", cover_url="")
     controller.db.register(meta, 100, work_path, status="registered")
-    controller.db.upsert_download(
-        "d1", "RJ00000002", "a.mp3", str(work_path / "a.mp3"),
-        "registered", 100, 100)
+    controller.db.upsert_download("d1", "RJ00000002", "a.mp3", str(work_path / "a.mp3"), "registered", 100, 100)
     controller.db.conn.commit()
-
     view.refresh_queue_async(force=True)
-
-    data = view.active_downloads["RJ00000002"]
-    assert data["snapshot"].queue_state == "partial"
-    assert data["snapshot"].is_terminal is False
-    view._update_compact_card("RJ00000002")
-    assert data["prog_bar"].value == 0.0
-    assert data["status_text"].color != SUCCESS
-
-
-# ══════════════════════════════════════════════
-#  Review round 4: whole-work live total, mixed completion,
-#  partial resume path, working pagination
-# ══════════════════════════════════════════════
+    assert "RJ00000002" not in view.active_downloads
+    assert all(option.key != "completed" for option in view.queue_filter_dropdown.options)
 
 def _progress_event(rj_id, track_id, title, downloaded, total=100):
     return ProgressEvent(
@@ -654,113 +600,128 @@ def test_resume_shows_whole_work_progress_never_remaining_only(view_controller) 
     assert view._get_progress_value(data) != 0.0
 
 
-def test_known_complete_plus_unknown_missing_not_confirmed_complete(tmp_path) -> None:
-    """Review #4: known-size file complete + unknown-size file missing must NOT
-    keep a registered work terminal — it is downgraded to partial."""
+def test_registered_unknown_size_history_stays_out_of_active_queue(tmp_path) -> None:
     from core.database import LibraryVault
     from core.services.download_service import DownloadService
-
     vault = LibraryVault(tmp_path / "history.db")
     try:
         work_path = tmp_path / "RJ00000002"
         work_path.mkdir(parents=True, exist_ok=True)
-        (work_path / "a.mp3").write_bytes(b"x" * 100)
-        meta = WorkMetadata(
-            rj_id="RJ00000002", title="Mixed", circle="", cv=[], tags=[],
-            price=0, dl_count=0, source_url="", rating=0.0,
-            release_date="", cover_url="")
+        meta = WorkMetadata(rj_id="RJ00000002", title="Mixed", circle="", cv=[], tags=[], price=0, dl_count=0, source_url="", rating=0.0, release_date="", cover_url="")
         vault.register(meta, 100, work_path, status="registered")
-        vault.upsert_download(
-            "d-a", "RJ00000002", "a.mp3", str(work_path / "a.mp3"),
-            "registered", 100, 100)
-        # Unknown-size expected file B is MISSING on disk.
-        vault.upsert_download(
-            "d-b", "RJ00000002", "b.mp3", str(work_path / "b.mp3"),
-            "registered", 0, 0)
-        service = DownloadService(vault, output_dir=tmp_path)
-        page = service.apply_disk_verification(
-            service.fetch_queue_page(status_filter="working"),
-            status_filter="working")
-        item = {i.rj_id: i for i in page.items}.get("RJ00000002")
-        assert item is not None
-        assert item.queue_state == "partial"
-        assert item.is_terminal is False
+        vault.upsert_download("d-a", "RJ00000002", "a.mp3", str(work_path / "a.mp3"), "registered", 100, 100)
+        vault.upsert_download("d-b", "RJ00000002", "b.mp3", str(work_path / "b.mp3"), "registered", 0, 0)
+        page = DownloadService(vault).fetch_working_page()
+        assert page.items == ()
+        assert page.total_items == 0
     finally:
         vault.close()
 
-
-def test_partial_card_button_uses_resume_reconcile_not_prepare(
-    view_controller, tmp_path,
-) -> None:
-    """Review #4: a disk-incomplete registered work (also in library_index)
-    resolves through resume_download (reconcile), never the prepare duplicate
-    guard."""
+def test_registered_library_item_does_not_reenter_task_queue(view_controller, tmp_path) -> None:
     view, controller = view_controller
     rj = "RJ00000002"
-    work_path = tmp_path / "RJ00000002"
-    meta = WorkMetadata(
-        rj_id=rj, title="Reg T", circle="", cv=[], tags=[],
-        price=0, dl_count=0, source_url="", rating=0.0,
-        release_date="", cover_url="")
+    work_path = tmp_path / rj
+    meta = WorkMetadata(rj_id=rj, title="Reg T", circle="", cv=[], tags=[], price=0, dl_count=0, source_url="", rating=0.0, release_date="", cover_url="")
     controller.db.register(meta, 100, work_path, status="registered")
-    controller.db.upsert_download(
-        "d1", rj, "a.mp3", str(work_path / "a.mp3"), "registered", 100, 100)
-    # Present in library_index — the prepare duplicate guard would block it.
-    controller.db.conn.execute(
-        "INSERT INTO library_items(rj_id, folder_path, folder_name) "
-        "VALUES (?, ?, ?)",
-        (rj, str(work_path), "Reg T"))
+    controller.db.upsert_download("d1", rj, "a.mp3", str(work_path / "a.mp3"), "registered", 100, 100)
+    controller.db.conn.execute("INSERT INTO library_items(rj_id, folder_path, folder_name) VALUES (?, ?, ?)", (rj, str(work_path), "Reg T"))
     controller.db.conn.commit()
-
     view.refresh_queue_async(force=True)
-    data = view.active_downloads[rj]
-    assert data["snapshot"].queue_state == "partial"
+    assert rj not in view.active_downloads
+    assert not any(call[0] in {"resume", "start"} for call in controller.calls)
 
-    actions = view._build_compact_actions("partial", rj)
-    play = next(a for a in actions if a.icon == ft.Icons.PLAY_ARROW)
-    play.on_click(None)
-    assert any(call[0] == "resume" for call in controller.calls)
-    assert not any(call[0] == "start" for call in controller.calls)
-
-
-def test_working_page_shows_incomplete_after_complete_candidates(tmp_path) -> None:
-    """Review #4: 24 complete registered works then 1 incomplete — verification
-    runs BEFORE pagination so the incomplete work appears on the default page."""
+def test_working_page_excludes_all_registered_history(tmp_path) -> None:
     from core.database import LibraryVault
     from core.services.download_service import DownloadService
-
     vault = LibraryVault(tmp_path / "history.db")
     try:
-        for i in range(24):
+        for i in range(25):
             rj = f"RJ{i + 1:08d}"
             wp = tmp_path / rj
             wp.mkdir(parents=True, exist_ok=True)
-            (wp / "a.mp3").write_bytes(b"x" * 100)
-            meta = WorkMetadata(
-                rj_id=rj, title=f"W{i}", circle="", cv=[], tags=[],
-                price=0, dl_count=0, source_url="", rating=0.0,
-                release_date="", cover_url="")
+            meta = WorkMetadata(rj_id=rj, title=f"W{i}", circle="", cv=[], tags=[], price=0, dl_count=0, source_url="", rating=0.0, release_date="", cover_url="")
             vault.register(meta, 100, wp, status="registered")
-            vault.upsert_download(
-                f"d{i}", rj, "a.mp3", str(wp / "a.mp3"),
-                "registered", 100, 100)
-        incomplete = "RJ00999999"
-        wp = tmp_path / incomplete
-        wp.mkdir(parents=True, exist_ok=True)  # dir exists, file missing
-        meta = WorkMetadata(
-            rj_id=incomplete, title="Incomplete", circle="", cv=[], tags=[],
-            price=0, dl_count=0, source_url="", rating=0.0,
-            release_date="", cover_url="")
-        vault.register(meta, 100, wp, status="registered")
-        vault.upsert_download(
-            "dx", incomplete, "a.mp3", str(wp / "a.mp3"),
-            "registered", 100, 100)
-
-        service = DownloadService(vault, output_dir=tmp_path)
-        page = service.fetch_working_page(page=1, page_size=24)
-        rjs = [item.rj_id for item in page.items]
-        assert incomplete in rjs
-        assert page.total_items == 1
+            vault.upsert_download(f"d{i}", rj, "a.mp3", str(wp / "a.mp3"), "registered", 100, 100)
+        page = DownloadService(vault).fetch_working_page(page=1, page_size=24)
+        assert page.items == ()
+        assert page.total_items == 0
         assert page.page_count == 1
     finally:
         vault.close()
+
+def test_recreated_failed_card_rebuilds_retry_actions(view_controller) -> None:
+    view, _controller = view_controller
+    rj_id = "RJ00000001"
+    data = view.active_downloads[rj_id]
+    data["status"] = "下载失败"
+    view._update_compact_card(rj_id)
+    assert view._active_ns[rj_id] == "failed"
+
+    view._card_controls.pop(rj_id)
+    recreated = view._make_compact_card(rj_id)
+    view._card_controls[rj_id] = recreated
+    view._update_compact_card(rj_id)
+
+    actions = data["actions_row"].controls
+    assert actions
+    assert actions[0].text == "重试下载"
+
+
+def test_compact_action_row_uses_one_fixed_alignment_grid(view_controller) -> None:
+    view, _controller = view_controller
+    data = view.active_downloads["RJ00000001"]
+
+    assert data["actions_row"].height == 40
+    actions = view._build_compact_actions("queued", "RJ00000001")
+    assert actions[0].width == 112
+    assert all(action.height == 40 for action in actions)
+
+
+def test_retry_failed_shows_immediate_resuming_state(view_controller) -> None:
+    view, controller = view_controller
+    rj_id = "RJ00000001"
+    view.active_downloads[rj_id]["status"] = "下载失败"
+
+    view._retry_failed(rj_id)
+
+    assert view.active_downloads[rj_id]["status"] == "恢复中..."
+    assert controller.calls[-1] == ("resume", rj_id, {})
+
+
+def test_manual_review_failure_has_truthful_review_action(
+    view_controller,
+) -> None:
+    from dataclasses import replace
+
+    view, _controller = view_controller
+    rj_id = "RJ00000001"
+    data = view.active_downloads[rj_id]
+    data["status"] = "下载失败"
+    data["snapshot"] = replace(
+        data["snapshot"],
+        queue_state="failed",
+        ui_status="下载失败",
+        error_summary=(
+            "Local file is larger than expected; manual review required"
+        ),
+    )
+
+    actions = view._build_compact_actions("failed", rj_id)
+
+    assert actions[0].text == "检查并修复"
+    assert actions[0].icon is None
+    actions[0].on_click(None)
+    assert data["status"] == "恢复中..."
+    assert _controller.calls[-1] == ("resume", rj_id, {})
+
+
+def test_page_navigation_requests_fast_snapshot(view_controller, monkeypatch) -> None:
+    view, _controller = view_controller
+    calls = []
+    view.queue_page = 1
+    view.queue_model = type("Page", (), {"page_count": 2})()
+    monkeypatch.setattr(view, "_update_pagination", lambda: None)
+    monkeypatch.setattr(view, "refresh_queue_async", lambda **kw: calls.append(kw))
+    view._next_page(None)
+    assert view.queue_page == 2
+    assert calls == [{"fast_page": True}]

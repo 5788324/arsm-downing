@@ -64,6 +64,7 @@ class DownloadView(BaseDownloadView):
         # UI thread; generation drops stale results.
         self._queue_generation = 0
         self._queue_refresh_pending = False
+        self._queue_fast_page_pending = False
         self._queue_snapshot_dirty = False
         super().__init__(app_controller)
 
@@ -97,9 +98,8 @@ class DownloadView(BaseDownloadView):
                 ft.dropdown.Option(key="queued", text="等待中"),
                 ft.dropdown.Option(key="paused", text="已暂停"),
                 ft.dropdown.Option(key="failed", text="失败"),
-                ft.dropdown.Option(key="completed", text="已完成"),
                 ft.dropdown.Option(key="cancelled", text="已取消"),
-                ft.dropdown.Option(key="all", text="全部"),
+                ft.dropdown.Option(key="queue_all", text="全部任务"),
             ],
             on_change=self._on_filter_change,
         )
@@ -201,8 +201,8 @@ class DownloadView(BaseDownloadView):
         base_module.QUEUE_FILE = QUEUE_FILE
 
     def save_queue(self):
-        self._sync_queue_file()
-        return super().save_queue()
+        """SQLite is authoritative; never rewrite the legacy queue.json cache."""
+        return None
 
     def set_active(self, active: bool) -> None:
         active = bool(active)
@@ -224,11 +224,15 @@ class DownloadView(BaseDownloadView):
         self.refresh_queue_async(force=True)
 
     def reload_queue_from_database(self, *, reset_speed: bool = False):
+        if hasattr(self, "btn_pause_all"):
+            self.btn_pause_all.text = "全部暂停"
+            self.btn_resume_all.text = "全部继续"
         if reset_speed:
             self.global_speed_bps = 0.0
         self.refresh_queue_async(force=True)
 
-    def refresh_queue_async(self, *, reset_page: bool = False, force: bool = False):
+    def refresh_queue_async(self, *, reset_page: bool = False, force: bool = False,
+                            fast_page: bool = False):
         """Fetch + disk-verify the queue OFF the UI thread (review #3).
 
         ``fetch_queue_page`` + ``apply_disk_verification`` (per-file ``stat``)
@@ -239,6 +243,10 @@ class DownloadView(BaseDownloadView):
         """
         if reset_page:
             self.queue_page = 1
+        if fast_page:
+            self._queue_fast_page_pending = True
+        elif force:
+            self._queue_fast_page_pending = False
         if not self._active and not force:
             return
         self._queue_generation += 1
@@ -259,13 +267,15 @@ class DownloadView(BaseDownloadView):
         status_filter = self.queue_filter
         page = self.queue_page
         page_size = self.queue_page_size
+        verify_live = not self._queue_fast_page_pending
+        self._queue_fast_page_pending = False
 
         def query():
             if status_filter == "working":
                 # Disk-verification + downgrade happen BEFORE pagination so a
                 # Working page is never emptied by post-filter drops (review #2c).
                 return self.download_service.fetch_working_page(
-                    page=page, page_size=page_size)
+                    page=page, page_size=page_size, verify_live=verify_live)
             return self.download_service.apply_disk_verification(
                 self.download_service.fetch_queue_page(
                     status_filter=status_filter,
@@ -279,18 +289,32 @@ class DownloadView(BaseDownloadView):
             if generation != self._queue_generation:
                 # Superseded by a newer request: never apply a stale snapshot.
                 self._queue_refreshing = False
+                if hasattr(self, "queue_refresh_btn"):
+                    self.queue_refresh_btn.disabled = False
                 if self._queue_refresh_pending:
                     self.refresh_queue_async(force=True)
                 return
             self._queue_refreshing = False
+            if hasattr(self, "queue_refresh_btn"):
+                self.queue_refresh_btn.disabled = False
             self._apply_queue_page(result)
             self._queue_snapshot_dirty = False
             self._safe_update(getattr(self, "queue_refresh_btn", None))
             if self._queue_refresh_pending:
                 self.refresh_queue_async(force=True)
 
+        def fail(exc):
+            self._queue_refreshing = False
+            if hasattr(self, "queue_refresh_btn"):
+                self.queue_refresh_btn.disabled = False
+            self._safe_update(getattr(self, "queue_refresh_btn", None))
+            self.app_controller.show_snack(f"队列读取失败: {exc}")
+            if self._queue_refresh_pending:
+                self.refresh_queue_async(force=True)
+
         try:
-            self.app_controller.run_blocking(query, render)
+            self.app_controller.run_blocking(
+                query, render, on_error=fail, action_label="刷新下载队列")
         except Exception as exc:
             self._queue_refreshing = False
             if hasattr(self, "queue_refresh_btn"):
@@ -401,20 +425,20 @@ class DownloadView(BaseDownloadView):
 
     def _on_filter_change(self, event):
         self.queue_filter = getattr(event.control, "value", None) or "working"
-        self.refresh_queue_async(reset_page=True)
+        self.refresh_queue_async(reset_page=True, fast_page=True)
 
     def _previous_page(self, _event):
         if self.queue_page > 1:
             self.queue_page -= 1
             self._update_pagination()
-            self.refresh_queue_async()
+            self.refresh_queue_async(fast_page=True)
 
     def _next_page(self, _event):
         page_count = self.queue_model.page_count if self.queue_model else 1
         if self.queue_page < page_count:
             self.queue_page += 1
             self._update_pagination()
-            self.refresh_queue_async()
+            self.refresh_queue_async(fast_page=True)
 
     def _update_pagination(self):
         if not hasattr(self, "queue_page_label"):
@@ -443,11 +467,30 @@ class DownloadView(BaseDownloadView):
         self._safe_update(self.btn_resume_all)
 
     def _batch_pause(self):
+        self.btn_pause_all.text = "暂停中…"
+        self.global_speed_bps = 0.0
+        for rj_id, data in self.active_downloads.items():
+            if self.normalize_status(data.get("status", "")) not in {
+                    "downloading", "queued", "resuming"}:
+                continue
+            data["status"] = "已暂停"
+            data["_ignore_active_progress"] = True
+            data["last_speed_bps"] = 0
+            data["last_track_speed"] = 0
+            data["last_eta"] = None
+            self._update_compact_card(rj_id)
+        self.queue_model = None
+        self._update_queue_summary()
         self._set_batch_controls_busy()
+        self.app_controller.show_snack("正在暂停全部任务…")
         self.app_controller.pause_all_downloads()
 
     def _batch_resume(self):
+        self.btn_resume_all.text = "恢复中…"
+        for data in self.active_downloads.values():
+            data.pop("_ignore_active_progress", None)
         self._set_batch_controls_busy()
+        self.app_controller.show_snack("正在恢复全部任务…")
         self.app_controller.resume_all_downloads()
 
     @staticmethod
@@ -485,11 +528,13 @@ class DownloadView(BaseDownloadView):
             }
             total = summary.total_tasks + len(self._transient_rj_ids)
             completed = summary.completed_tasks
-            if self.queue_model is None:
+            if summary is not None:
                 def bucket(value):
                     normalized = self.normalize_status(value)
                     if normalized in {"downloading", "resuming"}:
                         return "active"
+                    if normalized == "partial":
+                        return "failed"
                     if normalized in counts or normalized == "completed":
                         return normalized
                     return None
@@ -609,6 +654,9 @@ class DownloadView(BaseDownloadView):
         """Build one stable card: cover, title/circle, status, ONE progress bar,
         downloaded/total, speed/ETA and per-state action buttons."""
         data = self.active_downloads.get(rj_id, {})
+        # Recreated cards own a fresh action row; do not let a stale status
+        # cache suppress rebuilding its buttons.
+        self._active_ns.pop(rj_id, None)
         title_text = ft.Text(rj_id, weight=ft.FontWeight.BOLD, size=16,
                              selectable=True, max_lines=1,
                              overflow=ft.TextOverflow.ELLIPSIS, expand=True)
@@ -620,7 +668,11 @@ class DownloadView(BaseDownloadView):
         progress_row = ft.Row([prog_bar, pct_text], spacing=6,
                               vertical_alignment=ft.CrossAxisAlignment.CENTER)
         actions_row = ft.Row(
-            spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+            height=40,
+            spacing=4,
+            alignment=ft.MainAxisAlignment.START,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
 
         main_info = ft.Column([
             ft.Row([title_text], spacing=0),
@@ -674,7 +726,10 @@ class DownloadView(BaseDownloadView):
                   "completed": SUCCESS, "metadata_failed": ERROR,
                   "no_pending": WARNING, "duplicate": "grey",
                   "partial": WARNING}
-        data["status_text"].value = status + cache
+        review_hint = self._manual_review_hint(rj_id) if ns == "failed" else ""
+        data["status_text"].value = (
+            f"{status} · {review_hint}" if review_hint else status
+        ) + cache
         data["status_text"].color = colors.get(ns, ACCENT_PRIMARY)
 
         prog = self._get_progress_value(data)
@@ -728,6 +783,24 @@ class DownloadView(BaseDownloadView):
             bottom=ft.BorderSide(1, ft.Colors.with_opacity(0.2, "white")),
         )
 
+    def _manual_review_hint(self, rj_id: str) -> str:
+        data = self.active_downloads.get(rj_id, {})
+        snapshot = data.get("snapshot")
+        error = (
+            str(snapshot.error_summary or "")
+            if isinstance(snapshot, DownloadQueueItem) else ""
+        )
+        lowered = error.casefold()
+        if "larger than expected" in lowered:
+            return "本地文件大小异常，请查看详情"
+        if any(marker in lowered for marker in (
+            "manual review required",
+            "unable to inspect partial file",
+            "unable to finalize complete partial file",
+        )):
+            return "本地文件需要检查，请查看详情"
+        return ""
+
     def _build_compact_actions(self, ns: str, rj_id: str) -> list:
         """One action set per state (review #6): a card never shows both
         "暂停" and "继续" at once."""
@@ -738,8 +811,8 @@ class DownloadView(BaseDownloadView):
             return ft.IconButton(
                 icon=ft.Icons.FOLDER_OPEN, tooltip=tooltip,
                 icon_color=ACCENT_SECONDARY,
-                width=36,
-                height=36,
+                width=40,
+                height=40,
                 style=ft.ButtonStyle(padding=0),
                 on_click=lambda e, r=rj_id: self._open_work_dir(r))
 
@@ -747,20 +820,19 @@ class DownloadView(BaseDownloadView):
             return ft.IconButton(
                 icon=ft.Icons.DELETE_OUTLINE, tooltip=tooltip,
                 icon_color=ERROR,
-                width=36,
-                height=36,
+                width=40,
+                height=40,
                 style=ft.ButtonStyle(padding=0),
                 on_click=lambda e, r=rj_id: self.cancel_item(r))
 
         def primary_btn(label, icon, color, callback, tooltip=None):
             return ft.ElevatedButton(
                 text=label,
-                icon=icon,
                 tooltip=tooltip or label,
                 color="white",
                 bgcolor=color,
                 width=112,
-                height=36,
+                height=40,
                 on_click=callback,
             )
 
@@ -775,8 +847,17 @@ class DownloadView(BaseDownloadView):
             push(open_btn())
             push(remove_btn())
         elif ns == "failed":
-            push(primary_btn("重试下载", ft.Icons.REPLAY, ACCENT_PRIMARY,
-                             lambda e, r=rj_id: self._retry_failed(r), "重试下载"))
+            if self._manual_review_hint(rj_id):
+                push(primary_btn(
+                    "检查并修复", ft.Icons.BUILD_OUTLINED, WARNING,
+                    lambda e, r=rj_id: self._retry_failed(r),
+                    "识别已写入标签的完整媒体；真实异常仍会保留",
+                ))
+            else:
+                push(primary_btn(
+                    "重试下载", ft.Icons.REPLAY, ACCENT_PRIMARY,
+                    lambda e, r=rj_id: self._retry_failed(r), "重试下载",
+                ))
             push(open_btn())
             push(remove_btn())
         elif ns in {"metadata_failed", "no_pending"}:
@@ -790,8 +871,7 @@ class DownloadView(BaseDownloadView):
             # metadata when reconciliation reports metadata_required). Avoids
             # the prepare_work duplicate-guard blocking a library-indexed work.
             push(primary_btn("重试/补全", ft.Icons.PLAY_ARROW, WARNING,
-                             lambda e, r=rj_id:
-                                 self.app_controller.resume_download(r)))
+                             lambda e, r=rj_id: self._resume_partial(r)))
             push(open_btn())
             push(remove_btn("清理"))
         elif ns == "duplicate":
@@ -805,6 +885,23 @@ class DownloadView(BaseDownloadView):
                              "继续已取消任务"))
             push(open_btn())
         return actions
+
+    def _resume_partial(self, rj_id: str) -> None:
+        data = self.active_downloads.get(rj_id)
+        if not data:
+            return
+        data["status"] = "恢复中..."
+        data.pop("_ignore_active_progress", None)
+        self._update_compact_card(rj_id)
+        self.app_controller.resume_download(rj_id)
+
+    def _review_failed(self, rj_id: str) -> None:
+        self._update_compact_card(rj_id)
+        self._select_rj(rj_id)
+        self.app_controller.show_snack(
+            f"{rj_id} 存在异常本地文件；详情中已显示具体原因"
+        )
+
     @staticmethod
     def _format_bytes(size: int) -> str:
         size = max(0, int(size or 0))
@@ -1172,9 +1269,17 @@ class DownloadView(BaseDownloadView):
             self._transient_rj_ids = [
                 value for value in self._transient_rj_ids if value != rj_id
             ]
+        if data is not None:
+            if normalized in {
+                    "paused", "cancelled", "completed", "failed", "partial"}:
+                data["_ignore_active_progress"] = True
+            elif normalized in {
+                    "queued", "downloading", "resuming", "preparing", "prepared"}:
+                data.pop("_ignore_active_progress", None)
         super().update_work_status(rj_id, status)
         durable_refresh = normalized in {
-            "queued", "paused", "failed", "completed",
+            "queued", "paused", "failed", "partial", "completed",
+            "metadata_failed", "no_pending",
         } or (normalized == "cancelled" and was_cancelled)
         if durable_refresh:
             # Durable work-state events invalidate the paged DB snapshot. The
@@ -1204,13 +1309,22 @@ class DownloadView(BaseDownloadView):
                 self.refresh_queue_async(force=True)
 
     def update_track_progress(self, event):
+        data = self.active_downloads.get(event.rj_id)
+        if data is not None and data.get("_ignore_active_progress"):
+            data["last_speed_bps"] = 0
+            data["last_track_speed"] = 0
+            data["last_eta"] = None
+            self.global_speed_bps = sum(
+                float(item.get("last_speed_bps", 0) or 0)
+                for item in self.active_downloads.values()
+                if self.normalize_status(item.get("status", "")) in {
+                    "downloading", "resuming"}
+            )
+            if self._active:
+                self._update_queue_summary()
+            return
         if not self._active:
             self.global_speed_bps = event.global_speed_bps
-            return
-        data = self.active_downloads.get(event.rj_id)
-        if data is not None and self.normalize_status(data.get("status", "")) == "cancelled":
-            self.global_speed_bps = event.global_speed_bps
-            self._update_queue_summary()
             return
         card_event = copy.copy(event)
         card_event.global_speed_bps = event.work_speed_bps

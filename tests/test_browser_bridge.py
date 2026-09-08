@@ -77,7 +77,12 @@ def test_sanitized_state_priority():
     db.downloads["RJ00000001"] = ["failed"]
     assert sanitized_rj_state(db, "RJ00000001")["state"] == "failed"
 
+    db.downloads["RJ00000001"] = ["completed"]
+    db.works["RJ00000001"] = "partial"
+    assert sanitized_rj_state(db, "RJ00000001")["state"] == "completed"
+
     db.downloads["RJ00000001"] = []
+    db.works["RJ00000001"] = ""
     assert sanitized_rj_state(db, "RJ00000001")["state"] == "not_in_library"
 
 
@@ -317,6 +322,23 @@ def test_batch_state_reader_uses_three_selects_for_many_cards(tmp_path):
         db.close()
 
 
+def test_batch_state_prefers_completed_downloads_over_stale_work_status(tmp_path):
+    db = LibraryVault(tmp_path / "browser-stale-work.db")
+    try:
+        db.upsert_download(
+            "track-1", "RJ00000004", "track.mp3", str(tmp_path / "track.mp3"), "completed"
+        )
+        db.conn.execute(
+            "INSERT INTO works (rj_id, status) VALUES (?, ?)",
+            ("RJ00000004", "partial"),
+        )
+        db.conn.commit()
+
+        state = sanitized_rj_states(db, ["RJ00000004"])["RJ00000004"]
+        assert state["state"] == "completed"
+    finally:
+        db.close()
+
 @pytest.mark.parametrize(
     ("downloads", "work_status", "expected"),
     [
@@ -448,3 +470,6 @@ def test_bridge_stop_restart_and_large_batch_recovery():
             await bridge.stop()
 
     asyncio.run(scenario())
+
+
+

@@ -6,6 +6,7 @@ import re
 import sys
 import logging
 import urllib.parse
+import time
 from pathlib import Path
 from typing import List, Callable, Optional, Dict
 
@@ -26,6 +27,7 @@ from core.metadata_scheduler import MetadataScheduler
 from core.download_workers import DownloadWorkerPool
 from core.download_errors import SignedUrlExpired
 from core.url_refresh import SignedUrlRefresher
+from core.local_file_validation import validate_completed_local_file
 
 logger = logging.getLogger("echovault")
 
@@ -520,37 +522,29 @@ class Orchestrator:
         return has_pending
 
     def pause_all(self):
-        """Pause all pausable works + set global_paused + drain queue (RC7.8)."""
+        """Stop active work first, then persist all pausable rows in one transaction."""
         self.pause_generation += 1
         self.global_paused = True
-        gen = self.pause_generation
+        generation = self.pause_generation
 
         queue_before = self.download_queue.qsize()
         queued_before = len(self.queued_rj_ids)
         active_before = len(self.active_tasks)
-
         logger.info(
-            f"PAUSE_ALL_BEGIN generation={gen} "
-            f"queue_size={queue_before} queued_rj_ids={queued_before} "
-            f"active_tasks={active_before}")
+            "PAUSE_ALL_BEGIN generation=%s queue_size=%s queued_rj_ids=%s "
+            "active_tasks=%s",
+            generation, queue_before, queued_before, active_before,
+        )
 
-        # 1. Pause all queued/downloading works in DB
-        rows = self.db.conn.execute(
-            "SELECT DISTINCT rj_id FROM downloads "
-            "WHERE status IN ('queued','downloading')").fetchall()
-        rj_ids = [row["rj_id"] for row in rows]
-        w_rows = self.db.conn.execute(
-            "SELECT rj_id FROM works WHERE status='prepared'").fetchall()
-        for r in w_rows:
-            if r["rj_id"] not in rj_ids:
-                rj_ids.append(r["rj_id"])
-
-        for rj_id in rj_ids:
+        # Cancellation must be observable immediately. Database persistence is
+        # deliberately second, so a large queue cannot delay stopping live I/O.
+        active_cancelled = 0
+        for rj_id, task in list(self.active_tasks.items()):
             self.speed.pause_work(rj_id)
-            self.pause_job(rj_id)
-            self._emit_work_status(rj_id, "Paused")
+            if not task.done():
+                task.cancel()
+                active_cancelled += 1
 
-        # 2. Drain download_queue
         drained = 0
         while not self.download_queue.empty():
             try:
@@ -561,33 +555,51 @@ class Orchestrator:
                 drained += 1
             except asyncio.QueueEmpty:
                 break
-
-        # 3. Clear work_data + queued_rj_ids
         self._queued_work_data.clear()
         self.queued_rj_ids.clear()
 
-        # 4. Cancel all active tasks
-        active_cancelled = 0
-        for rj_id, task in list(self.active_tasks.items()):
-            if not task.done():
-                task.cancel()
-                active_cancelled += 1
+        with self.db._lock:
+            rows = self.db.conn.execute(
+                "SELECT DISTINCT rj_id FROM downloads "
+                "WHERE status IN ('queued','downloading','resuming')"
+            ).fetchall()
+            work_rows = self.db.conn.execute(
+                "SELECT rj_id FROM works "
+                "WHERE status IN ('prepared','queued','downloading','resuming')"
+            ).fetchall()
+            rj_ids = list(dict.fromkeys(
+                [row["rj_id"] for row in rows]
+                + [row["rj_id"] for row in work_rows]
+            ))
+            with self.db.conn:
+                # Update the parent while its child rows still expose their
+                # pre-pause state. This also repairs a stale partial work
+                # that still owns queued/downloading files.
+                self.db.conn.execute(
+                    "UPDATE works SET status='paused' "
+                    "WHERE status='prepared' OR ("
+                    "status NOT IN "
+                    "('completed','registered','verified','external',"
+                    "'indexed','cancelled') AND rj_id IN ("
+                    "SELECT DISTINCT rj_id FROM downloads "
+                    "WHERE status IN ('queued','downloading','resuming')"
+                    "))"
+                )
+                self.db.conn.execute(
+                    "UPDATE downloads SET status='paused' "
+                    "WHERE status IN ('queued','downloading','resuming')"
+                )
+
+        for rj_id in rj_ids:
+            self.speed.pause_work(rj_id)
+            self._emit_work_status(rj_id, "Paused")
 
         logger.info(
-            f"PAUSE_ALL_DRAINED queue_drained={drained} "
-            f"queued_rj_ids_before={queued_before} active_before={active_before}")
-
-        logger.info(
-            f"PAUSE_ALL_CANCELLED active_cancelled={active_cancelled}")
-
-        logger.info(
-            f"PAUSE_ALL_DONE generation={gen} "
-            f"queue_size={self.download_queue.qsize()} "
-            f"queued_rj_ids={len(self.queued_rj_ids)} "
-            f"active_tasks={len(self.active_tasks)} "
-            f"global_paused={self.global_paused} "
-            f"global_inflight={self._global_inflight}")
-
+            "PAUSE_ALL_DONE generation=%s queue_drained=%s "
+            "active_cancelled=%s paused_works=%s global_paused=%s",
+            generation, drained, active_cancelled, len(rj_ids),
+            self.global_paused,
+        )
         return rj_ids
 
     def resume_all(self):
@@ -848,7 +860,7 @@ class Orchestrator:
                 tagged_overage = (
                     final_size > expected > 0
                     and self.config.tag_audio
-                    and AudioProcessor.is_tagged_mp3(final_path)
+                    and AudioProcessor.has_embedded_cover(final_path)
                 )
                 if final_size > 0 and (
                         expected <= 0 or final_size == expected or tagged_overage):
@@ -864,6 +876,34 @@ class Orchestrator:
                             pass
                     continue
                 status = "failed"
+
+            # A previous run may finish tagging before its final DB update.
+            # Embedded cover art legitimately enlarges WAV/MP4 as well as MP3.
+            if (final_size > expected > 0 and self.config.tag_audio
+                    and AudioProcessor.has_embedded_cover(final_path)):
+                self.db.upsert_download(
+                    dl_id, rj_id, target.title, str(final_path),
+                    "completed", final_size, final_size)
+                summary["already_complete"] += 1
+                continue
+
+            # Exact source sizes can become stale after local post-processing or
+            # an upstream metadata revision. Accept only structurally valid final
+            # files; partial and unknown formats still fail closed.
+            if final_size > expected > 0 and part_size == 0:
+                valid, validation = validate_completed_local_file(final_path)
+                if valid:
+                    logger.info(
+                        "LOCAL_FILE_RECONCILED rj=%s track=%s validation=%s "
+                        "expected=%s actual=%s",
+                        rj_id, target.title[:80], validation,
+                        expected, final_size,
+                    )
+                    self.db.upsert_download(
+                        dl_id, rj_id, target.title, str(final_path),
+                        "completed", final_size, final_size)
+                    summary["already_complete"] += 1
+                    continue
 
             if expected > 0 and (final_size > expected or part_size > expected):
                 summary["unrecoverable"] += 1
@@ -1155,7 +1195,8 @@ class Orchestrator:
     # ══════════════════════════════════════════════
     #  P1-1: Metadata cache integration
     # ══════════════════════════════════════════════
-    async def _fetch_metadata_live(self, rj_id: str, rj_numeric: str):
+    async def _fetch_metadata_live(self, rj_id: str, rj_numeric: str,
+                                   cache_bust: bool = False):
         async def _fetch():
             logger.info(
                 "METADATA_SLOT_ACQUIRE rj=%s limit=%s",
@@ -1165,7 +1206,17 @@ class Orchestrator:
             if not meta_raw:
                 detail = self.kernel.last_fetch_error or "empty response"
                 raise RuntimeError(f"metadata request failed: {detail}")
-            tracks_raw = await self.kernel.fetch(f"/api/tracks/{rj_numeric}?v=2")
+            params = None
+            if cache_bust:
+                # Avoid replaying an already-expired signed URL from an HTTP
+                # cache. The nonce is never persisted or written to logs.
+                params = {"_arsm_refresh": str(time.time_ns())}
+            tracks_endpoint = f"/api/tracks/{rj_numeric}?v=2"
+            if params is None:
+                tracks_raw = await self.kernel.fetch(tracks_endpoint)
+            else:
+                tracks_raw = await self.kernel.fetch(
+                    tracks_endpoint, params=params)
             if not tracks_raw:
                 detail = self.kernel.last_fetch_error or "empty response"
                 raise RuntimeError(f"track request failed: {detail}")
@@ -1561,13 +1612,6 @@ class Orchestrator:
                             if not resp.closed:
                                 resp.close()
 
-                        if self.config.tag_audio and track.type == 'audio':
-                            try:
-                                AudioProcessor.apply_tags(
-                                    final_path, meta, cover_path)
-                            except Exception as e:
-                                logging.warning(
-                                    f"Tagging failed {final_path}: {e}")
 
                         final_size = final_path.stat().st_size
                         self.stats.success += 1
@@ -1636,6 +1680,23 @@ class Orchestrator:
                     logging.warning(
                         f"Download {track.title} {final_status} (signed URL closed "
                         f"after refresh, partial_bytes={actual}): {exc}")
+                    return False
+                if fresh_url == track.url:
+                    actual = local_partial_size(final_path, part_path, track.size)
+                    self.stats.failed += 1
+                    error = (
+                        "Signed URL refresh returned the unchanged URL after "
+                        f"{exc}"
+                    )
+                    self.db.upsert_download(
+                        dl_id, meta.rj_id, track.title, str(final_path),
+                        "paused" if actual > 0 else "failed",
+                        actual, track.size, error=error)
+                    logger.warning(
+                        "URL_REFRESH_UNCHANGED rj=%s track=%s host=%s",
+                        meta.rj_id, track.title[:80],
+                        urllib.parse.urlparse(fresh_url).hostname or "unknown",
+                    )
                     return False
                 track.url = fresh_url
                 refresh_used = True
@@ -1800,7 +1861,8 @@ class Orchestrator:
                                        root_path: Path) -> List[TrackItem]:
         """Fetch a live track list (with fresh signed URLs) for one RJ."""
         rj_numeric = self._numeric_rj_id(rj_id)
-        _meta_raw, tracks_raw = await self._fetch_metadata_live(rj_id, rj_numeric)
+        _meta_raw, tracks_raw = await self._fetch_metadata_live(
+            rj_id, rj_numeric, cache_bust=True)
         if not tracks_raw:
             raise RuntimeError("tracks refresh returned empty payload")
         hierarchy = self.parse_hierarchy(tracks_raw, root_path, root_path)
@@ -1835,6 +1897,43 @@ class Orchestrator:
             return None
         return getattr(fresh, "url", None)
 
+    def _postprocess_completed_work(
+            self, meta: WorkMetadata, cover_path: Optional[Path],
+            root_path: Path,
+            target_paths: Optional[List[Path]] = None) -> list[tuple[Path, int]]:
+        """Write lyrics/tags only after the whole work is durably successful."""
+        if target_paths is not None:
+            files = [Path(path) for path in target_paths if Path(path).is_file()]
+        else:
+            try:
+                files = [path for path in root_path.rglob("*") if path.is_file()]
+            except OSError as exc:
+                logger.warning("Unable to enumerate completed work %s: %s", root_path, exc)
+                return []
+
+        lyric_paths = []
+        for path in files:
+            if path.suffix.casefold() not in {".lrc", ".vtt"}:
+                continue
+            prepared = AudioProcessor.prepare_lyrics_sidecar(path)
+            if prepared is not None and prepared.is_file():
+                lyric_paths.append(prepared)
+
+        if not self.config.tag_audio:
+            return []
+        effective_cover = (
+            cover_path if cover_path and cover_path.is_file()
+            else find_local_cover(root_path)
+        )
+        tagged = []
+        for path in files:
+            if path.suffix.casefold() not in AudioProcessor.SUPPORTED_EXTENSIONS:
+                continue
+            lyrics = AudioProcessor.find_matching_lyrics(path, lyric_paths)
+            if AudioProcessor.apply_tags(path, meta, effective_cover, lyrics):
+                tagged.append((path, path.stat().st_size))
+        return tagged
+
     async def _process_download(self, rj_id: str, meta: WorkMetadata,
                                  targets: List[TrackItem],
                                  root_path: Path) -> None:
@@ -1860,45 +1959,6 @@ class Orchestrator:
         )
         results = await pool.run(targets)
 
-        # Sidecars download concurrently with audio. Once the pool settles,
-        # create canonical LRC files such as ``title.lrc`` from
-        # ``title.wav.vtt`` while retaining the original tracked download.
-        lyric_paths = []
-        for target in targets:
-            if (target.save_path.suffix.casefold() not in {".lrc", ".vtt"}
-                    or results.get(id(target)) is not True
-                    or not target.save_path.is_file()):
-                continue
-            prepared = AudioProcessor.prepare_lyrics_sidecar(target.save_path)
-            if prepared is not None and prepared.is_file():
-                lyric_paths.append(prepared)
-
-        if self.config.tag_audio:
-            # A packaged album image may have a non-standard or nested name.
-            # Prefer the metadata cover, then fall back to a local candidate.
-            effective_cover = (
-                cover_path if cover_path and cover_path.is_file()
-                else find_local_cover(root_path)
-            )
-            for target in targets:
-                if (target.save_path.suffix.casefold()
-                        not in AudioProcessor.SUPPORTED_EXTENSIONS
-                        or results.get(id(target)) is not True
-                        or not target.save_path.is_file()):
-                    continue
-                lyrics = AudioProcessor.find_matching_lyrics(
-                    target.save_path, lyric_paths)
-                if AudioProcessor.apply_tags(
-                        target.save_path, meta, effective_cover, lyrics):
-                    final_size = target.save_path.stat().st_size
-                    dl_id = self._make_dl_id(
-                        meta.rj_id, target.id or target.title,
-                        target.save_path, target.title)
-                    self.db.upsert_download(
-                        dl_id, meta.rj_id, target.title,
-                        str(target.save_path), "completed",
-                        final_size, final_size)
-
         # Clean up in-flight tracking
         self._per_rj_inflight.pop(rj_id, None)
 
@@ -1907,6 +1967,7 @@ class Orchestrator:
         failed_count = 0
         cancelled_count = 0
         for t in targets:
+            result_present = id(t) in results
             r = results.get(id(t))
             if r is True:
                 success_count += 1
@@ -1915,35 +1976,108 @@ class Orchestrator:
                 failed_count += 1
             else:
                 failed_count += 1
+                # Unexpected worker errors must not leave a durable queued row
+                # behind after the in-memory queue has already drained.
+                if isinstance(r, dict) and r.get("error"):
+                    error = f"Worker exception: {r['error']}"
+                elif not result_present:
+                    error = "Worker produced no result"
+                else:
+                    error = None
+                if error:
+                    final_path = t.save_path
+                    part_path = final_path.with_suffix(final_path.suffix + ".part")
+                    actual = local_partial_size(final_path, part_path, t.size)
+                    dl_id = self._make_dl_id(
+                        rj_id, t.id or t.title, final_path, t.title)
+                    self.db.upsert_download(
+                        dl_id, rj_id, t.title, str(final_path), "failed",
+                        actual, t.size, error=error)
+                    logger.error(
+                        "DOWNLOAD_WORKER_FAILURE rj=%s track=%s error=%s",
+                        rj_id, t.title[:80], error,
+                    )
 
         total = len(targets)
         logging.info(f"Download results for {rj_id}: "
                      f"{success_count}/{total} success, {failed_count} failed")
 
         try:
+            success_targets = [
+                t for t in targets if results.get(id(t)) is True]
+            current_ids = {
+                self._make_dl_id(
+                    rj_id, t.id or t.title, t.save_path, t.title)
+                for t in targets
+            }
+
+            # A Windows long-path fallback can change ``t.save_path`` after
+            # prepare_work has already inserted the original queued row. Make
+            # successful current targets durable before evaluating aggregate
+            # state, otherwise that obsolete row keeps a completed work stuck
+            # in the queue forever.
+            for t in success_targets:
+                dl_id = self._make_dl_id(
+                    rj_id, t.id or t.title, t.save_path, t.title)
+                actual_size = (
+                    t.save_path.stat().st_size
+                    if t.save_path.is_file() else int(t.size or 0)
+                )
+                self.db.upsert_download(
+                    dl_id, rj_id, t.title, str(t.save_path),
+                    "completed", actual_size, actual_size)
+
+            rows = self.db.get_downloads_by_rj(rj_id)
+            blocking_statuses = {
+                "failed", "paused", "queued", "downloading",
+                "resuming", "cancelled", "metadata_failed",
+            }
             blocking_rows = [
-                row for row in self.db.get_downloads_by_rj(rj_id)
-                if str(row["status"] or "").lower() in {
-                    "failed", "paused", "queued", "downloading",
-                    "resuming", "cancelled", "metadata_failed",
-                }
+                row for row in rows
+                if row["id"] in current_ids
+                and str(row["status"] or "").lower() in blocking_statuses
             ]
             if failed_count == 0 and cancelled_count == 0 and not blocking_rows:
+                # Current metadata is authoritative once every current target
+                # succeeds. Remove only obsolete non-terminal DB rows left by
+                # an earlier path/metadata plan; this never touches files.
+                stale_ids = [
+                    row["id"] for row in rows
+                    if row["id"] not in current_ids
+                    and str(row["status"] or "").lower() in blocking_statuses
+                ]
+                for stale_id in stale_ids:
+                    self.db.execute_write(
+                        "DELETE FROM downloads WHERE id=?", (stale_id,))
+                if stale_ids:
+                    logger.info(
+                        "STALE_DOWNLOAD_ROWS_REMOVED rj=%s count=%s",
+                        rj_id, len(stale_ids),
+                    )
                 # All success — register work as completed
                 final_size = sum(
                     t.save_path.stat().st_size
                     for t in targets if t.save_path.exists())
                 self.db.register(meta, final_size, root_path, status='completed')
-                for t in targets:
-                    dl_id = self._make_dl_id(
-                        rj_id, t.id or t.title, t.save_path, t.title)
-                    actual_size = (
-                        t.save_path.stat().st_size
-                        if t.save_path.is_file() else int(t.size or 0)
-                    )
+
+                # Download success is now durable. Post-processing is best-effort
+                # and can never turn the work back into a failed download.
+                tagged = await asyncio.to_thread(
+                    self._postprocess_completed_work,
+                    meta, cover_path, root_path,
+                    [t.save_path for t in targets],
+                )
+                rows_by_path = {
+                    str(Path(row["local_path"])): row
+                    for row in self.db.get_downloads_by_rj(rj_id)
+                }
+                for media_path, tagged_size in tagged:
+                    row = rows_by_path.get(str(media_path))
+                    if row is None:
+                        continue
                     self.db.upsert_download(
-                        dl_id, rj_id, t.title, str(t.save_path),
-                        'completed', actual_size, actual_size)
+                        row["id"], rj_id, row["track_title"],
+                        str(media_path), "completed", tagged_size, tagged_size)
                 self._emit_work_status(rj_id, "Completed")
             elif cancelled_count > 0:
                 # Distinguish a durable user cancellation from a pause.
@@ -1953,26 +2087,25 @@ class Orchestrator:
                 else:
                     self._emit_work_status(rj_id, "Paused (partial)")
             else:
-                # Some failed — register as partial, do NOT overwrite failed
-                self._emit_work_status(
-                    rj_id, f"Partially completed ({success_count}/{total})")
-                success_targets = [
-                    t for t in targets if results.get(id(t)) is True]
+                # Some failed; persist the aggregate state truthfully
                 if success_targets:
                     final_size = sum(
                         t.save_path.stat().st_size
                         for t in success_targets if t.save_path.exists())
                     self.db.register(meta, final_size, root_path,
-                                     status='partial')
-                    for t in success_targets:
-                        dl_id = self._make_dl_id(
-                            rj_id, t.id or t.title, t.save_path, t.title)
-                        actual_size = (
-                            t.save_path.stat().st_size
-                            if t.save_path.is_file() else int(t.size or 0)
-                        )
-                        self.db.upsert_download(
-                            dl_id, rj_id, t.title, str(t.save_path),
-                            'completed', actual_size, actual_size)
+                                     status="partial")
+
+                aggregate = self.db.get_downloads_summary(rj_id)
+                has_completed = aggregate.get("completed", 0) > 0
+                work_status = "partial" if has_completed else "failed"
+                self.db.execute_write(
+                    "UPDATE works SET status=? WHERE rj_id=?",
+                    (work_status, rj_id),
+                )
+                if work_status == "partial":
+                    self._emit_work_status(
+                        rj_id, f"Partially completed ({success_count}/{total})")
+                else:
+                    self._emit_work_status(rj_id, f"Failed (0/{total})")
         except Exception as e:
             logging.error(f"Failed to register work {rj_id}: {e}")

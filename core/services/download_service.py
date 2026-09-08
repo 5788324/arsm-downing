@@ -42,7 +42,7 @@ class DownloadService:
     state.  Mutating operations remain owned by AppController/Orchestrator.
     """
 
-    FILTERS = {"working", "active", "queued", "paused", "failed", "completed", "cancelled", "all"}
+    FILTERS = {"working", "queue_all", "active", "queued", "paused", "failed", "completed", "cancelled", "all"}
 
     def __init__(self, vault: Any, *, output_dir: Path | None = None,
                  library_paths: Iterable[str | Path] = ()) -> None:
@@ -112,19 +112,12 @@ class DownloadService:
     def _matches_filter(item: DownloadQueueItem, status_filter: str) -> bool:
         if status_filter == "all":
             return True
+        if status_filter == "queue_all":
+            return item.queue_state != "completed"
         if status_filter == "working":
-            if item.queue_state == "unknown":
-                return False
-            if not item.is_terminal:
-                return True
-            # Terminal download works (completed/registered) are candidates for
-            # disk re-verification: apply_disk_verification downgrades the ones
-            # that are incomplete on disk to partial (kept visible) and drops
-            # the genuinely-complete ones from the active queue.  Library
-            # states (verified/external/indexed) are never re-checked.
-            return (item.queue_state == "completed"
-                    and str(item.work_status or "").lower()
-                    in {"completed", "registered"})
+            # A successful download is durable history, not an active task.
+            # Never reinsert it here because tags changed the final file size.
+            return item.queue_state != "unknown" and not item.is_terminal
         return item.queue_state == status_filter
 
     @staticmethod
@@ -238,126 +231,22 @@ class DownloadService:
             return self._fetch_queue_page_unlocked(status_filter, page, page_size)
 
     def fetch_working_page(self, *, page: int = 1,
-                           page_size: int = 24) -> DownloadQueuePage:
-        """Fetch, selectively disk-verify, then paginate the active queue.
-
-        Terminal download candidates (completed/registered) are included as
-        re-verification candidates, downgraded to ``partial`` when incomplete
-        on disk, and dropped when genuinely complete.  Their verified result
-        is cached by a durable DB fingerprint: changing pages must not repeat
-        thousands of filesystem stats for unchanged completed works.
-        """
-        page_size = max(1, min(int(page_size), 200))
-        lock = getattr(self.vault, "_lock", None)
-        if lock is None:
-            candidates = self._fetch_queue_page_unlocked(
-                "working", 1, 2 ** 31 - 1)
-        else:
-            with lock:
-                candidates = self._fetch_queue_page_unlocked(
-                    "working", 1, 2 ** 31 - 1)
-
-        live_items = [item for item in candidates.items if not item.is_terminal]
-        terminal_items = [item for item in candidates.items if item.is_terminal]
-        terminal_ids = {item.rj_id for item in terminal_items}
-        for stale_rj_id in set(self._working_verification_cache) - terminal_ids:
-            self._working_verification_cache.pop(stale_rj_id, None)
-
-        changed = []
-        fingerprints = {}
-        for item in terminal_items:
-            fingerprint = (
-                item.updated_at, item.file_count, item.completed_files,
-                item.total_bytes, item.local_path,
-            )
-            fingerprints[item.rj_id] = fingerprint
-            cached = self._working_verification_cache.get(item.rj_id)
-            if cached is None or cached[0] != fingerprint:
-                changed.append(item)
-
-        if changed:
-            pending = DownloadQueuePage(
-                items=tuple(changed), summary=candidates.summary,
-                page=1, page_size=max(1, len(changed)),
-                total_items=len(changed),
-            )
-            verified = self.apply_disk_verification(
-                pending, status_filter="working")
-            partial_by_rj = {item.rj_id: item for item in verified.items}
-            for item in changed:
-                self._working_verification_cache[item.rj_id] = (
-                    fingerprints[item.rj_id], partial_by_rj.get(item.rj_id)
-                )
-
-        items = live_items + [
-            cached_item
-            for _, cached_item in self._working_verification_cache.values()
-            if cached_item is not None
-        ]
-        items.sort(key=self._sort_key)
-        total_items = len(items)
-        page_count = max(1, (total_items + page_size - 1) // page_size)
-        page = max(1, min(int(page), page_count))
-        start = (page - 1) * page_size
-        page_items = items[start:start + page_size]
-        live_ids = {item.rj_id for item in live_items}
-        for stale_rj_id in set(self._working_live_verification_cache) - live_ids:
-            self._working_live_verification_cache.pop(stale_rj_id, None)
-
-        verified_by_rj = {}
-        live_to_verify = []
-        live_fingerprints = {}
-        for item in page_items:
-            if item.rj_id not in live_ids:
-                continue
-            needs_disk_check = (
-                item.queue_state in {"active", "paused", "failed", "partial"}
-                or item.downloaded_bytes > 0
-                or item.completed_files > 0
-            )
-            # A brand-new queued work has no progress to reconcile. Skipping
-            # its often hundreds of expected paths makes first-time paging
-            # responsive without hiding any known on-disk progress.
-            if not needs_disk_check:
-                continue
-            fingerprint = (
-                item.queue_state, item.updated_at, item.file_count,
-                item.completed_files, item.downloaded_bytes,
-                item.total_bytes, item.local_path,
-            )
-            live_fingerprints[item.rj_id] = fingerprint
-            cached = self._working_live_verification_cache.get(item.rj_id)
-            if item.queue_state != "active" and cached and cached[0] == fingerprint:
-                verified_by_rj[item.rj_id] = cached[1]
-            else:
-                live_to_verify.append(item)
-
-        if live_to_verify:
-            verified_live = self.apply_disk_verification(DownloadQueuePage(
-                items=tuple(live_to_verify),
-                summary=candidates.summary,
-                page=1,
-                page_size=max(1, len(live_to_verify)),
-                total_items=len(live_to_verify),
-            ))
-            for verified_item in verified_live.items:
-                verified_by_rj[verified_item.rj_id] = verified_item
-                fingerprint = live_fingerprints[verified_item.rj_id]
-                if verified_item.queue_state != "active":
-                    self._working_live_verification_cache[verified_item.rj_id] = (
-                        fingerprint, verified_item
-                    )
-        if verified_by_rj:
-            page_items = [
-                verified_by_rj.get(item.rj_id, item) for item in page_items
-            ]
-        return DownloadQueuePage(
-            items=tuple(page_items),
-            summary=candidates.summary,
-            page=page,
-            page_size=page_size,
-            total_items=total_items,
+                           page_size: int = 24,
+                           verify_live: bool = True) -> DownloadQueuePage:
+        """Fetch active tasks only; completed history never re-enters the queue."""
+        page_model = self.fetch_queue_page(
+            status_filter="working", page=page, page_size=page_size)
+        if not verify_live:
+            return page_model
+        needs_disk_check = any(
+            item.queue_state in {"active", "paused", "failed", "partial"}
+            or item.downloaded_bytes > 0
+            or item.completed_files > 0
+            for item in page_model.items
         )
+        if not needs_disk_check:
+            return page_model
+        return self.apply_disk_verification(page_model)
 
     def _fetch_queue_page_unlocked(self, status_filter: str, page: int,
                                    page_size: int) -> DownloadQueuePage:

@@ -539,7 +539,8 @@ class AppController:
 
         return self._submit_background(_apply(), "应用浏览器扩展设置")
 
-    def run_blocking(self, function, on_success=None, *, action_label: str = "后台任务"):
+    def run_blocking(self, function, on_success=None, *, on_error=None,
+                     action_label: str = "后台任务"):
         """Run blocking filesystem/SQLite presentation work off the Flet loop.
 
         ``function`` executes through ``asyncio.to_thread``.  The optional
@@ -547,7 +548,13 @@ class AppController:
         mutates Flet controls from the worker thread.
         """
         async def _run():
-            result = await asyncio.to_thread(function)
+            try:
+                result = await asyncio.to_thread(function)
+            except Exception as exc:
+                if on_error is not None:
+                    self.ui_queue.put(("ui_callback", on_error, exc))
+                    return None
+                raise
             if on_success is not None:
                 self.ui_queue.put(("ui_callback", on_success, result))
             return result

@@ -557,3 +557,64 @@ def test_source_contracts_include_race_and_completion_guards():
     assert "Never trust a terminal SQLite label" in orchestrator
     assert "cancelled_files" in service
     assert "cancelled_files: int = 0" in read_models
+
+def test_pause_all_cancels_active_work_before_bulk_persistence(tmp_path) -> None:
+    orc, db, _config, _kernel = make_orchestrator(tmp_path)
+    _meta, _target, _dl_id, _root = seed_work(
+        orc, db, status="queued")
+    observed = []
+
+    class InspectTask:
+        def done(self):
+            return False
+
+        def cancel(self):
+            observed.append(row_dict(db, "RJ00000001")["status"])
+
+    orc.active_tasks["RJ00000001"] = InspectTask()
+
+    paused = orc.pause_all()
+
+    assert observed == ["queued"]
+    assert paused == ["RJ00000001"]
+    assert row_dict(db, "RJ00000001")["status"] == "paused"
+    assert db.get_works_status("RJ00000001") == "paused"
+    assert orc.global_paused is True
+    db.close()
+
+
+def test_resume_all_releases_global_gate_before_reconciling_jobs() -> None:
+    orc = Orchestrator.__new__(Orchestrator)
+    orc.global_paused = True
+    orc.pause_generation = 7
+    orc.resume_all = lambda: ["RJ00000001"]
+    orc._log_concurrency_state = lambda _label: None
+    observed = []
+
+    async def resume_one(_rj_id):
+        observed.append(orc.global_paused)
+        return {"status": "queued"}
+
+    orc._resume_one = resume_one
+    stats = asyncio.run(orc._resume_all_async())
+
+    assert observed == [False]
+    assert stats["resumed_to_queue"] == 1
+
+
+def test_oversized_tagged_media_is_reconciled_without_redownload(tmp_path, monkeypatch):
+    orc, db, _config, _kernel = make_orchestrator(tmp_path)
+    _meta, target, _dl_id, _root = seed_work(orc, db, size=10)
+    target.save_path.write_bytes(b"12345678901")
+    monkeypatch.setattr(
+        "core.orchestrator.AudioProcessor.has_embedded_cover",
+        staticmethod(lambda _path: True),
+    )
+    result = asyncio.run(orc.resume_job("RJ00000001"))
+    assert result["status"] == "reconciled_complete"
+    assert result["already_complete"] == 1
+    row = row_dict(db, "RJ00000001")
+    assert row["status"] == "completed"
+    assert row["downloaded_bytes"] == 11
+    assert row["total_bytes"] == 11
+    db.close()

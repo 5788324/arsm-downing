@@ -98,10 +98,12 @@ def _state_payload(
 def sanitized_rj_state(db, rj_id: str) -> dict[str, object]:
     """Build a path-free state snapshot from the existing database read model."""
     canonical = normalize_browser_rj_id(rj_id)
-    statuses = [
+    download_statuses = [
         _row_value(row, "status", "") for row in (db.get_downloads_by_rj(canonical) or [])
     ]
-    statuses.append(db.get_works_status(canonical) or "")
+    # Per-file rows are authoritative once present.  A stale works.status must
+    # not turn an all-completed work into a browser failure.
+    statuses = download_statuses or [db.get_works_status(canonical) or ""]
     return _state_payload(
         canonical,
         in_library=bool(db.find_in_library(canonical)),
@@ -120,10 +122,11 @@ def sanitized_rj_states(db, rj_ids: Iterable[str]) -> dict[str, dict[str, object
     result: dict[str, dict[str, object]] = {}
     for rj_id in canonical:
         row = rows.get(rj_id, {})
+        download_statuses = row.get("download_statuses", ())
         result[rj_id] = _state_payload(
             rj_id,
             in_library=bool(row.get("in_library", False)),
-            statuses=row.get("statuses", ()),
+            statuses=download_statuses or row.get("statuses", ()),
         )
     return result
 
@@ -465,3 +468,5 @@ class BrowserBridge:
             logger.exception("Browser bridge open request failed")
             return self._error(request, 500, "open_failed", "无法打开 ARSM 页面")
         return self._json(request, {"ok": True, "rj_id": rj_id, "view": view}, status=202)
+
+

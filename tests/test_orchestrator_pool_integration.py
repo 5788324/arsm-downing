@@ -37,7 +37,7 @@ async def _work_runner(tmp_path: Path, worker_count: int):
 
 
 async def _run(tmp_path: Path, worker_count: int, file_count: int,
-               fail_ids: set | None = None):
+               fail_ids: set | None = None, postprocess_states: list | None = None):
     """Drive _process_download with a stub that records real concurrency."""
     fail_ids = fail_ids or set()
     config, db, kernel, orch = await _work_runner(tmp_path, worker_count)
@@ -62,6 +62,11 @@ async def _run(tmp_path: Path, worker_count: int, file_count: int,
         return True
 
     orch.download_file = fake_download
+    if postprocess_states is not None:
+        def postprocess(meta_, _cover, _root, _targets=None):
+            postprocess_states.append(db.get_works_status(meta_.rj_id))
+            return []
+        orch._postprocess_completed_work = postprocess
     targets = [
         TrackItem(id=f"f{i:03d}", title=f"f{i:03d}.bin", type="file",
                   url="http://127.0.0.1:1/", size=1,
@@ -103,3 +108,15 @@ def test_pool_reports_partial_completion_on_failures(tmp_path: Path) -> None:
     peak, statuses, _db, total = asyncio.run(_case())
     assert peak == 4
     assert any(st.startswith("Partially completed (10/20)") for st in statuses)
+
+
+def test_postprocess_runs_only_after_durable_download_success(tmp_path: Path) -> None:
+    states = []
+    asyncio.run(_run(tmp_path, 2, 4, postprocess_states=states))
+    assert states == ["completed"]
+
+
+def test_partial_download_does_not_write_tags_or_lyrics(tmp_path: Path) -> None:
+    states = []
+    asyncio.run(_run(tmp_path, 2, 4, fail_ids={"f000"}, postprocess_states=states))
+    assert states == []

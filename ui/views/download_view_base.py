@@ -764,7 +764,7 @@ class DownloadView(ft.Container):
             data["status"] = cn_status
             ns = self.normalize_status(status)
 
-            if ns in ("paused", "cancelled", "completed", "failed"):
+            if ns in ("paused", "cancelled", "completed", "failed", "partial"):
                 # A stopped task must never keep advertising stale throughput
                 # or an ETA from the final in-flight progress callback.
                 data["last_speed_bps"] = 0
@@ -853,6 +853,7 @@ class DownloadView(ft.Container):
             return
         if data["status"] in ("已暂停", "Paused (partial)") or data["status"].startswith("Paused"):
             data["status"] = "队列中"
+            data.pop("_ignore_active_progress", None)
             data["cache_hit"] = False
             self.build_queue_item(rj_id)
             self.app_controller.resume_download(rj_id)
@@ -861,9 +862,14 @@ class DownloadView(ft.Container):
             self.update_work_status(rj_id, "Paused")
 
     def _retry_failed(self, rj_id: str):
-        """Ask the core to reconcile the failure before changing card state."""
-        if rj_id not in self.active_downloads:
+        """Show immediate feedback, then let core reconcile the failed files."""
+        data = self.active_downloads.get(rj_id)
+        if not data:
             return
+        data["status"] = "恢复中..."
+        data.pop("_ignore_active_progress", None)
+        data["cache_hit"] = False
+        self.build_queue_item(rj_id)
         self.app_controller.resume_download(rj_id)
         self.app_controller.show_snack(f"{rj_id} 正在检查断点与失败状态…")
 
@@ -873,6 +879,7 @@ class DownloadView(ft.Container):
         if not data:
             return
         data["status"] = "队列中"
+        data.pop("_ignore_active_progress", None)
         data["cache_hit"] = False
         self.build_queue_item(rj_id)
         self.app_controller.start_download(rj_id, allow_duplicate=True)

@@ -8,6 +8,7 @@ import ui.views.download_view as download_module
 from core.database import LibraryVault
 from core.models import ProgressEvent, WorkMetadata
 from core.read_models import BatchEnqueuePreview, DownloadQueueSummary
+from core.status import WorkStatus
 from ui.views.download_view import DownloadView
 from ui.views.settings_view import SettingsView
 
@@ -571,4 +572,155 @@ def test_cancelled_task_primary_action_has_visible_label(view_controller) -> Non
     actions = view._build_compact_actions("cancelled", "RJ00000001")
     assert actions[0].text == "继续下载"
     assert actions[0].tooltip == "继续已取消任务"
-    assert actions[0].icon == ft.Icons.REPLAY
+    assert actions[0].icon is None
+
+
+def test_successful_manual_refresh_reenables_refresh_button(view_controller) -> None:
+    view, _controller = view_controller
+
+    view.refresh_queue_async(force=True)
+
+    assert view.queue_refresh_btn.disabled is False
+
+
+def test_live_queued_to_downloading_transition_updates_summary(view_controller) -> None:
+    view, controller = view_controller
+    rj_id = "RJ00000001"
+    work = controller.db.get_downloads_by_rj(rj_id)[0]
+    controller.db.upsert_download(
+        work["id"], rj_id, work["track_title"], work["local_path"],
+        "queued", work["downloaded_bytes"], work["total_bytes"],
+    )
+    controller.db.conn.execute(
+        "UPDATE works SET status='queued' WHERE rj_id=?", (rj_id,)
+    )
+    controller.db.conn.commit()
+    view.reload_queue_from_database()
+    assert "排队 1" in view.queue_summary.value
+
+    controller.db.upsert_download(
+        work["id"], rj_id, work["track_title"], work["local_path"],
+        "downloading", work["downloaded_bytes"], work["total_bytes"],
+    )
+    view.update_work_status(rj_id, "Downloading")
+    view.update_track_progress(ProgressEvent(
+        rj_id=rj_id, track_id=work["id"], track_title=work["track_title"],
+        downloaded_bytes=4, total_bytes=10, percent=40.0,
+        work_speed_bps=1024, track_speed_bps=1024,
+        global_speed_bps=2048, eta_seconds=3, status="downloading",
+    ))
+
+    assert "下载中 1" in view.queue_summary.value
+    assert "排队 0" in view.queue_summary.value
+    assert "总速度 2 KB/s" in view.queue_summary.value
+
+
+def test_partial_completion_invalidates_durable_snapshot(view_controller, monkeypatch) -> None:
+    view, _controller = view_controller
+    refreshes = []
+    monkeypatch.setattr(
+        view, "refresh_queue_async",
+        lambda **kwargs: refreshes.append(kwargs),
+    )
+
+    view.update_work_status("RJ00000001", "Partially completed (1/2)")
+
+    assert refreshes == [{"force": True}]
+    assert "下载中 0" in view.queue_summary.value
+
+
+def test_service_backed_view_does_not_write_legacy_queue_json(
+    view_controller, tmp_path: Path, monkeypatch
+) -> None:
+    view, _controller = view_controller
+    queue_file = tmp_path / "legacy-queue.json"
+    monkeypatch.setattr(download_module, "QUEUE_FILE", queue_file)
+
+    view.save_queue()
+
+    assert not queue_file.exists()
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("Path failed: access denied", WorkStatus.FAILED),
+        ("No tracks found", WorkStatus.NO_PENDING),
+    ],
+)
+def test_prepare_failures_are_not_misclassified_as_queued(raw, expected) -> None:
+    assert WorkStatus.normalize(raw) is expected
+
+
+def test_batch_buttons_show_immediate_operation_feedback(view_controller) -> None:
+    view, _controller = view_controller
+
+    view._batch_pause()
+    assert view.btn_pause_all.text == "暂停中…"
+
+    view._batch_resume()
+    assert view.btn_resume_all.text == "恢复中…"
+
+
+def test_failed_manual_refresh_releases_guard_and_reports_error(
+    view_controller, monkeypatch
+) -> None:
+    view, controller = view_controller
+
+    def fail_run(_function, _on_success=None, **kwargs):
+        kwargs["on_error"](RuntimeError("database busy"))
+
+    monkeypatch.setattr(controller, "run_blocking", fail_run)
+    view.refresh_queue_async(force=True)
+
+    assert view._queue_refreshing is False
+
+
+def test_late_progress_after_pause_cannot_restore_stale_speed(
+    view_controller,
+) -> None:
+    view, _controller = view_controller
+    rj_id = "RJ00000001"
+    data = view.active_downloads[rj_id]
+    view.update_work_status(rj_id, "Paused")
+    data["last_speed_bps"] = 0
+    view.global_speed_bps = 14 * 1024 * 1024
+
+    view.update_track_progress(ProgressEvent(
+        rj_id=rj_id,
+        track_id="file-1",
+        track_title="track.mp3",
+        downloaded_bytes=7,
+        total_bytes=10,
+        percent=70,
+        work_speed_bps=14 * 1024 * 1024,
+        track_speed_bps=14 * 1024 * 1024,
+        global_speed_bps=14 * 1024 * 1024,
+        eta_seconds=1,
+        status="downloading",
+    ))
+
+    assert data["last_speed_bps"] == 0
+    assert view.global_speed_bps == 0
+    assert "总速度 0 B/s" in view.queue_summary.value
+
+
+def test_batch_pause_immediately_clears_visible_speed_and_state(
+    view_controller,
+) -> None:
+    view, controller = view_controller
+    rj_id = "RJ00000001"
+    data = view.active_downloads[rj_id]
+    data["status"] = "下载中"
+    data["last_speed_bps"] = 14 * 1024 * 1024
+    data["last_track_speed"] = 14 * 1024 * 1024
+    data["last_eta"] = 3
+    view.global_speed_bps = 14 * 1024 * 1024
+
+    view._batch_pause()
+
+    assert data["status"] == "已暂停"
+    assert data["last_speed_bps"] == 0
+    assert data["last_eta"] is None
+    assert view.global_speed_bps == 0
+    assert controller.calls[-1] == ("pause_all", "", {})

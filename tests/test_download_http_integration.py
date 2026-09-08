@@ -112,3 +112,34 @@ def test_real_http_416_requires_exact_complete_part(tmp_path: Path) -> None:
     assert not part_path.exists()
     assert row["status"] == "completed"
     assert ranges == [f"bytes={len(PAYLOAD)}-"]
+
+
+def test_stream_preserves_percent_encoded_media_path(tmp_path: Path) -> None:
+    async def run():
+        seen_raw_paths = []
+
+        async def media(request: web.Request):
+            seen_raw_paths.append(request.raw_path)
+            return web.Response(body=PAYLOAD, status=200)
+
+        app = web.Application()
+        app.router.add_get("/{tail:.*}", media)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+        config = ConfigManager()
+        kernel = NetworkKernel(config)
+        try:
+            response = await kernel.stream(
+                f"http://127.0.0.1:{port}/folder/a%26b.txt")
+            async with response:
+                assert response.status == 200
+                assert await response.read() == PAYLOAD
+        finally:
+            await kernel.shutdown()
+            await runner.cleanup()
+        assert seen_raw_paths == ["/folder/a%26b.txt"]
+
+    asyncio.run(run())

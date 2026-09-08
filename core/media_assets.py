@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 from typing import Iterable
+
+from PIL import Image, UnidentifiedImageError
 
 COVER_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 COVER_EXACT_NAMES = {
@@ -17,6 +20,15 @@ COVER_KEYWORDS = (
     "封面", "表紙",
 )
 
+
+COVER_DIRECTORY_KEYWORDS = (
+    "cover", "jacket", "package", "front", "封面", "表紙",
+)
+COVER_REJECT_KEYWORDS = (
+    "banner", "logo", "sample", "thumb", "thumbnail", "wallpaper",
+    "scene", "comic", "cg", "差分", "壁纸", "漫畫", "漫画",
+)
+_RJ_COVER_NAME = re.compile(r"^rj\d{6,8}(?:[-_ ](?:cover|main|jacket))?$", re.I)
 
 def is_cover_filename(name: str | Path) -> bool:
     path = Path(name)
@@ -41,6 +53,40 @@ def _first_named_cover(paths: Iterable[Path]) -> Path | None:
     )
     return candidates[0] if candidates else None
 
+def _path_signals_cover(path: Path, album: Path) -> bool:
+    """Recognize covers stored under a dedicated folder or named after the RJ id."""
+    try:
+        relative = path.relative_to(album)
+    except ValueError:
+        return False
+    if _RJ_COVER_NAME.fullmatch(path.stem):
+        return True
+    return any(
+        any(token in part.casefold() for token in COVER_DIRECTORY_KEYWORDS)
+        for part in relative.parts[:-1]
+    )
+
+
+def _visual_cover_rank(path: Path, album: Path) -> tuple | None:
+    """Return a conservative rank for otherwise unnamed cover-like images."""
+    try:
+        relative = path.relative_to(album)
+        lowered = "/".join(relative.parts).casefold()
+        if any(token in lowered for token in COVER_REJECT_KEYWORDS):
+            return None
+        with Image.open(path) as image:
+            width, height = image.size
+        if width < 300 or height < 300:
+            return None
+        ratio = width / height
+        if not 0.55 <= ratio <= 1.45:
+            return None
+        depth = len(relative.parts) - 1
+        return (depth, abs(ratio - 0.75), -(width * height), lowered)
+    except (OSError, ValueError, UnidentifiedImageError):
+        return None
+
+
 
 def find_local_cover(root: str | Path) -> Path | None:
     """Find a likely cover without ever following links outside the album."""
@@ -62,6 +108,7 @@ def find_local_cover(root: str | Path) -> Path | None:
     if len(direct_images) == 1:
         return direct_images[0]
 
+    nested_images: list[Path] = []
     try:
         for current_root, dir_names, file_names in os.walk(album, followlinks=False):
             current = Path(current_root)
@@ -69,11 +116,27 @@ def find_local_cover(root: str | Path) -> Path | None:
                 name for name in dir_names
                 if not (current / name).is_symlink()
             )
-            nested = _first_named_cover(
-                current / name for name in sorted(file_names)
-            )
+            files = [current / name for name in sorted(file_names)]
+            nested = _first_named_cover(files)
             if nested is not None:
                 return nested
+            nested_images.extend(
+                path for path in files
+                if path.suffix.casefold() in COVER_EXTENSIONS
+                and not path.is_symlink() and path.is_file()
+            )
     except OSError:
         return None
-    return None
+    signalled = sorted(
+        (path for path in nested_images if _path_signals_cover(path, album)),
+        key=lambda path: (len(path.relative_to(album).parts), str(path).casefold()),
+    )
+    if signalled:
+        return signalled[0]
+
+    ranked = [
+        (rank, path) for path in nested_images
+        if (rank := _visual_cover_rank(path, album)) is not None
+    ]
+    ranked.sort(key=lambda item: item[0])
+    return ranked[0][1] if ranked else None

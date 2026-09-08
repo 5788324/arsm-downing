@@ -123,6 +123,33 @@ class AudioProcessor:
             return False
 
     @staticmethod
+    def has_embedded_cover(path: Path) -> bool:
+        """Recognize media enlarged by ARSM cover-tag post-processing."""
+        if (path.suffix.lower() not in AudioProcessor.SUPPORTED_EXTENSIONS
+                or not path.is_file()):
+            return False
+        try:
+            audio = mutagen.File(str(path))
+            if audio is None:
+                return False
+            if bool(getattr(audio, "pictures", None)):
+                return True
+            tags = getattr(audio, "tags", None)
+            if not tags:
+                return False
+            if hasattr(tags, "getall") and tags.getall("APIC"):
+                return True
+            keys = {str(key).casefold() for key in tags.keys()}
+            return (
+                any(key.startswith("apic:") for key in keys)
+                or bool(keys & {
+                    "covr", "metadata_block_picture", "wm/picture",
+                })
+            )
+        except Exception:
+            return False
+
+    @staticmethod
     def canonical_lyrics_path(path: Path, suffix: str = ".lrc") -> Path:
         """Strip a trailing audio extension from a lyric sidecar stem."""
         stem = path.stem
@@ -133,12 +160,21 @@ class AudioProcessor:
 
     @staticmethod
     def _decode_text(payload: bytes) -> str:
-        for encoding in ("utf-8-sig", "utf-16", "gb18030", "big5"):
+        if payload.startswith((b"\xff\xfe", b"\xfe\xff")):
+            return payload.decode("utf-16")
+        try:
+            return payload.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            utf8_repaired = payload.decode("utf-8-sig", errors="replace")
+            # A nearly-valid UTF-8 VTT must not be mistaken for BOM-less UTF-16.
+            if "-->" in utf8_repaired:
+                return utf8_repaired
+        for encoding in ("gb18030", "big5"):
             try:
                 return payload.decode(encoding)
             except UnicodeDecodeError:
                 continue
-        return payload.decode("utf-8", errors="replace")
+        return utf8_repaired
 
     @staticmethod
     def vtt_to_lrc_text(text: str) -> str:
@@ -230,7 +266,7 @@ class AudioProcessor:
     @staticmethod
     def _write_id3(tags: ID3, path: Path, meta: WorkMetadata,
                    cover: Optional[Path], lyrics: Optional[Path] = None) -> None:
-        for key in ("TIT2", "TPE1", "TALB", "TPUB", "APIC"):
+        for key in ("TIT2", "TPE1", "TALB", "TPUB"):
             tags.delall(key)
         tags.add(TIT2(encoding=3, text=[path.stem]))
         tags.add(TPE1(encoding=3, text=[AudioProcessor._artist(meta)]))
@@ -239,6 +275,7 @@ class AudioProcessor:
             tags.add(TPUB(encoding=3, text=[meta.circle]))
         picture = AudioProcessor._picture(cover)
         if picture is not None:
+            tags.delall("APIC")
             tags.add(APIC(
                 encoding=3,
                 mime=picture.mime,
@@ -255,6 +292,62 @@ class AudioProcessor:
                 desc="Simplified Chinese LRC",
                 text=lyrics_text,
             ))
+
+    @staticmethod
+    def _sync_id3_assets(tags: ID3, cover: Optional[Path],
+                         lyrics: Optional[Path]) -> bool:
+        """Update only cover/lyrics, preserving existing title and artist tags."""
+        changed = False
+        picture = AudioProcessor._picture(cover)
+        if picture is not None:
+            current = tags.getall("APIC")
+            if not (len(current) == 1
+                    and current[0].mime == picture.mime
+                    and current[0].data == picture.data):
+                tags.delall("APIC")
+                tags.add(APIC(
+                    encoding=3, mime=picture.mime, type=3,
+                    desc="Cover", data=picture.data,
+                ))
+                changed = True
+        lyrics_text = AudioProcessor.read_lyrics(lyrics)
+        if lyrics_text is not None:
+            current_lyrics = tags.getall("USLT")
+            if not (len(current_lyrics) == 1
+                    and current_lyrics[0].desc == "Simplified Chinese LRC"
+                    and current_lyrics[0].text == lyrics_text):
+                tags.delall("USLT")
+                tags.add(USLT(
+                    encoding=3, lang="zho", desc="Simplified Chinese LRC",
+                    text=lyrics_text,
+                ))
+                changed = True
+        return changed
+
+    @staticmethod
+    def sync_mp3_assets(path: Path, cover: Optional[Path],
+                        lyrics: Optional[Path]) -> Optional[bool]:
+        """Synchronize MP3 cover/LRC only; True=updated, False=unchanged."""
+        if path.suffix.casefold() != ".mp3" or not path.is_file():
+            return None
+        try:
+            with path.open("rb") as stream:
+                header = stream.read(12)
+        except OSError:
+            return None
+        if header.startswith(b"RIFF") and header[8:12] == b"WAVE":
+            return False
+        try:
+            audio = MP3(str(path), ID3=ID3)
+            if audio.tags is None:
+                audio.add_tags()
+            changed = AudioProcessor._sync_id3_assets(audio.tags, cover, lyrics)
+            if changed:
+                audio.save(v2_version=3)
+            return changed
+        except Exception as exc:
+            logger.warning("Failed to synchronize MP3 assets %s: %s", path, exc)
+            return None
 
     @staticmethod
     def _tag_mp3(path: Path, meta: WorkMetadata, cover: Optional[Path],
