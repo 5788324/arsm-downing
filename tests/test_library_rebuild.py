@@ -62,6 +62,22 @@ def test_snapshot_recognizes_nested_nonstandard_main_cover(tmp_path: Path) -> No
     assert "no_cover" not in snapshot.entries[0].warnings
 
 
+
+def test_snapshot_uses_shared_cover_matcher_for_named_cover_directory(tmp_path: Path) -> None:
+    root = tmp_path / "library"
+    make_work(
+        root,
+        "RJ01234569 Demo",
+        {
+            "audio/track.mp3": b"audio",
+            "封面图片/01.jpg": b"image",
+        },
+    )
+
+    entry = scan_library_snapshot([root]).entries[0]
+    assert entry.has_cover == 1
+    assert "no_cover" not in entry.warnings
+
 def test_rebuild_replaces_stale_indexes_and_syncs_work_tables(tmp_path: Path) -> None:
     root = tmp_path / "library"
     work = make_work(root, "RJ01000001 New", {"track.mp3": b"x" * 9})
