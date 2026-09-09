@@ -56,3 +56,26 @@ def test_visual_fallback_ignores_scene_and_uses_cover_shaped_image(tmp_path: Pat
     Image.new("RGB", (600, 800)).save(candidate)
 
     assert find_local_cover(album) == candidate
+
+def test_visual_fallback_accepts_no_logo_artwork(tmp_path: Path) -> None:
+    album = tmp_path / "RJ01234567"
+    album.mkdir()
+    with_logo = album / "插图 含logo.jpg"
+    no_logo = album / "插图 无logo.jpg"
+    Image.new("RGB", (1200, 900)).save(with_logo)
+    Image.new("RGB", (1200, 900)).save(no_logo)
+
+    assert find_local_cover(album) == no_logo
+
+
+def test_visual_fallback_does_not_reject_normal_artwork_in_titled_folder(
+    tmp_path: Path,
+) -> None:
+    album = tmp_path / "RJ01234567"
+    artwork = album / "差分插画作品标题" / "插图.jpg"
+    variant = album / "差分插画作品标题" / "插图差分.jpg"
+    artwork.parent.mkdir(parents=True)
+    Image.new("RGB", (1200, 900)).save(artwork)
+    Image.new("RGB", (1200, 900)).save(variant)
+
+    assert find_local_cover(album) == artwork

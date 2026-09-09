@@ -67,12 +67,27 @@ def _path_signals_cover(path: Path, album: Path) -> bool:
     )
 
 
+
+def _is_rejected_visual_cover(relative: Path) -> bool:
+    """Reject clear non-cover image variants without inspecting album titles."""
+    filename = relative.name.casefold()
+    if "logo" in filename and "无logo" not in filename:
+        return True
+    for token in COVER_REJECT_KEYWORDS:
+        if token != "logo" and token in filename:
+            return True
+    rejected_directories = set(COVER_REJECT_KEYWORDS)
+    return any(
+        part.casefold() in rejected_directories
+        for part in relative.parts[:-1]
+    )
+
 def _visual_cover_rank(path: Path, album: Path) -> tuple | None:
     """Return a conservative rank for otherwise unnamed cover-like images."""
     try:
         relative = path.relative_to(album)
         lowered = "/".join(relative.parts).casefold()
-        if any(token in lowered for token in COVER_REJECT_KEYWORDS):
+        if _is_rejected_visual_cover(relative):
             return None
         with Image.open(path) as image:
             width, height = image.size
