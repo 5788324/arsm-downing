@@ -144,7 +144,7 @@ class DownloadService:
         terminal = ",".join(f"'{value}'" for value in sorted(_TERMINAL_WORK))
         return f"""
             WITH queue_keys AS (
-                SELECT rj_id FROM works
+                SELECT rj_id FROM works WHERE LOWER(COALESCE(status, '')) != 'missing'
                 UNION
                 SELECT rj_id FROM downloads
             )

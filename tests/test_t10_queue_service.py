@@ -86,6 +86,19 @@ def test_queue_snapshot_uses_two_selects_independent_of_task_count(
         vault.close()
 
 
+
+def test_missing_library_record_is_not_a_download_queue_task(tmp_path: Path) -> None:
+    vault = LibraryVault(tmp_path / "history.db")
+    try:
+        vault.execute_write(
+            "INSERT INTO works (rj_id, title, status) VALUES (?, ?, 'missing')",
+            ("RJ09999999", "Stale library row"),
+        )
+        page = DownloadService(vault).fetch_queue_page(status_filter="all")
+        assert page.items == ()
+        assert page.summary.total_tasks == 0
+    finally:
+        vault.close()
 def test_queue_item_contains_aggregate_progress_current_file_and_error(tmp_path: Path) -> None:
     vault = LibraryVault(tmp_path / "history.db")
     try:
