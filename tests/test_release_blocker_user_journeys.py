@@ -155,6 +155,26 @@ def test_complete_part_is_atomically_reconciled_without_network(tmp_path):
     db.close()
 
 
+
+def test_oversized_validated_part_is_atomically_reconciled(tmp_path, monkeypatch):
+    orc, db, _config, _kernel = make_orchestrator(tmp_path)
+    _meta, target, _dl_id, _root = seed_work(orc, db, size=10)
+    part = target.save_path.with_suffix(".mp3.part")
+    part.write_bytes(b"12345678901")
+    monkeypatch.setattr(
+        "core.orchestrator.validate_completed_local_file",
+        lambda _path: (True, "valid_media"),
+    )
+
+    result = asyncio.run(orc.resume_job("RJ00000001"))
+
+    assert result["status"] == "reconciled_complete"
+    assert result["already_complete"] == 1
+    assert target.save_path.read_bytes() == b"12345678901"
+    assert not part.exists()
+    row = row_dict(db, "RJ00000001")
+    assert row["status"] == "completed"
+
 def test_oversized_local_file_is_preserved_and_requires_review(tmp_path):
     orc, db, _config, _kernel = make_orchestrator(tmp_path)
     _meta, target, _dl_id, _root = seed_work(orc, db, size=10)

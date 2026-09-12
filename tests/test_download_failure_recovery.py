@@ -51,6 +51,19 @@ def test_structurally_valid_oversized_recovery_formats(tmp_path):
     assert validate_completed_local_file(wav_path) == (True, "valid_media")
 
 
+
+def test_structurally_valid_wav_part_uses_original_suffix(tmp_path):
+    wav_path = tmp_path / "track.wav"
+    with wave.open(str(wav_path), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(8000)
+        output.writeframes(b"\x00\x00" * 80)
+    part_path = wav_path.with_name(wav_path.name + ".part")
+    wav_path.rename(part_path)
+
+    assert validate_completed_local_file(part_path) == (True, "valid_media")
+
 def test_unknown_or_corrupt_oversized_file_stays_unverified(tmp_path):
     bad = tmp_path / "track.mp3"
     bad.write_bytes(b"not an mp3")

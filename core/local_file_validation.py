@@ -22,17 +22,27 @@ AUDIO_EXTENSIONS = {
 }
 
 
+
+def _content_suffix(path: Path) -> str:
+    """Return the original suffix when validating a downloader .part file."""
+    suffix = path.suffix.casefold()
+    if suffix == ".part":
+        return path.with_suffix("").suffix.casefold()
+    return suffix
+
+
 def validate_completed_local_file(path: Path) -> tuple[bool, str]:
     """Return whether an existing file is structurally usable.
 
     This is a recovery check, not a checksum replacement. Unknown formats and
-    malformed files remain in manual review instead of being accepted by size
-    alone.
+    malformed files remain in manual review instead of being accepted by size alone.
     """
+
+
     if not path.is_file() or path.stat().st_size <= 0:
         return False, "missing_or_empty"
 
-    suffix = path.suffix.casefold()
+    suffix = _content_suffix(path)
     try:
         if suffix in IMAGE_EXTENSIONS:
             with Image.open(path) as image:
@@ -41,7 +51,11 @@ def validate_completed_local_file(path: Path) -> tuple[bool, str]:
             return (width > 0 and height > 0), "valid_image"
 
         if suffix in AUDIO_EXTENSIONS:
-            media = mutagen.File(str(path))
+            if path.suffix.casefold() == ".part":
+                with path.open("rb") as stream:
+                    media = mutagen.File(stream)
+            else:
+                media = mutagen.File(str(path))
             info = getattr(media, "info", None) if media is not None else None
             length = getattr(info, "length", None)
             if info is not None and (length is None or float(length) >= 0):

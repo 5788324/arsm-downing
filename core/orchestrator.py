@@ -905,6 +905,32 @@ class Orchestrator:
                     summary["already_complete"] += 1
                     continue
 
+            if part_size > expected > 0:
+                valid, validation = validate_completed_local_file(part_path)
+                if valid:
+                    try:
+                        final_path.parent.mkdir(parents=True, exist_ok=True)
+                        os.replace(str(part_path), str(final_path))
+                    except OSError as exc:
+                        summary["unrecoverable"] += 1
+                        self.db.upsert_download(
+                            dl_id, rj_id, target.title, str(final_path), "failed",
+                            part_size, expected,
+                            error=f"Unable to finalize validated partial file: {exc}",
+                        )
+                        continue
+                    logger.info(
+                        "OVERSIZED_PART_RECONCILED rj=%s track=%s validation=%s "
+                        "expected=%s actual=%s",
+                        rj_id, target.title[:80], validation, expected, part_size,
+                    )
+                    self.db.upsert_download(
+                        dl_id, rj_id, target.title, str(final_path),
+                        "completed", part_size, part_size,
+                    )
+                    summary["already_complete"] += 1
+                    continue
+
             if expected > 0 and (final_size > expected or part_size > expected):
                 summary["unrecoverable"] += 1
                 self.db.upsert_download(
