@@ -70,6 +70,30 @@ def test_rendering_drops_cards_that_left_the_page(view_controller) -> None:
     assert "RJ00000002" not in view._card_controls
 
 
+def test_empty_filter_drops_detached_cards_before_nonempty_render(
+    view_controller,
+) -> None:
+    """A filter round-trip must rebuild controls removed from the ListView."""
+    view, _controller = view_controller
+    rj_id = "RJ00000001"
+    detached = view._card_controls[rj_id]
+
+    view.active_downloads = {}
+    view._render_queue_page()
+
+    assert view._card_controls == {}
+    assert view.queue_list.controls[0].content.value == "当前筛选没有任务"
+
+    view.active_downloads = {
+        rj_id: {"status": "排队中", "tracks": {}, "control": None},
+    }
+    view._render_queue_page()
+
+    assert rj_id in view._card_controls
+    assert view._card_controls[rj_id] is not detached
+    assert view.queue_list.controls == [view._card_controls[rj_id]]
+
+
 def test_select_rj_renders_detail_panel_rows(view_controller) -> None:
     view, _controller = view_controller
     _seed_tracks(view, "RJ00000002", 3)

@@ -390,6 +390,12 @@ class DownloadView(BaseDownloadView):
         """
         ordered = list(self.active_downloads.keys())
         if not ordered:
+            # Controls removed from a mounted Flet ListView must not be reused
+            # later. Keeping them cached made an empty filter render correctly,
+            # but switching back to a non-empty filter attempted to reattach
+            # detached controls and could leave the list permanently blank.
+            self._card_controls.clear()
+            self._active_ns.clear()
             self.queue_list.controls.clear()
             self.queue_list.controls.append(
                 ft.Container(
@@ -458,7 +464,7 @@ class DownloadView(BaseDownloadView):
             if control.page:
                 control.update()
         except Exception:
-            pass
+            logging.exception("Flet control update failed: %s", type(control).__name__)
 
     def _set_batch_controls_busy(self):
         self.btn_pause_all.disabled = True
