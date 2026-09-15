@@ -121,6 +121,9 @@ class WorkStatus(Enum):
         ):
             return WorkStatus.NO_PENDING
 
+        if "no tracks found" in s_lower or s == "未找到文件":
+            return WorkStatus.NO_PENDING
+
         if s_lower in ("cancelled", "canceled") or s in ("已取消", "任务已取消"):
             return WorkStatus.CANCELLED
 
@@ -135,7 +138,8 @@ class WorkStatus(Enum):
         if s in ("重复", "已重复") or "duplicate" in s_lower:
             return WorkStatus.DUPLICATE
 
-        if s.startswith("Failed") or s.startswith("Error") or s in ("failed", "下载失败", "错误") or s.startswith("错误"):
+        if (s.startswith("Failed") or s.startswith("Error")
+                or s_lower.startswith("path failed") or s in ("failed", "下载失败", "错误") or s.startswith("错误")):
             return WorkStatus.FAILED
 
         if s in ("已完成", "Completed", "completed"):

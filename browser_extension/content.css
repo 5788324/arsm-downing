@@ -1,0 +1,102 @@
+.arsm-extension-controls {
+  align-items: center;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: 8px;
+  position: relative;
+  z-index: 3;
+}
+
+.arsm-extension-controls--detail {
+  display: flex;
+  margin: 12px 0;
+}
+
+.arsm-extension-badge {
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  box-sizing: border-box;
+  display: inline-flex;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1;
+  min-height: 24px;
+  padding: 5px 9px;
+  white-space: nowrap;
+}
+
+.arsm-extension-badge[data-tone="success"] {
+  background: rgba(16, 185, 129, 0.14);
+  border-color: rgba(16, 185, 129, 0.45);
+  color: #34d399;
+}
+
+.arsm-extension-badge[data-tone="pending"] {
+  background: rgba(139, 92, 246, 0.16);
+  border-color: rgba(139, 92, 246, 0.48);
+  color: #c4b5fd;
+}
+
+.arsm-extension-badge[data-tone="warning"] {
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(245, 158, 11, 0.45);
+  color: #fbbf24;
+}
+
+.arsm-extension-badge[data-tone="danger"] {
+  background: rgba(239, 68, 68, 0.14);
+  border-color: rgba(239, 68, 68, 0.45);
+  color: #f87171;
+}
+
+.arsm-extension-badge[data-tone="neutral"] {
+  background: rgba(148, 163, 184, 0.12);
+  border-color: rgba(148, 163, 184, 0.38);
+  color: #cbd5e1;
+}
+
+.arsm-extension-badge[data-tone="muted"] {
+  background: rgba(100, 116, 139, 0.12);
+  border-color: rgba(100, 116, 139, 0.32);
+  color: #94a3b8;
+}
+
+.arsm-extension-button {
+  appearance: none;
+  background: #7c3aed;
+  border: 1px solid #8b5cf6;
+  border-radius: 8px;
+  box-sizing: border-box;
+  color: #ffffff;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1;
+  min-height: 28px;
+  padding: 7px 10px;
+  white-space: nowrap;
+}
+
+.arsm-extension-button:hover {
+  background: #6d28d9;
+}
+
+.arsm-extension-button:focus-visible {
+  outline: 2px solid #c4b5fd;
+  outline-offset: 2px;
+}
+
+.arsm-extension-button:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
+.arsm-extension-controls--detail .arsm-extension-button {
+  font-size: 14px;
+  min-height: 38px;
+  padding: 10px 15px;
+}

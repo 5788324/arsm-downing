@@ -15,6 +15,7 @@ from core.library_diagnostics import (
     classify_library_anomalies,
     flatten_anomaly_groups,
 )
+from core.media_assets import find_local_cover
 from ui.theme import (
     ACCENT_PRIMARY,
     ACCENT_SECONDARY,
@@ -28,10 +29,6 @@ from ui.theme import (
 LIBRARY_PAGE_SIZE = 20
 FILE_PREVIEW_LIMIT = 200
 ANOMALY_DISPLAY_LIMIT = 200
-COVER_CANDIDATES = (
-    "cover.jpg", "cover.jpeg", "cover.png", "cover.webp",
-    "main.jpg", "main.png", "package.jpg", "package.png",
-)
 
 # Compatibility map retained for historical diagnostics and any future status
 # badges.  The new card view is index-first, but old scripts still import it.
@@ -421,11 +418,30 @@ class LibraryView(ft.Container):
         self.btn_next.disabled = self._current_page + 1 >= total_pages
 
         items = snapshot.get("items", [])
+        self.detail_panel.visible = bool(items)
         if not items:
+            has_query = bool(search) or category != "all"
+            message = "没有匹配的资源库记录" if has_query else "资源库还是空的"
+            controls: list[ft.Control] = [
+                ft.Icon(ft.Icons.LIBRARY_MUSIC_OUTLINED, size=42, color=ACCENT_PRIMARY),
+                ft.Text(message, color="grey", size=14),
+            ]
+            navigate = getattr(self.app_controller, "navigate_to_view", None)
+            if not has_query and callable(navigate):
+                controls.extend([
+                    ft.Text("先在设置中添加仓库目录，再到系统工具扫描索引。",
+                            color="grey", size=12),
+                    ft.ElevatedButton(
+                        "去设置仓库目录", icon=ft.Icons.SETTINGS,
+                        on_click=lambda _e: navigate(3),
+                    ),
+                ])
             self.grid.controls.append(ft.Container(
                 alignment=ft.alignment.center,
                 padding=40,
-                content=ft.Text("没有匹配的资源库记录", color="grey", size=14),
+                content=ft.Column(controls,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=10),
             ))
             return
 
@@ -450,7 +466,7 @@ class LibraryView(ft.Container):
             ]
             if int(item.get("audio_count", 0)) > 0:
                 badges.append(_badge(f"{int(item['audio_count'])} 音频", SUCCESS))
-            if not item.get("has_cover"):
+            if not cover_src:
                 badges.append(_badge("无本地封面", WARNING))
 
             card = ft.Column([
@@ -724,26 +740,10 @@ def _badge(text: str, color: str) -> ft.Container:
 
 
 def _resolve_local_cover(folder_path: str, has_cover: bool) -> str | None:
-    if not folder_path or not has_cover:
+    if not folder_path:
         return None
-    root = Path(folder_path)
-    if not root.is_dir():
-        return None
-    for name in COVER_CANDIDATES:
-        candidate = root / name
-        if candidate.is_file():
-            return str(candidate)
-    try:
-        for child in root.iterdir():
-            if (
-                child.is_file()
-                and child.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
-                and ("cover" in child.name.lower() or "package" in child.name.lower())
-            ):
-                return str(child)
-    except OSError:
-        return None
-    return None
+    cover = find_local_cover(folder_path)
+    return str(cover) if cover else None
 
 
 def _cover_widget(source: str, height: int = 180) -> ft.Container:

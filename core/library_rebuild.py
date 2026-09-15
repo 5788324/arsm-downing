@@ -15,16 +15,13 @@ from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 from uuid import uuid4
 
+from core.media_assets import find_local_cover
+
 AUDIO_EXTENSIONS = {
     ".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma",
 }
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".avi", ".mov", ".wmv"}
-COVER_NAMES = {
-    "cover.jpg", "cover.jpeg", "cover.png", "cover.webp",
-    "main.jpg", "main.jpeg", "main.png", "main.webp",
-    "package.jpg", "package.jpeg", "package.png", "package.webp",
-}
 ACTIVE_DOWNLOAD_STATUSES = {"queued", "paused", "downloading", "failed", "resuming"}
 
 
@@ -157,7 +154,6 @@ def _path_key(path: str | Path) -> str:
 
 def _scan_work_dir(path: Path, *, rj_id: str, library_root: Path) -> LibraryScanEntry:
     audio = image = video = other = total_files = total_size = 0
-    has_cover = False
     warning_set: set[str] = set()
 
     try:
@@ -195,8 +191,6 @@ def _scan_work_dir(path: Path, *, rj_id: str, library_root: Path) -> LibraryScan
                     video += 1
                 else:
                     other += 1
-                if lowered in COVER_NAMES:
-                    has_cover = True
                 if suffix == ".part" or lowered.endswith(".part"):
                     warning_set.add("contains_part")
     except PermissionError as exc:
@@ -204,6 +198,7 @@ def _scan_work_dir(path: Path, *, rj_id: str, library_root: Path) -> LibraryScan
     except OSError as exc:
         raise LibraryScanError(f"Filesystem error while scanning {path}: {exc}") from exc
 
+    has_cover = find_local_cover(path) is not None
     if audio == 0:
         warning_set.add("no_audio")
     if not has_cover:

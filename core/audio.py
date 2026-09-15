@@ -1,20 +1,24 @@
 from __future__ import annotations
 
 import base64
+import html
 import logging
+import os
 from pathlib import Path
+import re
 from typing import Optional
 
 import mutagen
 from mutagen.aiff import AIFF
 from mutagen.asf import ASF
 from mutagen.flac import FLAC, Picture
-from mutagen.id3 import APIC, ID3, TALB, TIT2, TPE1, TPUB
+from mutagen.id3 import APIC, ID3, TALB, TIT2, TPE1, TPUB, USLT
 from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4, MP4Cover
 from mutagen.oggopus import OggOpus
 from mutagen.oggvorbis import OggVorbis
 from mutagen.wave import WAVE
+from opencc import OpenCC
 
 from core.models import WorkMetadata
 
@@ -29,9 +33,14 @@ class AudioProcessor:
         ".m4a", ".m4b", ".mp4", ".wav", ".wave", ".aif", ".aiff",
         ".wma", ".asf",
     }
+    _t2s = OpenCC("t2s")
+    _VTT_TIMESTAMP = re.compile(
+        r"^(?:(\d+):)?(\d{2}):(\d{2})[.,](\d{1,3})"
+    )
 
     @staticmethod
-    def apply_tags(path: Path, meta: WorkMetadata, cover: Optional[Path]) -> bool:
+    def apply_tags(path: Path, meta: WorkMetadata, cover: Optional[Path],
+                   lyrics: Optional[Path] = None) -> bool:
         """Apply metadata and return whether the format was tagged successfully.
 
         Tagging remains best-effort: callers may log the result, but a corrupt or
@@ -44,7 +53,7 @@ class AudioProcessor:
         ext = path.suffix.lower()
         try:
             if ext == ".mp3":
-                AudioProcessor._tag_mp3(path, meta, cover)
+                AudioProcessor._tag_mp3(path, meta, cover, lyrics)
             elif ext == ".flac":
                 AudioProcessor._tag_flac(path, meta, cover)
             elif ext in {".ogg", ".oga"}:
@@ -103,8 +112,161 @@ class AudioProcessor:
         return picture
 
     @staticmethod
-    def _write_id3(tags: ID3, path: Path, meta: WorkMetadata, cover: Optional[Path]) -> None:
-        for key in ("TIT2", "TPE1", "TALB", "TPUB", "APIC"):
+    def is_tagged_mp3(path: Path) -> bool:
+        """Recognize a completed MP3 whose local size includes managed tags."""
+        if path.suffix.lower() != ".mp3" or not path.is_file():
+            return False
+        try:
+            audio = MP3(str(path), ID3=ID3)
+            return bool(audio.tags and audio.tags.getall("APIC"))
+        except Exception:
+            return False
+
+    @staticmethod
+    def has_embedded_cover(path: Path) -> bool:
+        """Recognize media enlarged by ARSM cover-tag post-processing."""
+        if (path.suffix.lower() not in AudioProcessor.SUPPORTED_EXTENSIONS
+                or not path.is_file()):
+            return False
+        try:
+            audio = mutagen.File(str(path))
+            if audio is None:
+                return False
+            if bool(getattr(audio, "pictures", None)):
+                return True
+            tags = getattr(audio, "tags", None)
+            if not tags:
+                return False
+            if hasattr(tags, "getall") and tags.getall("APIC"):
+                return True
+            keys = {str(key).casefold() for key in tags.keys()}
+            return (
+                any(key.startswith("apic:") for key in keys)
+                or bool(keys & {
+                    "covr", "metadata_block_picture", "wm/picture",
+                })
+            )
+        except Exception:
+            return False
+
+    @staticmethod
+    def canonical_lyrics_path(path: Path, suffix: str = ".lrc") -> Path:
+        """Strip a trailing audio extension from a lyric sidecar stem."""
+        stem = path.stem
+        while Path(stem).suffix.casefold() in AudioProcessor.SUPPORTED_EXTENSIONS:
+            stem = Path(stem).stem
+        normalized_suffix = suffix if suffix.startswith(".") else f".{suffix}"
+        return path.with_name(f"{stem}{normalized_suffix.lower()}")
+
+    @staticmethod
+    def _decode_text(payload: bytes) -> str:
+        if payload.startswith((b"\xff\xfe", b"\xfe\xff")):
+            return payload.decode("utf-16")
+        try:
+            return payload.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            utf8_repaired = payload.decode("utf-8-sig", errors="replace")
+            # A nearly-valid UTF-8 VTT must not be mistaken for BOM-less UTF-16.
+            if "-->" in utf8_repaired:
+                return utf8_repaired
+        for encoding in ("gb18030", "big5"):
+            try:
+                return payload.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+        return utf8_repaired
+
+    @staticmethod
+    def vtt_to_lrc_text(text: str) -> str:
+        """Convert WebVTT cues to Simplified-Chinese LRC lines."""
+        lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        output: list[str] = []
+        index = 0
+        while index < len(lines):
+            line = lines[index].strip()
+            if "-->" not in line:
+                index += 1
+                continue
+            start = line.split("-->", 1)[0].strip()
+            match = AudioProcessor._VTT_TIMESTAMP.match(start)
+            index += 1
+            if not match:
+                continue
+            hours = int(match.group(1) or 0)
+            minutes = int(match.group(2)) + hours * 60
+            seconds = int(match.group(3))
+            millis = int(match.group(4).ljust(3, "0")[:3])
+            stamp = f"[{minutes:02d}:{seconds:02d}.{millis // 10:02d}]"
+            while index < len(lines) and lines[index].strip():
+                cue = re.sub(r"<[^>]+>", "", lines[index]).strip()
+                cue = html.unescape(cue)
+                if cue:
+                    output.append(stamp + AudioProcessor._t2s.convert(cue))
+                index += 1
+        return "\n".join(output)
+
+    @staticmethod
+    def prepare_lyrics_sidecar(path: Path) -> Optional[Path]:
+        """Create a canonical LRC while preserving the tracked source file."""
+        if not path.is_file() or path.suffix.casefold() not in {".lrc", ".vtt"}:
+            return None
+        destination = AudioProcessor.canonical_lyrics_path(path, ".lrc")
+        if path.suffix.casefold() == ".lrc" and destination == path:
+            return path
+        try:
+            text = AudioProcessor._decode_text(path.read_bytes())
+            if path.suffix.casefold() == ".vtt":
+                text = AudioProcessor.vtt_to_lrc_text(text)
+            else:
+                text = AudioProcessor._t2s.convert(text)
+            if not text.strip():
+                return None
+            temp = destination.with_name(destination.name + ".tmp")
+            temp.write_text(text.rstrip() + "\n", encoding="utf-8")
+            os.replace(temp, destination)
+            return destination
+        except OSError as exc:
+            logger.warning("Failed to prepare lyric sidecar %s: %s", path, exc)
+            return None
+
+    @staticmethod
+    def read_lyrics(path: Optional[Path]) -> Optional[str]:
+        """Read an LRC sidecar and normalize Traditional Chinese to Simplified."""
+        if not path or not path.is_file():
+            return None
+        payload = path.read_bytes()
+        text = AudioProcessor._decode_text(payload)
+        return AudioProcessor._t2s.convert(text)
+
+    @staticmethod
+    def find_matching_lyrics(audio: Path, candidates: list[Path]) -> Optional[Path]:
+        """Choose the nearest same-stem LRC without crossing locale folders."""
+        matches = [
+            candidate for candidate in candidates
+            if candidate.stem.casefold() == audio.stem.casefold()
+        ]
+        if not matches:
+            return None
+
+        def distance(candidate: Path) -> tuple[int, str]:
+            audio_parts = audio.parent.parts
+            lyric_parts = candidate.parent.parts
+            shared = 0
+            for left, right in zip(audio_parts, lyric_parts):
+                if left.casefold() != right.casefold():
+                    break
+                shared += 1
+            return (
+                len(audio_parts) + len(lyric_parts) - 2 * shared,
+                str(candidate).casefold(),
+            )
+
+        return min(matches, key=distance)
+
+    @staticmethod
+    def _write_id3(tags: ID3, path: Path, meta: WorkMetadata,
+                   cover: Optional[Path], lyrics: Optional[Path] = None) -> None:
+        for key in ("TIT2", "TPE1", "TALB", "TPUB"):
             tags.delall(key)
         tags.add(TIT2(encoding=3, text=[path.stem]))
         tags.add(TPE1(encoding=3, text=[AudioProcessor._artist(meta)]))
@@ -113,6 +275,7 @@ class AudioProcessor:
             tags.add(TPUB(encoding=3, text=[meta.circle]))
         picture = AudioProcessor._picture(cover)
         if picture is not None:
+            tags.delall("APIC")
             tags.add(APIC(
                 encoding=3,
                 mime=picture.mime,
@@ -120,13 +283,79 @@ class AudioProcessor:
                 desc="Cover",
                 data=picture.data,
             ))
+        lyrics_text = AudioProcessor.read_lyrics(lyrics)
+        if lyrics_text is not None:
+            tags.delall("USLT")
+            tags.add(USLT(
+                encoding=3,
+                lang="zho",
+                desc="Simplified Chinese LRC",
+                text=lyrics_text,
+            ))
 
     @staticmethod
-    def _tag_mp3(path: Path, meta: WorkMetadata, cover: Optional[Path]) -> None:
+    def _sync_id3_assets(tags: ID3, cover: Optional[Path],
+                         lyrics: Optional[Path]) -> bool:
+        """Update only cover/lyrics, preserving existing title and artist tags."""
+        changed = False
+        picture = AudioProcessor._picture(cover)
+        if picture is not None:
+            current = tags.getall("APIC")
+            if not (len(current) == 1
+                    and current[0].mime == picture.mime
+                    and current[0].data == picture.data):
+                tags.delall("APIC")
+                tags.add(APIC(
+                    encoding=3, mime=picture.mime, type=3,
+                    desc="Cover", data=picture.data,
+                ))
+                changed = True
+        lyrics_text = AudioProcessor.read_lyrics(lyrics)
+        if lyrics_text is not None:
+            current_lyrics = tags.getall("USLT")
+            if not (len(current_lyrics) == 1
+                    and current_lyrics[0].desc == "Simplified Chinese LRC"
+                    and current_lyrics[0].text == lyrics_text):
+                tags.delall("USLT")
+                tags.add(USLT(
+                    encoding=3, lang="zho", desc="Simplified Chinese LRC",
+                    text=lyrics_text,
+                ))
+                changed = True
+        return changed
+
+    @staticmethod
+    def sync_mp3_assets(path: Path, cover: Optional[Path],
+                        lyrics: Optional[Path]) -> Optional[bool]:
+        """Synchronize MP3 cover/LRC only; True=updated, False=unchanged."""
+        if path.suffix.casefold() != ".mp3" or not path.is_file():
+            return None
+        try:
+            with path.open("rb") as stream:
+                header = stream.read(12)
+        except OSError:
+            return None
+        if header.startswith(b"RIFF") and header[8:12] == b"WAVE":
+            return False
+        try:
+            audio = MP3(str(path), ID3=ID3)
+            if audio.tags is None:
+                audio.add_tags()
+            changed = AudioProcessor._sync_id3_assets(audio.tags, cover, lyrics)
+            if changed:
+                audio.save(v2_version=3)
+            return changed
+        except Exception as exc:
+            logger.warning("Failed to synchronize MP3 assets %s: %s", path, exc)
+            return None
+
+    @staticmethod
+    def _tag_mp3(path: Path, meta: WorkMetadata, cover: Optional[Path],
+                 lyrics: Optional[Path] = None) -> None:
         audio = MP3(str(path), ID3=ID3)
         if audio.tags is None:
             audio.add_tags()
-        AudioProcessor._write_id3(audio.tags, path, meta, cover)
+        AudioProcessor._write_id3(audio.tags, path, meta, cover, lyrics)
         audio.save(v2_version=3)
 
     @staticmethod

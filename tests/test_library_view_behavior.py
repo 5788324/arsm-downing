@@ -40,12 +40,16 @@ class FakeController:
             library_paths=[str(tmp_path / "Library")],
         )
         self.snacks = []
+        self.navigations = []
 
     def run_blocking(self, function, on_success, **_kwargs):
         on_success(function())
 
     def show_snack(self, message):
         self.snacks.append(message)
+
+    def navigate_to_view(self, index):
+        self.navigations.append(index)
 
 
 def test_library_search_is_forwarded_to_database(tmp_path: Path) -> None:
@@ -55,6 +59,48 @@ def test_library_search_is_forwarded_to_database(tmp_path: Path) -> None:
     view.on_search()
     assert controller.db.page_calls[-1]["search"] == "RJ00000042"
     assert "搜索“RJ00000042”" in view.page_info.value
+
+
+def test_empty_library_guides_user_to_settings(tmp_path: Path) -> None:
+    controller = FakeController(tmp_path)
+    view = LibraryView(controller)
+    view.load_library()
+
+    empty = view.grid.controls[0].content
+    assert any(getattr(control, "value", "") == "资源库还是空的"
+               for control in empty.controls)
+    button = next(control for control in empty.controls
+                  if getattr(control, "text", "") == "去设置仓库目录")
+    button.on_click(None)
+    assert controller.navigations == [3]
+    assert view.detail_panel.visible is False
+
+
+def test_library_with_items_shows_detail_panel(tmp_path: Path) -> None:
+    view = LibraryView(FakeController(tmp_path))
+    view._apply_cards({
+        "page": 0,
+        "total_pages": 1,
+        "total": 1,
+        "search": "",
+        "category": "all",
+        "sort": "size_desc",
+        "works_count": 1,
+        "summary": {},
+        "items": [{
+            "rj_id": "RJ00000001",
+            "folder_path": str(tmp_path / "RJ00000001"),
+            "folder_name": "Sample",
+            "total_files": 2,
+            "total_size": 10,
+            "audio_count": 1,
+            "has_audio": True,
+            "has_cover": False,
+            "warnings": [],
+        }],
+    })
+
+    assert view.detail_panel.visible is True
 
 
 def test_library_summary_is_dynamic(tmp_path: Path) -> None:

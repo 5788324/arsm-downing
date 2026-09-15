@@ -6,6 +6,7 @@ import logging
 import random
 from typing import Optional
 from aiohttp import ClientTimeout
+from yarl import URL
 
 from core.config import ConfigManager, HOSTNAME_MIRRORS
 
@@ -143,4 +144,6 @@ class NetworkKernel:
             "STREAM purpose=%s route=%s url=%s",
             purpose, "direct" if direct else (proxy or "direct"), url,
         )
-        return await self.session.get(url, headers=headers, proxy=proxy)
+        return await self.session.get(
+            URL(url, encoded=True), headers=headers, proxy=proxy
+        )

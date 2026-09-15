@@ -74,11 +74,59 @@ def test_queue_snapshot_uses_two_selects_independent_of_task_count(
         assert len(selects) == 2
         assert page.summary.total_tasks == count
         assert len(page.items) <= 24
-        assert all(not item.is_terminal for item in page.items)
+        # The "working" fetch includes non-terminal items PLUS terminal download
+        # works (completed/registered) as disk re-verification candidates; the
+        # full apply_disk_verification pipeline resolves which of those stay.
+        assert all(
+            not item.is_terminal
+            or str(item.work_status or "").lower() in {"completed", "registered"}
+            for item in page.items
+        )
     finally:
         vault.close()
 
 
+def test_queue_snapshot_is_reused_until_sqlite_changes(tmp_path: Path) -> None:
+    vault = LibraryVault(tmp_path / "history.db")
+    try:
+        _seed(vault, 50)
+        service = DownloadService(vault)
+        selects: list[str] = []
+        vault.conn.set_trace_callback(
+            lambda sql: selects.append(sql)
+            if sql.lstrip().upper().startswith(("SELECT", "WITH")) else None
+        )
+
+        first = service.fetch_queue_page(status_filter="working", page=1)
+        second = service.fetch_queue_page(status_filter="paused", page=1)
+        assert len(selects) == 2
+        assert first.summary.total_tasks == second.summary.total_tasks == 50
+
+        vault.execute_write(
+            "INSERT INTO works (rj_id, title, status) VALUES (?, ?, ?)",
+            ("RJ09999998", "New queued work", "queued"),
+        )
+        refreshed = service.fetch_queue_page(status_filter="all", page=1)
+        assert len(selects) == 4
+        assert refreshed.summary.total_tasks == 51
+    finally:
+        vault.conn.set_trace_callback(None)
+        vault.close()
+
+
+
+def test_missing_library_record_is_not_a_download_queue_task(tmp_path: Path) -> None:
+    vault = LibraryVault(tmp_path / "history.db")
+    try:
+        vault.execute_write(
+            "INSERT INTO works (rj_id, title, status) VALUES (?, ?, 'missing')",
+            ("RJ09999999", "Stale library row"),
+        )
+        page = DownloadService(vault).fetch_queue_page(status_filter="all")
+        assert page.items == ()
+        assert page.summary.total_tasks == 0
+    finally:
+        vault.close()
 def test_queue_item_contains_aggregate_progress_current_file_and_error(tmp_path: Path) -> None:
     vault = LibraryVault(tmp_path / "history.db")
     try:
@@ -148,3 +196,107 @@ def test_normalize_rj_supports_number_code_and_asmr_one_url() -> None:
     assert normalize_rj_id("https://asmr.one/work/RJ01583845") == "RJ01583845"
     assert normalize_rj_id("RJ123") is None
     assert normalize_rj_id("prefixRJ01583845") is None
+
+
+def test_working_page_does_not_cap_more_than_200_queued_works(tmp_path: Path) -> None:
+    vault = LibraryVault(tmp_path / "history.db")
+    try:
+        count = 214
+        works = []
+        downloads = []
+        for index in range(count):
+            rj_id = f"RJ{index + 1:08d}"
+            works.append((rj_id, f"Title {index}", "queued"))
+            downloads.append((
+                f"{rj_id}:1", rj_id, "track.mp3",
+                str(tmp_path / rj_id / "track.mp3"), "queued", 0, 100,
+            ))
+        vault.conn.executemany(
+            "INSERT INTO works (rj_id,title,status) VALUES (?,?,?)", works)
+        vault.conn.executemany(
+            """INSERT INTO downloads
+               (id,rj_id,track_title,local_path,status,downloaded_bytes,total_bytes)
+               VALUES (?,?,?,?,?,?,?)""",
+            downloads,
+        )
+        vault.conn.commit()
+
+        service = DownloadService(vault)
+        page = service.fetch_working_page(page=9, page_size=24)
+
+        assert page.summary.queued_tasks == 214
+        assert page.total_items == 214
+        assert page.page_count == 9
+        assert page.page == 9
+        assert len(page.items) == 22
+    finally:
+        vault.close()
+
+
+def test_working_page_excludes_completed_without_disk_verification(tmp_path: Path, monkeypatch) -> None:
+    vault = LibraryVault(tmp_path / "history.db")
+    try:
+        rj_id = "RJ00999999"
+        work = tmp_path / rj_id
+        work.mkdir()
+        vault.conn.execute(
+            "INSERT INTO works (rj_id,title,status,local_path) VALUES (?,?,?,?)",
+            (rj_id, "Missing", "registered", str(work)),
+        )
+        vault.conn.execute(
+            """INSERT INTO downloads
+               (id,rj_id,track_title,local_path,status,downloaded_bytes,total_bytes)
+               VALUES (?,?,?,?,?,?,?)""",
+            ("d1", rj_id, "missing.mp3", str(work / "missing.mp3"),
+             "registered", 100, 100),
+        )
+        vault.conn.commit()
+        service = DownloadService(vault)
+        calls = []
+        original = service.apply_disk_verification
+        monkeypatch.setattr(
+            service, "apply_disk_verification",
+            lambda *args, **kwargs: (calls.append(True), original(*args, **kwargs))[1],
+        )
+
+        first = service.fetch_working_page(page=1, page_size=24)
+        second = service.fetch_working_page(page=1, page_size=24)
+
+        assert first.total_items == second.total_items == 0
+        assert calls == []
+    finally:
+        vault.close()
+
+
+def test_pristine_queued_page_skips_disk_verification(tmp_path: Path, monkeypatch) -> None:
+    vault = LibraryVault(tmp_path / "history.db")
+    try:
+        rj_id = "RJ00888888"
+        work = tmp_path / rj_id
+        work.mkdir()
+        vault.conn.execute(
+            "INSERT INTO works (rj_id,title,status,local_path) VALUES (?,?,?,?)",
+            (rj_id, "Queued", "queued", str(work)),
+        )
+        vault.conn.execute(
+            """INSERT INTO downloads
+               (id,rj_id,track_title,local_path,status,downloaded_bytes,total_bytes)
+               VALUES (?,?,?,?,?,?,?)""",
+            ("d1", rj_id, "track.mp3", str(work / "track.mp3"),
+             "queued", 0, 100),
+        )
+        vault.conn.commit()
+        service = DownloadService(vault)
+        calls = []
+        original = service.apply_disk_verification
+        monkeypatch.setattr(
+            service, "apply_disk_verification",
+            lambda *args, **kwargs: (calls.append(True), original(*args, **kwargs))[1],
+        )
+
+        page = service.fetch_working_page(page=1, page_size=24)
+
+        assert page.total_items == 1
+        assert calls == []
+    finally:
+        vault.close()

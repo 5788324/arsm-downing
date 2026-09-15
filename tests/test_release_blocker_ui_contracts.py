@@ -206,9 +206,8 @@ def test_download_center_filter_and_batch_labels_match_visible_flet_controls():
         "queued": "等待中",
         "paused": "已暂停",
         "failed": "失败",
-        "completed": "已完成",
         "cancelled": "已取消",
-        "all": "全部",
+        "queue_all": "全部任务",
     }
     cls = class_node("ui/views/download_view.py", "DownloadView")
     visible_strings = {
