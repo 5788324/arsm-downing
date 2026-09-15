@@ -86,6 +86,34 @@ def test_queue_snapshot_uses_two_selects_independent_of_task_count(
         vault.close()
 
 
+def test_queue_snapshot_is_reused_until_sqlite_changes(tmp_path: Path) -> None:
+    vault = LibraryVault(tmp_path / "history.db")
+    try:
+        _seed(vault, 50)
+        service = DownloadService(vault)
+        selects: list[str] = []
+        vault.conn.set_trace_callback(
+            lambda sql: selects.append(sql)
+            if sql.lstrip().upper().startswith(("SELECT", "WITH")) else None
+        )
+
+        first = service.fetch_queue_page(status_filter="working", page=1)
+        second = service.fetch_queue_page(status_filter="paused", page=1)
+        assert len(selects) == 2
+        assert first.summary.total_tasks == second.summary.total_tasks == 50
+
+        vault.execute_write(
+            "INSERT INTO works (rj_id, title, status) VALUES (?, ?, ?)",
+            ("RJ09999998", "New queued work", "queued"),
+        )
+        refreshed = service.fetch_queue_page(status_filter="all", page=1)
+        assert len(selects) == 4
+        assert refreshed.summary.total_tasks == 51
+    finally:
+        vault.conn.set_trace_callback(None)
+        vault.close()
+
+
 
 def test_missing_library_record_is_not_a_download_queue_task(tmp_path: Path) -> None:
     vault = LibraryVault(tmp_path / "history.db")

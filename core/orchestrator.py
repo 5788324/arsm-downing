@@ -545,6 +545,13 @@ class Orchestrator:
                 task.cancel()
                 active_cancelled += 1
 
+        # A resume can be awaiting metadata while the user presses Pause All.
+        # Mark those preparations with the same cooperative pause token so
+        # their post-await guard cannot put the work back into the queue.
+        for rj_id in tuple(self.resuming_rj_ids):
+            self.cancelled_rjs.add(rj_id)
+            self.speed.pause_work(rj_id)
+
         drained = 0
         while not self.download_queue.empty():
             try:
@@ -714,7 +721,11 @@ class Orchestrator:
         }
         logger.info("resume_all: starting %s works", len(rj_ids))
         self._log_concurrency_state("resume_all_start")
-        for rj_id in rj_ids:
+        for index, rj_id in enumerate(rj_ids):
+            if self.global_paused:
+                # Pause All wins over the remainder of an in-progress batch.
+                stats["paused_during_resume"] += len(rj_ids) - index
+                break
             try:
                 result = await self._resume_one(rj_id)
             except Exception:
@@ -740,6 +751,10 @@ class Orchestrator:
                 "metadata_required", "unrecoverable", "skipped_cancelled",
             ):
                 stats[key] += int(result.get(key, 0) or 0)
+            # Reconciliation performs synchronous SQLite/file checks. Yield
+            # between albums so workers, progress events and Pause All remain
+            # responsive while a large batch is being restored.
+            await asyncio.sleep(0)
         logger.info("resume_all DONE: %s", stats)
         self._log_concurrency_state("resume_all_done")
         return stats
@@ -1064,6 +1079,17 @@ class Orchestrator:
 
         for rj_id in sorted(rj_groups):
             statuses = rj_groups[rj_id]
+
+            # A Pause All can race with an older resume batch: every child
+            # row is safely paused, but the resume coroutine may leave the
+            # parent work labelled queued. Repair only that contradictory
+            # parent label; no file row or local file is removed.
+            if statuses == {"paused"}:
+                work_status = (self.db.get_works_status(rj_id) or "").lower()
+                if work_status in {"queued", "downloading", "resuming", "prepared"}:
+                    self.db.execute_write(
+                        "UPDATE works SET status='paused' WHERE rj_id=?", (rj_id,)
+                    )
 
             # Only normalize truly interrupted states (downloading/resuming).
             # queued and paused stay as-is.
@@ -1523,7 +1549,10 @@ class Orchestrator:
         if part_path.exists() and track.size > 0 and part_path.stat().st_size > track.size:
             part_path.unlink()
 
-        retry_count = max(1, int(self.config.retry_count))
+        # One transport retry is the safe minimum. Historical configs may
+        # contain ``retry_count: 1`` (previously meaning one total attempt),
+        # which turned a transient socket timeout straight into a failed row.
+        retry_count = max(2, int(self.config.retry_count))
         existing_size = local_partial_size(final_path, part_path, track.size)
 
         # ── Issue #20 / review: transport retry budget is SEPARATE from the

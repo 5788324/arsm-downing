@@ -603,6 +603,31 @@ def test_pause_all_cancels_active_work_before_bulk_persistence(tmp_path) -> None
     db.close()
 
 
+def test_pause_all_marks_inflight_resume_as_cooperatively_paused(tmp_path) -> None:
+    orc, db, _config, _kernel = make_orchestrator(tmp_path)
+    orc.resuming_rj_ids.add("RJ00000002")
+
+    orc.pause_all()
+
+    assert "RJ00000002" in orc.cancelled_rjs
+    db.close()
+
+
+def test_startup_repairs_queued_parent_when_all_children_are_paused(tmp_path) -> None:
+    orc, db, config, _kernel = make_orchestrator(tmp_path)
+    seed_work(orc, db, status="paused")
+    db.execute_write(
+        "UPDATE works SET status='queued' WHERE rj_id=?", ("RJ00000001",)
+    )
+    config.auto_resume_on_start = False
+
+    asyncio.run(orc.restore_pending_downloads())
+
+    assert db.get_works_status("RJ00000001") == "paused"
+    assert row_dict(db, "RJ00000001")["status"] == "paused"
+    db.close()
+
+
 def test_resume_all_releases_global_gate_before_reconciling_jobs() -> None:
     orc = Orchestrator.__new__(Orchestrator)
     orc.global_paused = True
@@ -620,6 +645,29 @@ def test_resume_all_releases_global_gate_before_reconciling_jobs() -> None:
 
     assert observed == [False]
     assert stats["resumed_to_queue"] == 1
+
+
+def test_pause_all_interrupts_remaining_resume_batch() -> None:
+    orc = Orchestrator.__new__(Orchestrator)
+    orc.global_paused = True
+    orc.pause_generation = 7
+    orc.resume_all = lambda: ["RJ00000001", "RJ00000002"]
+    orc._log_concurrency_state = lambda _label: None
+    observed = []
+
+    async def resume_one(rj_id):
+        observed.append(rj_id)
+        asyncio.get_running_loop().call_soon(
+            setattr, orc, "global_paused", True
+        )
+        return {"status": "queued"}
+
+    orc._resume_one = resume_one
+    stats = asyncio.run(orc._resume_all_async())
+
+    assert observed == ["RJ00000001"]
+    assert stats["resumed_to_queue"] == 1
+    assert stats["paused_during_resume"] == 1
 
 
 def test_oversized_tagged_media_is_reconciled_without_redownload(tmp_path, monkeypatch):

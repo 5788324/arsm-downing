@@ -39,7 +39,10 @@ class FakeKernel:
 
     async def stream(self, _url, _headers=None, purpose="download"):
         assert purpose == "download"
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        return response
 
     async def shutdown(self):
         return None
@@ -70,6 +73,24 @@ def make_track(path: Path, size: int) -> TrackItem:
         id="1", title=path.name, type="audio",
         url="https://example.invalid/track", size=size, save_path=path,
     )
+
+
+def test_retry_count_one_still_retries_a_transient_timeout(tmp_path: Path) -> None:
+    success = FakeResponse(
+        200, chunks=[b"abcd"], headers={"Content-Length": "4"}
+    )
+    orc, db = make_orchestrator(
+        tmp_path, [asyncio.TimeoutError("temporary timeout"), success],
+        retry_count=1,
+    )
+    final = tmp_path / "track.mp3"
+
+    result = asyncio.run(orc.download_file(
+        make_track(final, 4), make_meta(), None, asyncio.Semaphore(1)))
+
+    assert result is True
+    assert final.read_bytes() == b"abcd"
+    db.close()
 
 
 def test_complete_part_plus_416_is_verified_and_renamed(tmp_path: Path) -> None:

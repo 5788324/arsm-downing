@@ -58,6 +58,14 @@ class DownloadService:
         self._working_live_verification_cache: dict[
             str, tuple[tuple, DownloadQueueItem]
         ] = {}
+        # Filtering and paging used to regroup the complete downloads table on
+        # every click. Large libraries contain tens of thousands of file rows,
+        # so retain the immutable aggregate until SQLite reports a change.
+        # ``total_changes`` covers this connection; ``data_version`` covers
+        # commits made by another connection/process.
+        self._queue_snapshot_token: tuple[int, int] | None = None
+        self._queue_snapshot_items: tuple[DownloadQueueItem, ...] = ()
+        self._queue_snapshot_summary: DownloadQueueSummary | None = None
 
     @property
     def connection(self) -> sqlite3.Connection:
@@ -250,9 +258,37 @@ class DownloadService:
 
     def _fetch_queue_page_unlocked(self, status_filter: str, page: int,
                                    page_size: int) -> DownloadQueuePage:
-        rows = self.connection.execute(self._aggregate_sql()).fetchall()
-        all_items = [self._row_to_item(row) for row in rows]
-        all_items.sort(key=self._sort_key)
+        data_version = int(self.connection.execute(
+            "PRAGMA data_version"
+        ).fetchone()[0])
+        token = (int(self.connection.total_changes), data_version)
+        if (token != self._queue_snapshot_token
+                or self._queue_snapshot_summary is None):
+            rows = self.connection.execute(self._aggregate_sql()).fetchall()
+            all_items = [self._row_to_item(row) for row in rows]
+            all_items.sort(key=self._sort_key)
+
+            # The second SELECT is intentionally tiny and provides durable byte totals.
+            totals = self.connection.execute(
+                """SELECT COALESCE(SUM(downloaded_bytes), 0),
+                          COALESCE(SUM(total_bytes), 0)
+                   FROM downloads"""
+            ).fetchone()
+            self._queue_snapshot_items = tuple(all_items)
+            self._queue_snapshot_summary = DownloadQueueSummary(
+                total_tasks=len(all_items),
+                active_tasks=sum(item.queue_state == "active" for item in all_items),
+                queued_tasks=sum(item.queue_state == "queued" for item in all_items),
+                paused_tasks=sum(item.queue_state == "paused" for item in all_items),
+                failed_tasks=sum(item.queue_state == "failed" for item in all_items),
+                completed_tasks=sum(item.queue_state == "completed" for item in all_items),
+                downloaded_bytes=int(totals[0] or 0),
+                cancelled_tasks=sum(item.queue_state == "cancelled" for item in all_items),
+                total_bytes=int(totals[1] or 0),
+            )
+            self._queue_snapshot_token = token
+
+        all_items = self._queue_snapshot_items
         filtered = [item for item in all_items if self._matches_filter(item, status_filter)]
         total_items = len(filtered)
         page_count = max(1, (total_items + page_size - 1) // page_size)
@@ -260,23 +296,8 @@ class DownloadService:
         start = (page - 1) * page_size
         page_items = tuple(filtered[start:start + page_size])
 
-        # The second SELECT is intentionally tiny and provides durable byte totals.
-        totals = self.connection.execute(
-            """SELECT COALESCE(SUM(downloaded_bytes), 0),
-                      COALESCE(SUM(total_bytes), 0)
-               FROM downloads"""
-        ).fetchone()
-        summary = DownloadQueueSummary(
-            total_tasks=len(all_items),
-            active_tasks=sum(item.queue_state == "active" for item in all_items),
-            queued_tasks=sum(item.queue_state == "queued" for item in all_items),
-            paused_tasks=sum(item.queue_state == "paused" for item in all_items),
-            failed_tasks=sum(item.queue_state == "failed" for item in all_items),
-            completed_tasks=sum(item.queue_state == "completed" for item in all_items),
-            downloaded_bytes=int(totals[0] or 0),
-            cancelled_tasks=sum(item.queue_state == "cancelled" for item in all_items),
-            total_bytes=int(totals[1] or 0),
-        )
+        summary = self._queue_snapshot_summary
+        assert summary is not None
         return DownloadQueuePage(
             items=page_items,
             summary=summary,

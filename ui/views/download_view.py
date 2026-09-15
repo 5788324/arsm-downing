@@ -839,6 +839,10 @@ class DownloadView(BaseDownloadView):
                 bgcolor=color,
                 width=112,
                 height=40,
+                style=ft.ButtonStyle(
+                    alignment=ft.alignment.center,
+                    padding=0,
+                ),
                 on_click=callback,
             )
 

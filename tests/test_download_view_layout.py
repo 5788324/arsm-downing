@@ -288,6 +288,7 @@ def test_failed_card_has_visible_retry_button_with_aligned_size(
     assert actions[0].width == 112
     assert actions[0].height == 40
     assert all(action.height == 40 for action in actions)
+    assert actions[0].style.alignment == ft.alignment.center
 
 
 def test_partial_card_labels_retry_and_completion(view_controller) -> None:
