@@ -333,3 +333,4 @@ Git 远端写入：无
 - 新增镜像健康度、后处理持久状态、启动补偿、资源库“已完成/待后处理”筛选与后处理诊断报告。
 - 所有验证均在仓库外隔离副本和临时数据库执行；未访问 `E:\arsm`、正式数据库、正式队列或现有下载文件。
 - 回归：核心聚焦 `51 passed`；完整锁定依赖回归 `487 passed, 3 skipped`；compile 与 `git diff --check` 通过。
+- Git 提交 `0e7f75a` 已普通 fast-forward 推送至 Draft PR #24；GitHub Ubuntu / Windows portable-test-gate 均通过，PR 保持 Draft。

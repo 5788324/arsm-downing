@@ -99,3 +99,4 @@ git diff --check：PASS
 当前分支 `codex/mp3-lyrics-queue-refresh` 在 `88c0cae6` 基线上完成以下未发布维护：受控并行恢复全部任务、队列立即展示后后台磁盘核验、结构化错误与重试倒计时、低速检测、镜像健康度、文件级详情及单文件重试、后处理持久状态/启动补偿/诊断报告，以及资源库“已完成/待后处理”严格筛选。
 
 验证：锁定 `flet==0.27.6` 的仓库外隔离副本完整回归 `487 passed, 3 skipped`，语法编译和 `git diff --check` 通过。未运行正式实例，未访问或修改 `E:\arsm`、正式数据库、正式队列、现有 `.part`。后续如做实机验收，先正常关闭旧实例，再确认当前数据库备份和下载状态；不得以测试为由删除正在下载任务。不得自动合并、Tag 或 Release。
+最终 Git 状态：提交 `0e7f75a` 已普通 fast-forward 推送到 Draft PR #24；GitHub Ubuntu / Windows 检查通过。PR 仍为 Draft，未合并、未 Tag、未 Release。
