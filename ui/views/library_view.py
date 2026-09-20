@@ -203,6 +203,8 @@ class LibraryView(ft.Container):
             ("audio", "有音频"),
             ("missing_cover", "无本地封面"),
             ("warnings", "有警告"),
+            ("completed", "已完成"),
+            ("postprocess_pending", "待后处理"),
         )
         for key, label in choices:
             self.category_chips.controls.append(ft.Chip(
@@ -468,6 +470,12 @@ class LibraryView(ft.Container):
                 badges.append(_badge(f"{int(item['audio_count'])} 音频", SUCCESS))
             if not cover_src:
                 badges.append(_badge("无本地封面", WARNING))
+            postprocess_status = str(item.get("postprocess_status") or "unknown")
+            if (str(item.get("work_status") or "") == "completed"
+                    and postprocess_status in {"completed", "not_required"}):
+                badges.append(_badge("已完成", SUCCESS))
+            elif str(item.get("work_status") or "") == "completed":
+                badges.append(_badge("待后处理", WARNING))
 
             card = ft.Column([
                 cover,
@@ -550,11 +558,20 @@ class LibraryView(ft.Container):
                 f"仅显示前 {FILE_PREVIEW_LIMIT} 项；完整作品含 {int(detail.get('total_files', 0))} 个文件。",
                 size=11, color=WARNING,
             ))
-        badges = ft.Row([
+        badge_controls = [
             _badge(f"{int(detail.get('audio_count', 0))} 音频", SUCCESS),
             _badge(f"{int(detail.get('total_files', 0))} 文件", ACCENT_PRIMARY),
             _badge(fmt_size(int(detail.get('total_size', 0))), ACCENT_SECONDARY),
-        ], wrap=True, spacing=5)
+        ]
+        if str(detail.get("work_status") or "") == "completed":
+            postprocess_status = str(detail.get("postprocess_status") or "unknown")
+            badge_controls.append(_badge(
+                "已完成" if postprocess_status in {"completed", "not_required"}
+                else "待后处理",
+                SUCCESS if postprocess_status in {"completed", "not_required"}
+                else WARNING,
+            ))
+        badges = ft.Row(badge_controls, wrap=True, spacing=5)
         tag_row = ft.Row([_badge(tag, BG_SURFACE_LIGHT) for tag in tags[:8]], wrap=True, spacing=4)
         return ft.Column([
             ft.Row([

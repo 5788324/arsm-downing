@@ -87,6 +87,8 @@ class ToolsView(ft.Container):
                     tooltip="扫描设置中的仓库目录并更新资源库索引，不删除媒体文件"),
                 ft.ElevatedButton("\u8bca\u65ad\u5931\u8d25\u4efb\u52a1", color=TEXT_PRIMARY, icon=ft.Icons.BUG_REPORT, on_click=self.diagnose_failed,
                     tooltip="汇总失败任务及原因，不修改任务状态"),
+                ft.ElevatedButton("后处理诊断", color=TEXT_PRIMARY, icon=ft.Icons.FACT_CHECK, on_click=self.diagnose_postprocess,
+                    tooltip="汇总歌词、封面与标签后处理状态，不修改媒体文件"),
             ], spacing=12, wrap=True),
 
             ft.Text("\u8fc1\u79fb", size=18, weight=ft.FontWeight.BOLD, color=TEXT_PRIMARY),
@@ -470,6 +472,18 @@ class ToolsView(ft.Container):
                     )
             if proxy:
                 self.log("  结果已通过 metadata_proxy 请求；未把代理地址当作目标网页。", ACCENT_PRIMARY)
+            kernel = getattr(self.app_controller, "kernel", None)
+            health = kernel.get_mirror_health() if kernel is not None else []
+            if health:
+                self.log("  运行期镜像健康度（按当前优先级）:", ACCENT_PRIMARY)
+                for item in health:
+                    latency = item.get("latency_ms")
+                    latency_text = "未采样" if latency is None else f"{latency:.0f}ms"
+                    self.log(
+                        f"    {item['mirror']} | 失败 {item['failures']} | "
+                        f"延迟 {latency_text} | 冷却 {item['cooldown_seconds']:.0f}s",
+                        "grey",
+                    )
 
         future = asyncio.run_coroutine_threadsafe(_test(), self.app_controller.loop)
 
@@ -811,6 +825,50 @@ class ToolsView(ft.Container):
 
         self.app_controller.run_blocking(
             _work, _render, action_label="失败任务诊断"
+        )
+
+    def diagnose_postprocess(self, e):
+        """Write a bounded diagnostic report without touching media files."""
+        del e
+        import json
+        from datetime import datetime
+
+        self.log("> 后台生成后处理诊断…", "white")
+
+        def _work():
+            result = self.app_controller.db.get_postprocess_diagnostics(limit=200)
+            report_dir = Path("logs")
+            report_dir.mkdir(parents=True, exist_ok=True)
+            report_path = report_dir / (
+                "postprocess_diagnosis_"
+                + datetime.now().strftime("%Y%m%d_%H%M%S") + ".json"
+            )
+            payload = dict(result)
+            payload["generated_at"] = datetime.now().isoformat(timespec="seconds")
+            report_path.write_text(
+                json.dumps(payload, indent=2, ensure_ascii=False, default=str),
+                encoding="utf-8",
+            )
+            return result, str(report_path)
+
+        def _render(payload):
+            result, report_path = payload
+            counts = result.get("counts", {})
+            self.log(f"  后处理状态: {counts or '{}'}", ACCENT_PRIMARY)
+            items = result.get("items", [])
+            for item in items[:20]:
+                message = str(item.get("postprocess_error") or "")
+                self.log(
+                    f"  {item.get('rj_id')} [{item.get('postprocess_status')}] "
+                    f"{message[:100]}",
+                    ERROR if item.get("postprocess_status") == "failed" else WARNING,
+                )
+            if len(items) > 20:
+                self.log(f"  仅显示前 20 / {len(items)} 条异常。", WARNING)
+            self.log(f"  ✓ 报告已写入 {report_path}", SUCCESS)
+
+        self.app_controller.run_blocking(
+            _work, _render, action_label="后处理诊断"
         )
 
     def run_diagnostic(self, e):

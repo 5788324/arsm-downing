@@ -49,6 +49,8 @@ class ConfigManager:
         self.chunk_size: int = 1048576  # 1 MB
         self.retry_count: int = 5
         self.retry_backoff: int = 2    # exponential base seconds
+        self.low_speed_limit_bps: int = 1024
+        self.low_speed_window_seconds: int = 30
 
         # ── Proxy: three-channel split ──
         self.metadata_proxy: Optional[str] = None   # API metadata requests
@@ -142,6 +144,10 @@ class ConfigManager:
                     data.get('retry_count', 5))
                 config.retry_backoff = int(
                     data.get('retry_backoff', 2))
+                config.low_speed_limit_bps = max(0, int(
+                    data.get('low_speed_limit_bps', 1024)))
+                config.low_speed_window_seconds = max(10, int(
+                    data.get('low_speed_window_seconds', 30)))
                 config.tag_audio = bool(
                     data.get('tag_audio', True))
                 config.browser_bridge_enabled = bool(
@@ -199,6 +205,8 @@ class ConfigManager:
             "chunk_size": self.chunk_size,
             "retry_count": self.retry_count,
             "retry_backoff": self.retry_backoff,
+            "low_speed_limit_bps": self.low_speed_limit_bps,
+            "low_speed_window_seconds": self.low_speed_window_seconds,
             "metadata_proxy": self.metadata_proxy,
             "download_proxy": self.download_proxy,
             "cover_proxy": self.cover_proxy,

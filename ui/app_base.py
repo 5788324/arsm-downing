@@ -160,6 +160,8 @@ class AppController:
         # ── Restore pending downloads from previous session ──
         asyncio.run_coroutine_threadsafe(
             self.orc.restore_pending_downloads(), self.loop)
+        asyncio.run_coroutine_threadsafe(
+            self.orc.restore_pending_postprocessing(), self.loop)
 
         # ── Start UI message queue poller ──
         self._start_ui_poller()
@@ -690,6 +692,28 @@ class AppController:
                 self._enqueue_work_status(rj_id, status)
             return result
         return self._submit_background(_do_resume(), "恢复")
+
+    def retry_download_file(self, rj_id: str, download_id: str):
+        """Retry exactly one failed/paused file and preserve sibling rows."""
+        async def _do_retry_file():
+            result = await self.orc.retry_download_file(rj_id, download_id)
+            status = result.get("status", "")
+            if status == "queued":
+                self._enqueue_work_status(rj_id, "Queued")
+                self._enqueue_snack(f"{rj_id} 已加入单文件重试")
+            elif status == "file_complete":
+                self._enqueue_snack("所选文件已完整，无需重试")
+            elif status == "file_not_found":
+                self._enqueue_snack("所选文件记录或元数据已变化，请刷新详情")
+            elif status in {"already_running", "already_queued"}:
+                self._enqueue_snack("该作品正在下载或恢复，请稍后再试")
+            else:
+                self._enqueue_snack(
+                    f"单文件重试未启动: {result.get('message', status)}"
+                )
+            return result
+
+        return self._submit_background(_do_retry_file(), "单文件重试")
 
     def reconnect_download(self, rj_id: str):
         """Pause and resume sequentially; avoids the old reconnect race."""

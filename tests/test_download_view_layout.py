@@ -750,3 +750,35 @@ def test_page_navigation_requests_fast_snapshot(view_controller, monkeypatch) ->
     view._next_page(None)
     assert view.queue_page == 2
     assert calls == [{"fast_page": True}]
+
+
+def test_queue_snapshot_renders_before_background_disk_verification(tmp_path) -> None:
+    view, controller = _deferred_view(tmp_path)
+    try:
+        query, render = controller.pending[0]
+        render(query())
+        assert "RJ00000001" in view.active_downloads
+        assert view.active_downloads["RJ00000001"]["snapshot"].verified_progress is None
+        assert len(controller.pending) == 2
+
+        verify, render_verified = controller.pending[1]
+        render_verified(verify())
+        assert view.active_downloads["RJ00000001"]["snapshot"].verified_progress == 0.3
+    finally:
+        controller.db.close()
+
+
+def test_file_detail_retry_button_targets_only_selected_row(view_controller) -> None:
+    view, controller = view_controller
+    calls = []
+    controller.retry_download_file = (
+        lambda rj_id, download_id: calls.append((rj_id, download_id))
+    )
+    view._select_rj("RJ00000001")
+    detail = view._file_details("RJ00000001")[0]
+    row = view._detail_rows[detail["key"]]
+    assert row.controls[5].visible is True
+
+    row.controls[5].on_click(None)
+
+    assert calls == [("RJ00000001", "file-1")]

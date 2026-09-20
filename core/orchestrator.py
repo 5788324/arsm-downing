@@ -7,6 +7,7 @@ import sys
 import logging
 import urllib.parse
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Callable, Optional, Dict
 
@@ -26,6 +27,10 @@ from core.download_response import local_partial_size, plan_download_response
 from core.metadata_scheduler import MetadataScheduler
 from core.download_workers import DownloadWorkerPool
 from core.download_errors import SignedUrlExpired
+from core.download_failures import (
+    DownloadHttpError, LowSpeedError, classify_download_error,
+    retry_delay_seconds,
+)
 from core.url_refresh import SignedUrlRefresher
 from core.local_file_validation import validate_completed_local_file
 
@@ -175,10 +180,13 @@ class Orchestrator:
                 f"queued_remaining={len(self.queued_rj_ids)} "
                 f"active={len(self.active_tasks)}")
             task = asyncio.create_task(
-                self._process_download(rj_id,
-                                       work_data["meta"],
-                                       work_data["targets"],
-                                       work_data["root_path"]))
+                self._process_download(
+                    rj_id,
+                    work_data["meta"],
+                    work_data["targets"],
+                    work_data["root_path"],
+                    authoritative_plan=work_data.get("authoritative_plan", True),
+                ))
             self.active_tasks[rj_id] = task
             try:
                 await task
@@ -697,70 +705,105 @@ class Orchestrator:
         finally:
             self.resuming_rj_ids.discard(rj_id)
 
+    async def retry_download_file(self, rj_id: str,
+                                  download_id: str) -> dict:
+        """Retry one durable download row without discarding sibling state."""
+        rj_id = str(rj_id).strip().upper()
+        if rj_id in self.active_tasks:
+            return {"status": "already_running", "message": "Work is active"}
+        if rj_id in self.queued_rj_ids or rj_id in self.resuming_rj_ids:
+            return {"status": "already_queued", "message": "Work is already queued"}
+        self.resuming_rj_ids.add(rj_id)
+        try:
+            self.cancelled_rjs.discard(rj_id)
+            self.speed.resume_work(rj_id)
+            return await self.resume_job(
+                rj_id, only_download_id=str(download_id)
+            )
+        finally:
+            self.resuming_rj_ids.discard(rj_id)
+
     async def _resume_all_async(self):
-        """Resume every restorable work and aggregate truthful recovery results."""
+        """Resume all restorable works with bounded parallel preparation."""
         self.global_paused = False
         logger.info(
             "RESUME_ALL: global_paused=False generation=%s", self.pause_generation
         )
         rj_ids = self.resume_all()
         stats = {
-            "resumed_to_queue": 0,
-            "resumed_partial": 0,
-            "retried_from_zero": 0,
-            "already_complete": 0,
-            "metadata_required": 0,
-            "unrecoverable": 0,
-            "skipped_cancelled": 0,
-            "paused_during_resume": 0,
-            "already_queued": 0,
-            "already_running": 0,
-            "no_pending": 0,
-            "cache_corrupt": 0,
-            "failed": 0,
+            "resumed_to_queue": 0, "resumed_partial": 0,
+            "retried_from_zero": 0, "already_complete": 0,
+            "metadata_required": 0, "unrecoverable": 0,
+            "skipped_cancelled": 0, "paused_during_resume": 0,
+            "already_queued": 0, "already_running": 0,
+            "no_pending": 0, "cache_corrupt": 0, "failed": 0,
         }
         logger.info("resume_all: starting %s works", len(rj_ids))
         self._log_concurrency_state("resume_all_start")
-        for index, rj_id in enumerate(rj_ids):
-            if self.global_paused:
-                # Pause All wins over the remainder of an in-progress batch.
-                stats["paused_during_resume"] += len(rj_ids) - index
-                break
-            try:
-                result = await self._resume_one(rj_id)
-            except Exception:
-                logger.exception("resume_all failed for %s", rj_id)
-                stats["failed"] += 1
-                continue
-            status = result.get("status", "unknown")
-            if status == "queued":
-                stats["resumed_to_queue"] += 1
-            elif status in {
-                "already_queued", "already_running", "no_pending",
-                "cache_corrupt", "failed",
-            }:
-                stats[status] += 1
-            elif status == "paused":
-                stats["paused_during_resume"] += 1
-            elif status not in {
-                "reconciled_complete", "metadata_required", "cancelled", "unrecoverable",
-            }:
-                stats["failed"] += 1
-            for key in (
-                "resumed_partial", "retried_from_zero", "already_complete",
-                "metadata_required", "unrecoverable", "skipped_cancelled",
-            ):
-                stats[key] += int(result.get(key, 0) or 0)
-            # Reconciliation performs synchronous SQLite/file checks. Yield
-            # between albums so workers, progress events and Pause All remain
-            # responsive while a large batch is being restored.
-            await asyncio.sleep(0)
+        if not rj_ids:
+            return stats
+
+        queue: asyncio.Queue[str] = asyncio.Queue()
+        for rj_id in rj_ids:
+            queue.put_nowait(rj_id)
+        config = getattr(self, "config", None)
+        preparation_workers = max(
+            1, min(8, int(getattr(config, "metadata_concurrency", 1)))
+        )
+        stats_lock = asyncio.Lock()
+
+        async def prepare_worker() -> None:
+            while not queue.empty():
+                if self.global_paused:
+                    return
+                try:
+                    rj_id = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
+                try:
+                    result = await self._resume_one(rj_id)
+                except Exception:
+                    logger.exception("resume_all failed for %s", rj_id)
+                    result = {"status": "failed"}
+                finally:
+                    queue.task_done()
+                async with stats_lock:
+                    status = result.get("status", "unknown")
+                    if status == "queued":
+                        stats["resumed_to_queue"] += 1
+                    elif status in {
+                        "already_queued", "already_running", "no_pending",
+                        "cache_corrupt", "failed",
+                    }:
+                        stats[status] += 1
+                    elif status == "paused":
+                        stats["paused_during_resume"] += 1
+                    elif status not in {
+                        "reconciled_complete", "metadata_required", "cancelled",
+                        "unrecoverable",
+                    }:
+                        stats["failed"] += 1
+                    for key in (
+                        "resumed_partial", "retried_from_zero", "already_complete",
+                        "metadata_required", "unrecoverable", "skipped_cancelled",
+                    ):
+                        stats[key] += int(result.get(key, 0) or 0)
+                await asyncio.sleep(0)
+
+        workers = [
+            asyncio.create_task(prepare_worker(), name=f"resume-prepare-{index + 1}")
+            for index in range(min(preparation_workers, len(rj_ids)))
+        ]
+        await asyncio.gather(*workers)
+        if self.global_paused:
+            stats["paused_during_resume"] += queue.qsize()
         logger.info("resume_all DONE: %s", stats)
         self._log_concurrency_state("resume_all_done")
         return stats
 
-    async def resume_job(self, rj_id: str) -> dict:
-        """Reconcile disk/SQLite state and queue every genuinely restorable file."""
+    async def resume_job(self, rj_id: str, *,
+                         only_download_id: str | None = None) -> dict:
+        """Reconcile and queue restorable files, optionally one selected row."""
         summary = {
             "resumed_partial": 0,
             "retried_from_zero": 0,
@@ -834,12 +877,41 @@ class Orchestrator:
         db_states = {
             row["id"]: dict(row) for row in self.db.get_downloads_by_rj(rj_id)
         }
+        selected_row = (
+            db_states.get(only_download_id) if only_download_id else None
+        )
+        if only_download_id and selected_row is None:
+            return {
+                "status": "file_not_found",
+                "message": "The selected download row no longer exists",
+                **summary,
+            }
+        selected_matched = False
         resume_targets = []
-        for target in all_targets:
+        for target_index, target in enumerate(all_targets):
+            if target_index and target_index % 16 == 0:
+                # Let other albums and active download workers progress while a
+                # large cached album is being reconciled from disk.
+                await asyncio.sleep(0)
             dl_id = self._make_dl_id(
                 rj_id, target.id or target.title, target.save_path, target.title
             )
             row = db_states.get(dl_id, {})
+            if only_download_id:
+                selected_path = Path(str(selected_row.get("local_path") or ""))
+                same_selected_file = (
+                    dl_id == only_download_id
+                    or (
+                        str(target.title) == str(selected_row.get("track_title") or "")
+                        and target.save_path.name == selected_path.name
+                    )
+                )
+                if not same_selected_file:
+                    continue
+                dl_id = only_download_id
+                row = selected_row
+                target.download_id_override = only_download_id
+                selected_matched = True
             status = str(row.get("status", "queued") or "queued").lower()
             final_path = Path(row.get("local_path") or target.save_path)
             target.save_path = final_path
@@ -1009,7 +1081,20 @@ class Orchestrator:
             else:
                 summary["unrecoverable"] += 1
 
+        if only_download_id and not selected_matched:
+            return {
+                "status": "file_not_found",
+                "message": "The selected file is absent from current metadata",
+                **summary,
+            }
+
         if not resume_targets:
+            if only_download_id and summary["already_complete"]:
+                return {
+                    "status": "file_complete",
+                    "message": "The selected file is already complete",
+                    **summary,
+                }
             if (summary["already_complete"] and not summary["unrecoverable"]
                     and not summary["skipped_cancelled"]):
                 self.db.execute_write(
@@ -1042,6 +1127,7 @@ class Orchestrator:
         )
         self._queued_work_data[rj_id] = {
             "meta": meta, "targets": resume_targets, "root_path": root_path,
+            "authoritative_plan": only_download_id is None,
         }
         self.queued_rj_ids.add(rj_id)
         await self.download_queue.put(rj_id)
@@ -1485,7 +1571,7 @@ class Orchestrator:
             part_path = final_path.with_suffix(final_path.suffix + ".part")
             track.save_path = final_path
 
-        dl_id = self._make_dl_id(
+        dl_id = getattr(track, "download_id_override", None) or self._make_dl_id(
             meta.rj_id, track.id or track.title, final_path, track.title)
 
         persisted = self.db.conn.execute(
@@ -1565,7 +1651,8 @@ class Orchestrator:
         while True:
             self.db.upsert_download(
                 dl_id, meta.rj_id, track.title, str(final_path),
-                'downloading', existing_size, track.size)
+                'downloading', existing_size, track.size,
+                attempt_count=attempt + 1, max_attempts=retry_count)
             self._emit_progress(
                 meta.rj_id, track.id or track.title, track.title,
                 existing_size, track.size, "downloading")
@@ -1641,14 +1728,24 @@ class Orchestrator:
                                     # Signed URL expired: never mechanically
                                     # retry the same URL (Issue #20).
                                     raise SignedUrlExpired(plan.reason)
-                                raise IOError(plan.reason)
+                                raise DownloadHttpError(
+                                    resp.status, plan.reason,
+                                    resp.headers.get("Retry-After"),
+                                )
                             else:
                                 downloaded = plan.initial_bytes
+                                low_speed_started = time.monotonic()
+                                low_speed_bytes = 0
+                                low_speed_limit = max(0, int(getattr(
+                                    self.config, "low_speed_limit_bps", 1024)))
+                                low_speed_window = max(10, int(getattr(
+                                    self.config, "low_speed_window_seconds", 30)))
                                 async with aiofiles.open(part_path, plan.mode) as f:
                                     async for chunk in resp.content.iter_chunked(
                                             self.config.chunk_size):
                                         await f.write(chunk)
                                         downloaded += len(chunk)
+                                        low_speed_bytes += len(chunk)
                                         self.stats.bytes_downloaded += len(chunk)
                                         self.speed.update(
                                             meta.rj_id, track.id or track.title,
@@ -1657,6 +1754,15 @@ class Orchestrator:
                                             meta.rj_id, track.id or track.title,
                                             track.title, downloaded, track.size,
                                             "downloading")
+                                        elapsed = time.monotonic() - low_speed_started
+                                        if elapsed >= low_speed_window:
+                                            observed = low_speed_bytes / max(elapsed, 0.001)
+                                            if low_speed_limit and observed < low_speed_limit:
+                                                raise LowSpeedError(
+                                                    f"Low speed {observed:.0f} B/s for "
+                                                    f"{elapsed:.0f}s")
+                                            low_speed_started = time.monotonic()
+                                            low_speed_bytes = 0
 
                                 actual = part_path.stat().st_size
                                 if track.size > 0 and actual != track.size:
@@ -1769,24 +1875,50 @@ class Orchestrator:
                 continue
             except Exception as e:
                 actual = local_partial_size(final_path, part_path, track.size)
-                if attempt >= retry_count - 1:
+                failure = classify_download_error(e)
+                exhausted = attempt >= retry_count - 1
+                if exhausted or not failure.retryable:
                     self.stats.failed += 1
                     final_status = 'paused' if actual > 0 else 'failed'
                     self.db.upsert_download(
                         dl_id, meta.rj_id, track.title, str(final_path),
-                        final_status, actual, track.size, error=str(e))
+                        final_status, actual, track.size, error=failure.message,
+                        error_code=failure.code, attempt_count=attempt + 1,
+                        max_attempts=retry_count,
+                        last_http_status=failure.http_status)
                     self._emit_progress(
                         meta.rj_id, track.id or track.title, track.title,
                         actual, track.size, final_status)
                     logging.warning(
-                        f"Download {track.title} {final_status} "
-                        f"(partial_bytes={actual}): {e}")
+                        "Download %s %s code=%s retryable=%s "
+                        "attempt=%s/%s partial_bytes=%s: %s",
+                        track.title, final_status, failure.code,
+                        failure.retryable, attempt + 1, retry_count, actual,
+                        failure.message,
+                    )
                     return False
                 existing_size = actual
                 attempt += 1
+                delay = retry_delay_seconds(
+                    attempt=attempt,
+                    backoff_base=self.config.retry_backoff,
+                    retry_after=failure.retry_after_seconds,
+                )
+                next_retry = datetime.now() + timedelta(seconds=delay)
+                self.db.upsert_download(
+                    dl_id, meta.rj_id, track.title, str(final_path),
+                    "downloading", actual, track.size,
+                    error=failure.message, error_code=failure.code,
+                    attempt_count=attempt, max_attempts=retry_count,
+                    next_retry_at=next_retry,
+                    last_http_status=failure.http_status,
+                )
                 logging.warning(
-                    f"Retry {attempt}/{retry_count} for {track.title}: {e}")
-                await asyncio.sleep(self.config.retry_backoff ** attempt)
+                    "Retry %s/%s in %.1fs for %s code=%s: %s",
+                    attempt, retry_count, delay, track.title,
+                    failure.code, failure.message,
+                )
+                await asyncio.sleep(delay)
 
         return False
 
@@ -1989,9 +2121,93 @@ class Orchestrator:
                 tagged.append((path, path.stat().st_size))
         return tagged
 
+    async def _run_postprocess(
+            self, meta: WorkMetadata, root_path: Path,
+            cover_path: Optional[Path] = None,
+            target_paths: Optional[List[Path]] = None) -> bool:
+        """Run and persist best-effort album finalization after download success."""
+        self.db.set_postprocess_status(meta.rj_id, "running")
+        self._emit_work_status(meta.rj_id, "Finalizing")
+        try:
+            tagged = await asyncio.to_thread(
+                self._postprocess_completed_work,
+                meta, cover_path, root_path, target_paths,
+            )
+            if self.config.tag_audio:
+                if target_paths is None:
+                    candidates = [
+                        path for path in root_path.rglob("*")
+                        if path.is_file()
+                        and path.suffix.casefold() in AudioProcessor.SUPPORTED_EXTENSIONS
+                    ]
+                else:
+                    candidates = [
+                        Path(path) for path in target_paths
+                        if Path(path).is_file()
+                        and Path(path).suffix.casefold()
+                        in AudioProcessor.SUPPORTED_EXTENSIONS
+                    ]
+                if len(tagged) < len(candidates):
+                    raise RuntimeError(
+                        f"audio_tag_incomplete:{len(tagged)}/{len(candidates)}")
+            rows_by_path = {
+                str(Path(row["local_path"])): row
+                for row in self.db.get_downloads_by_rj(meta.rj_id)
+            }
+            for media_path, tagged_size in tagged:
+                row = rows_by_path.get(str(media_path))
+                if row is None:
+                    continue
+                self.db.upsert_download(
+                    row["id"], meta.rj_id, row["track_title"],
+                    str(media_path), "completed", tagged_size, tagged_size)
+            self.db.set_postprocess_status(meta.rj_id, "completed")
+            return True
+        except Exception as exc:
+            message = str(exc) or exc.__class__.__name__
+            self.db.set_postprocess_status(meta.rj_id, "failed", message)
+            logger.exception("POSTPROCESS_FAILED rj=%s: %s", meta.rj_id, message)
+            return False
+
+    async def restore_pending_postprocessing(self) -> dict:
+        """Resume only crash-interrupted post-processing; never redownload files."""
+        rows = self.db.get_pending_postprocess_works()
+        result = {"found": len(rows), "completed": 0, "failed": 0}
+        if not rows:
+            return result
+        semaphore = asyncio.Semaphore(2)
+
+        async def restore(row) -> None:
+            async with semaphore:
+                rj_id = str(row["rj_id"])
+                root_path = Path(str(row["local_path"] or ""))
+                try:
+                    meta_raw = _json.loads(row["metadata_json"] or "{}")
+                    if not meta_raw or not root_path.is_dir():
+                        raise RuntimeError("metadata_or_album_path_missing")
+                    meta = self._build_metadata(rj_id, meta_raw)
+                    target_paths = [
+                        Path(str(item["local_path"]))
+                        for item in self.db.get_downloads_by_rj(rj_id)
+                        if str(item["status"] or "").lower()
+                        in {"completed", "registered"}
+                    ]
+                    ok = await self._run_postprocess(
+                        meta, root_path, find_local_cover(root_path),
+                        target_paths or None,
+                    )
+                except Exception as exc:
+                    self.db.set_postprocess_status(rj_id, "failed", str(exc))
+                    ok = False
+                result["completed" if ok else "failed"] += 1
+
+        await asyncio.gather(*(restore(row) for row in rows))
+        logger.info("POSTPROCESS_RESTORE %s", result)
+        return result
     async def _process_download(self, rj_id: str, meta: WorkMetadata,
                                  targets: List[TrackItem],
-                                 root_path: Path) -> None:
+                                 root_path: Path, *,
+                                 authoritative_plan: bool = True) -> None:
         cover_path = await self._download_cover(
             rj_id, meta.cover_url, root_path
         )
@@ -2043,7 +2259,7 @@ class Orchestrator:
                     final_path = t.save_path
                     part_path = final_path.with_suffix(final_path.suffix + ".part")
                     actual = local_partial_size(final_path, part_path, t.size)
-                    dl_id = self._make_dl_id(
+                    dl_id = getattr(t, "download_id_override", None) or self._make_dl_id(
                         rj_id, t.id or t.title, final_path, t.title)
                     self.db.upsert_download(
                         dl_id, rj_id, t.title, str(final_path), "failed",
@@ -2061,7 +2277,7 @@ class Orchestrator:
             success_targets = [
                 t for t in targets if results.get(id(t)) is True]
             current_ids = {
-                self._make_dl_id(
+                getattr(t, "download_id_override", None) or self._make_dl_id(
                     rj_id, t.id or t.title, t.save_path, t.title)
                 for t in targets
             }
@@ -2072,7 +2288,7 @@ class Orchestrator:
             # state, otherwise that obsolete row keeps a completed work stuck
             # in the queue forever.
             for t in success_targets:
-                dl_id = self._make_dl_id(
+                dl_id = getattr(t, "download_id_override", None) or self._make_dl_id(
                     rj_id, t.id or t.title, t.save_path, t.title)
                 actual_size = (
                     t.save_path.stat().st_size
@@ -2089,7 +2305,7 @@ class Orchestrator:
             }
             blocking_rows = [
                 row for row in rows
-                if row["id"] in current_ids
+                if (not authoritative_plan or row["id"] in current_ids)
                 and str(row["status"] or "").lower() in blocking_statuses
             ]
             if failed_count == 0 and cancelled_count == 0 and not blocking_rows:
@@ -2098,7 +2314,8 @@ class Orchestrator:
                 # an earlier path/metadata plan; this never touches files.
                 stale_ids = [
                     row["id"] for row in rows
-                    if row["id"] not in current_ids
+                    if authoritative_plan
+                    and row["id"] not in current_ids
                     and str(row["status"] or "").lower() in blocking_statuses
                 ]
                 for stale_id in stale_ids:
@@ -2109,31 +2326,33 @@ class Orchestrator:
                         "STALE_DOWNLOAD_ROWS_REMOVED rj=%s count=%s",
                         rj_id, len(stale_ids),
                     )
-                # All success — register work as completed
-                final_size = sum(
-                    t.save_path.stat().st_size
-                    for t in targets if t.save_path.exists())
-                self.db.register(meta, final_size, root_path, status='completed')
-
-                # Download success is now durable. Post-processing is best-effort
-                # and can never turn the work back into a failed download.
-                tagged = await asyncio.to_thread(
-                    self._postprocess_completed_work,
-                    meta, cover_path, root_path,
-                    [t.save_path for t in targets],
+                # All success — register work as completed. A file-level retry
+                # finalizes the entire work only after every durable row is done.
+                if authoritative_plan:
+                    completed_paths = [
+                        t.save_path for t in targets if t.save_path.is_file()
+                    ]
+                else:
+                    completed_paths = [
+                        Path(str(row["local_path"])) for row in rows
+                        if str(row["status"] or "").lower()
+                        in {"completed", "registered"}
+                        and Path(str(row["local_path"])).is_file()
+                    ]
+                final_size = sum(path.stat().st_size for path in completed_paths)
+                self.db.register(
+                    meta, final_size, root_path, status='completed',
+                    postprocess_status="pending",
                 )
-                rows_by_path = {
-                    str(Path(row["local_path"])): row
-                    for row in self.db.get_downloads_by_rj(rj_id)
-                }
-                for media_path, tagged_size in tagged:
-                    row = rows_by_path.get(str(media_path))
-                    if row is None:
-                        continue
-                    self.db.upsert_download(
-                        row["id"], rj_id, row["track_title"],
-                        str(media_path), "completed", tagged_size, tagged_size)
-                self._emit_work_status(rj_id, "Completed")
+
+                # Download success is durable before finalization. A crash here is
+                # recovered on next startup without redownloading any media.
+                finalized = await self._run_postprocess(
+                    meta, root_path, cover_path, completed_paths,
+                )
+                self._emit_work_status(
+                    rj_id, "Completed" if finalized
+                    else "Completed (post-processing failed)")
             elif cancelled_count > 0:
                 # Distinguish a durable user cancellation from a pause.
                 if (rj_id in self.user_cancelled_rjs or

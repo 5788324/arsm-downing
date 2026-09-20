@@ -150,7 +150,10 @@ class LibraryVault:
                     size_bytes INTEGER DEFAULT 0,
                     local_path TEXT,
                     cover_url TEXT,
-                    status TEXT DEFAULT 'completed'
+                    status TEXT DEFAULT 'completed',
+                    postprocess_status TEXT DEFAULT 'unknown',
+                    postprocess_error TEXT DEFAULT '',
+                    postprocess_updated_at TIMESTAMP
                 )
             """)
 
@@ -160,6 +163,9 @@ class LibraryVault:
             ("local_path", "TEXT"),
             ("cover_url", "TEXT"),
             ("status", "TEXT DEFAULT 'completed'"),
+            ("postprocess_status", "TEXT DEFAULT 'unknown'"),
+            ("postprocess_error", "TEXT DEFAULT ''"),
+            ("postprocess_updated_at", "TIMESTAMP"),
         ]:
             self._safe_alter(conn, "works", col_name, col_type)
 
@@ -188,6 +194,11 @@ class LibraryVault:
                     downloaded_bytes INTEGER DEFAULT 0,
                     total_bytes INTEGER DEFAULT 0,
                     error TEXT,
+                    error_code TEXT DEFAULT '',
+                    attempt_count INTEGER DEFAULT 0,
+                    max_attempts INTEGER DEFAULT 0,
+                    next_retry_at TIMESTAMP,
+                    last_http_status INTEGER,
                     updated_at TIMESTAMP
                 )
             """)
@@ -195,6 +206,14 @@ class LibraryVault:
                 CREATE INDEX IF NOT EXISTS idx_downloads_rj
                 ON downloads(rj_id)
             """)
+        for col_name, col_type in [
+            ("error_code", "TEXT DEFAULT ''"),
+            ("attempt_count", "INTEGER DEFAULT 0"),
+            ("max_attempts", "INTEGER DEFAULT 0"),
+            ("next_retry_at", "TIMESTAMP"),
+            ("last_http_status", "INTEGER"),
+        ]:
+            self._safe_alter(conn, "downloads", col_name, col_type)
 
         # ── library_index (P3.3) ──
         conn.execute("""
@@ -332,15 +351,22 @@ class LibraryVault:
     def upsert_download(self, download_id: str, rj_id: str,
                         track_title: str, local_path: str,
                         status: str, downloaded_bytes: int = 0,
-                        total_bytes: int = 0, error: str = "") -> None:
+                        total_bytes: int = 0, error: str = "", *,
+                        error_code: str = "", attempt_count: int = 0,
+                        max_attempts: int = 0, next_retry_at=None,
+                        last_http_status: int | None = None) -> None:
         """Write download state. Raises on failure (RC7.1)."""
         self._execute_write(
             """INSERT OR REPLACE INTO downloads
                (id, rj_id, track_title, local_path, status,
-                downloaded_bytes, total_bytes, error, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                downloaded_bytes, total_bytes, error, error_code,
+                attempt_count, max_attempts, next_retry_at, last_http_status,
+                updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (download_id, rj_id, track_title, local_path,
-             status, downloaded_bytes, total_bytes, error, datetime.now()))
+             status, downloaded_bytes, total_bytes, error, error_code,
+             max(0, int(attempt_count)), max(0, int(max_attempts)),
+             next_retry_at, last_http_status, datetime.now()))
 
     def get_downloads_by_rj(self, rj_id: str) -> List[sqlite3.Row]:
         try:
@@ -460,15 +486,81 @@ class LibraryVault:
     #  Works library (P0, unchanged logic)
     # ──────────────────────────────────────────────
     def register(self, meta: WorkMetadata, size: int, path: Path,
-                 status: str = 'completed') -> None:
+                 status: str = 'completed', *,
+                 postprocess_status: str | None = None) -> None:
         """Register a work. Raises on failure (RC7.1)."""
         self._execute_write(
-            """INSERT OR REPLACE INTO works
+            """INSERT INTO works
                (rj_id, title, circle, downloaded_at, size_bytes,
-                local_path, cover_url, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                local_path, cover_url, status, postprocess_status,
+                postprocess_error, postprocess_updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?)
+               ON CONFLICT(rj_id) DO UPDATE SET
+                 title=excluded.title,
+                 circle=excluded.circle,
+                 downloaded_at=excluded.downloaded_at,
+                 size_bytes=excluded.size_bytes,
+                 local_path=excluded.local_path,
+                 cover_url=excluded.cover_url,
+                 status=excluded.status,
+                 postprocess_status=excluded.postprocess_status,
+                 postprocess_error='',
+                 postprocess_updated_at=excluded.postprocess_updated_at""",
             (meta.rj_id, meta.title, meta.circle,
-             datetime.now(), size, str(path), meta.cover_url, status))
+             datetime.now(), size, str(path), meta.cover_url, status,
+             postprocess_status or ("pending" if status == "completed" else "unknown"),
+             datetime.now()))
+
+    def set_postprocess_status(self, rj_id: str, status: str,
+                               error: str = "") -> None:
+        """Persist post-download processing independently from download success."""
+        self._execute_write(
+            """UPDATE works
+               SET postprocess_status=?, postprocess_error=?,
+                   postprocess_updated_at=?
+               WHERE rj_id=?""",
+            (status, error, datetime.now(), rj_id),
+        )
+
+    def get_pending_postprocess_works(self) -> list[sqlite3.Row]:
+        """Return crash-interrupted or newly pending post-processing work."""
+        try:
+            return self.conn.execute(
+                """SELECT w.*, mc.metadata_json
+                   FROM works w
+                   LEFT JOIN metadata_cache mc ON mc.rj_id=w.rj_id
+                   WHERE w.status='completed'
+                     AND w.postprocess_status IN ('pending','running')
+                   ORDER BY w.postprocess_updated_at, w.rj_id"""
+            ).fetchall()
+        except sqlite3.Error as exc:
+            logging.error("get_pending_postprocess_works error: %s", exc)
+            return []
+
+    def get_postprocess_diagnostics(self, limit: int = 200) -> dict:
+        """Return a bounded, read-only report for incomplete post-processing."""
+        try:
+            rows = self.conn.execute(
+                """SELECT rj_id, status, postprocess_status, postprocess_error,
+                          postprocess_updated_at, local_path
+                   FROM works
+                   WHERE COALESCE(postprocess_status,'unknown') NOT IN ('completed','not_required')
+                   ORDER BY postprocess_updated_at DESC, rj_id
+                   LIMIT ?""",
+                (max(1, int(limit)),),
+            ).fetchall()
+            counts = {
+                str(row["postprocess_status"] or "unknown"): int(row["count"])
+                for row in self.conn.execute(
+                    """SELECT COALESCE(postprocess_status,'unknown') AS postprocess_status,
+                              COUNT(*) AS count
+                       FROM works GROUP BY COALESCE(postprocess_status,'unknown')"""
+                ).fetchall()
+            }
+            return {"counts": counts, "items": [dict(row) for row in rows]}
+        except sqlite3.Error as exc:
+            logging.error("get_postprocess_diagnostics error: %s", exc)
+            return {"counts": {}, "items": [], "error": str(exc)}
 
     def get_summary(self) -> Tuple[int, int]:
         try:
@@ -1111,6 +1203,18 @@ class LibraryVault:
                     "audio": "li.has_audio = 1",
                     "missing_cover": "li.has_cover = 0",
                     "warnings": "li.warnings_json IS NOT NULL AND li.warnings_json != '[]' AND li.warnings_json != ''",
+                    "completed": (
+                        "w.status = 'completed' AND "
+                        "w.postprocess_status IN ('completed','not_required') AND "
+                        "NOT EXISTS (SELECT 1 FROM downloads dx "
+                        "WHERE dx.rj_id=li.rj_id AND dx.status NOT IN "
+                        "('completed','registered','stale','ignored'))"
+                    ),
+                    "postprocess_pending": (
+                        "w.status = 'completed' AND "
+                        "COALESCE(w.postprocess_status,'unknown') NOT IN "
+                        "('completed','not_required')"
+                    ),
                 }
                 if category in category_conditions:
                     conditions.append(category_conditions[category])
@@ -1122,12 +1226,16 @@ class LibraryVault:
                 }.get(sort, "li.total_size DESC, li.rj_id")
                 where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
                 total = int(self.conn.execute(
-                    f"SELECT COUNT(*) FROM library_items li {where}", params
+                    f"""SELECT COUNT(*) FROM library_items li
+                         LEFT JOIN works w ON w.rj_id=li.rj_id {where}""", params
                 ).fetchone()[0])
                 rows = self.conn.execute(
-                    f"""SELECT li.*, mc.cover_url AS metadata_cover_url
+                    f"""SELECT li.*, mc.cover_url AS metadata_cover_url,
+                               w.status AS work_status,
+                               w.postprocess_status, w.postprocess_error
                         FROM library_items li
                         LEFT JOIN metadata_cache mc ON mc.rj_id = li.rj_id
+                        LEFT JOIN works w ON w.rj_id = li.rj_id
                         {where}
                         ORDER BY {order_by}
                         LIMIT ? OFFSET ?""",
@@ -1157,6 +1265,8 @@ class LibraryVault:
                 row = self.conn.execute(
                     """SELECT li.*, w.title AS work_title, w.circle AS work_circle,
                               w.status AS work_status, w.cover_url AS work_cover_url,
+                               w.postprocess_status, w.postprocess_error,
+                               w.postprocess_updated_at,
                               mc.title AS metadata_title, mc.circle AS metadata_circle,
                               mc.cover_url AS metadata_cover_url,
                               mc.metadata_json, mc.tracks_json, mc.fetched_at

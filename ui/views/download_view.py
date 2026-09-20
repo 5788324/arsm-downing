@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 import logging
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
 
@@ -214,11 +215,10 @@ class DownloadView(BaseDownloadView):
     def load_queue(self):
         """Initial queue snapshot; called by the base constructor.
 
-        Routes through the SAME ``_queue_refreshing``/generation pipeline as
-        ``refresh_queue_async`` so startup issues exactly ONE fetch + disk
-        verification query: any later ``reload_queue_from_database`` request is
-        coalesced into that in-flight query instead of starting a second one.
-        The DB fetch + stat runs off the UI thread via ``run_blocking``.
+        Routes through the same generation pipeline as ``refresh_queue_async``.
+        Startup launches one SQLite snapshot query; after it renders, a separate
+        background disk-verification pass patches the still-current generation.
+        Concurrent refresh requests are coalesced while SQLite is in flight.
         """
         self._sync_queue_file()
         self.refresh_queue_async(force=True)
@@ -233,13 +233,11 @@ class DownloadView(BaseDownloadView):
 
     def refresh_queue_async(self, *, reset_page: bool = False, force: bool = False,
                             fast_page: bool = False):
-        """Fetch + disk-verify the queue OFF the UI thread (review #3).
+        """Render a DB snapshot immediately, then verify files off-thread.
 
-        ``fetch_queue_page`` + ``apply_disk_verification`` (per-file ``stat``)
-        run through ``app_controller.run_blocking`` (``asyncio.to_thread``); the
-        result is marshalled back to the UI thread and dropped if a newer
-        refresh superseded it (generation token).  At most one query is in
-        flight; extra requests are coalesced into one pending relaunch.
+        Both phases use ``run_blocking``. Generation tokens discard stale disk
+        results, while at most one SQLite snapshot query is in flight and extra
+        requests coalesce into one pending relaunch.
         """
         if reset_page:
             self.queue_page = 1
@@ -259,6 +257,7 @@ class DownloadView(BaseDownloadView):
         self._launch_queue_query(generation)
 
     def _launch_queue_query(self, generation: int) -> None:
+        """Render the SQLite snapshot first, then verify disk state in background."""
         self._queue_refreshing = True
         self._queue_refresh_pending = False
         if hasattr(self, "queue_refresh_btn"):
@@ -267,27 +266,17 @@ class DownloadView(BaseDownloadView):
         status_filter = self.queue_filter
         page = self.queue_page
         page_size = self.queue_page_size
-        verify_live = not self._queue_fast_page_pending
         self._queue_fast_page_pending = False
 
         def query():
             if status_filter == "working":
-                # Disk-verification + downgrade happen BEFORE pagination so a
-                # Working page is never emptied by post-filter drops (review #2c).
                 return self.download_service.fetch_working_page(
-                    page=page, page_size=page_size, verify_live=verify_live)
-            return self.download_service.apply_disk_verification(
-                self.download_service.fetch_queue_page(
-                    status_filter=status_filter,
-                    page=page,
-                    page_size=page_size,
-                ),
-                status_filter=status_filter,
-            )
+                    page=page, page_size=page_size, verify_live=False)
+            return self.download_service.fetch_queue_page(
+                status_filter=status_filter, page=page, page_size=page_size)
 
         def render(result):
             if generation != self._queue_generation:
-                # Superseded by a newer request: never apply a stale snapshot.
                 self._queue_refreshing = False
                 if hasattr(self, "queue_refresh_btn"):
                     self.queue_refresh_btn.disabled = False
@@ -302,6 +291,9 @@ class DownloadView(BaseDownloadView):
             self._safe_update(getattr(self, "queue_refresh_btn", None))
             if self._queue_refresh_pending:
                 self.refresh_queue_async(force=True)
+                return
+            self._launch_disk_verification(
+                generation, result, status_filter=status_filter)
 
         def fail(exc):
             self._queue_refreshing = False
@@ -321,6 +313,28 @@ class DownloadView(BaseDownloadView):
                 self.queue_refresh_btn.disabled = False
             self.app_controller.show_snack(f"队列读取失败: {exc}")
 
+    def _launch_disk_verification(
+            self, generation: int, model: DownloadQueuePage, *,
+            status_filter: str) -> None:
+        """Patch the visible snapshot only if it is still the current page."""
+        def verify():
+            return self.download_service.apply_disk_verification(
+                model, status_filter=status_filter)
+
+        def render_verified(result):
+            if generation != self._queue_generation:
+                return
+            self._apply_queue_page(result)
+
+        def fail_verify(exc):
+            logging.warning("Queue disk verification failed: %s", exc)
+
+        try:
+            self.app_controller.run_blocking(
+                verify, render_verified, on_error=fail_verify,
+                action_label="后台核验下载文件")
+        except Exception as exc:
+            logging.warning("Unable to launch queue disk verification: %s", exc)
     @staticmethod
     def _enum_for_item(item: DownloadQueueItem) -> WorkStatus:
         return {
@@ -421,12 +435,15 @@ class DownloadView(BaseDownloadView):
             ]
         self._update_queue_summary()
         self._update_pagination()
-        self._render_detail_panel_if_selected()
-        # An empty filter has no selectable work. Hiding the unused detail
-        # pane removes a contradictory "作品详情" area and lets the empty
-        # guidance use the available width.
-        self.detail_panel.visible = bool(ordered)
-        self._safe_update(self.detail_panel)
+        # During the base constructor's initial synchronous test render, the
+        # subclass detail panel has not been created yet.
+        if hasattr(self, "detail_panel"):
+            self._render_detail_panel_if_selected()
+            # An empty filter has no selectable work. Hiding the unused detail
+            # pane removes a contradictory "作品详情" area and lets the empty
+            # guidance use the available width.
+            self.detail_panel.visible = bool(ordered)
+            self._safe_update(self.detail_panel)
         self._safe_update(self.queue_list)
 
     def _on_filter_change(self, event):
@@ -493,8 +510,13 @@ class DownloadView(BaseDownloadView):
 
     def _batch_resume(self):
         self.btn_resume_all.text = "恢复中…"
-        for data in self.active_downloads.values():
+        for rj_id, data in self.active_downloads.items():
             data.pop("_ignore_active_progress", None)
+            if self.normalize_status(data.get("status", "")) in {
+                    "paused", "failed", "partial"}:
+                data["status"] = "恢复中..."
+                self._update_compact_card(rj_id)
+        self._update_queue_summary()
         self._set_batch_controls_busy()
         self.app_controller.show_snack("正在恢复全部任务…")
         self.app_controller.resume_all_downloads()
@@ -980,12 +1002,16 @@ class DownloadView(BaseDownloadView):
             rel = self._relative_path(local, root) or [str(db.get("track_title") or "")]
             key = self._unique_key(seen, "/".join(rel))
             rows.append({
-                "key": key, "rel": rel,
+                "key": key, "rel": rel, "rj_id": rj_id,
                 "dl_id": str(db.get("id") or ""),
                 "track_id": None,
                 "title": str(db.get("track_title") or rel[-1]),
                 "status": str(db.get("status") or ""),
                 "error": str(db.get("error") or ""),
+                "error_code": str(db.get("error_code") or ""),
+                "attempt_count": int(db.get("attempt_count") or 0),
+                "max_attempts": int(db.get("max_attempts") or 0),
+                "next_retry_at": str(db.get("next_retry_at") or ""),
                 "downloaded": int(db.get("downloaded_bytes") or 0),
                 "total": int(db.get("total_bytes") or 0),
                 "has_part": self._implies_part(
@@ -1068,10 +1094,13 @@ class DownloadView(BaseDownloadView):
                 rel = [title]
                 key = self._unique_key(seen, "/".join(rel))
                 rows.append({
-                    "key": key, "rel": rel, "dl_id": "", "track_id": track_id,
+                    "key": key, "rel": rel, "rj_id": rj_id,
+                    "dl_id": "", "track_id": track_id,
                     "title": title,
                     "status": str(live.get("status", "")),
-                    "error": "",
+                    "error": "", "error_code": "",
+                    "attempt_count": 0, "max_attempts": 0,
+                    "next_retry_at": "",
                     "downloaded": int(live.get("downloaded", 0) or 0),
                     "total": int(live.get("total", 0) or 0),
                     "has_part": False,
@@ -1086,7 +1115,11 @@ class DownloadView(BaseDownloadView):
             cursor = self.download_service.connection.execute(
                 "SELECT id, track_title, status, downloaded_bytes, total_bytes, "
                 "COALESCE(local_path, '') AS local_path, "
-                "COALESCE(error, '') AS error "
+                "COALESCE(error, '') AS error, "
+                "COALESCE(error_code, '') AS error_code, "
+                "COALESCE(attempt_count, 0) AS attempt_count, "
+                "COALESCE(max_attempts, 0) AS max_attempts, "
+                "COALESCE(next_retry_at, '') AS next_retry_at "
                 "FROM downloads WHERE rj_id = ?", (rj_id,))
             return [dict(row) for row in cursor.fetchall()]
         except Exception:
@@ -1201,6 +1234,11 @@ class DownloadView(BaseDownloadView):
             ft.ProgressBar(value=0.0, bar_height=3, width=110,
                            color=ACCENT_PRIMARY),
             ft.Text("", size=10, color="grey"),
+            ft.IconButton(
+                icon=ft.Icons.REPLAY, tooltip="只重试此文件",
+                width=32, height=32, visible=False,
+                style=ft.ButtonStyle(padding=0),
+            ),
         ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
     def _update_folder_row(self, key: str, detail: dict) -> None:
@@ -1223,6 +1261,22 @@ class DownloadView(BaseDownloadView):
         if detail.get("has_part"):
             label += " · .part"
         error = str(detail.get("error") or "")
+        error_code = str(detail.get("error_code") or "")
+        attempt = int(detail.get("attempt_count", 0) or 0)
+        maximum = int(detail.get("max_attempts", 0) or 0)
+        if error_code:
+            label += f" · {error_code}"
+        if attempt or maximum:
+            label += f" · {attempt}/{maximum or '?'}"
+        retry_at = str(detail.get("next_retry_at") or "")
+        if retry_at:
+            try:
+                seconds = max(
+                    0, int((datetime.fromisoformat(retry_at) - datetime.now()).total_seconds())
+                )
+                label += f" · {seconds}s 后重试"
+            except (TypeError, ValueError):
+                pass
         if error:
             label += " · " + error[:28]
         row.controls[2].value = label
@@ -1239,6 +1293,25 @@ class DownloadView(BaseDownloadView):
         prog = min(1.0, downloaded / total) if total > 0 else 0.0
         row.controls[3].value = prog
         row.controls[4].value = f"{prog * 100:.0f}%"
+        retry_button = row.controls[5]
+        retry_button.visible = bool(
+            detail.get("dl_id") and status in {"failed", "paused"}
+        )
+        retry_button.disabled = status not in {"failed", "paused"}
+        retry_button.on_click = (
+            lambda _event, r=detail.get("rj_id"), d=detail.get("dl_id"):
+                self._retry_file(r, d)
+        )
+
+    def _retry_file(self, rj_id: str, download_id: str) -> None:
+        if not rj_id or not download_id:
+            return
+        self.app_controller.show_snack("正在只重试所选文件…")
+        retry = getattr(self.app_controller, "retry_download_file", None)
+        if callable(retry):
+            retry(rj_id, download_id)
+        else:
+            self.app_controller.show_snack("当前版本不支持单文件重试")
 
     def _detail_prev(self, _event=None):
         if self._detail_page > 1:
