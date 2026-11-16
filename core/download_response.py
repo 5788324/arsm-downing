@@ -112,6 +112,21 @@ def plan_download_response(
             ),
         )
 
+    if requested_offset != local_size:
+        return DownloadResponsePlan(
+            action="retry_from_zero",
+            reason="Local partial size no longer matches the requested offset",
+        )
+
+    known_total = content_range.total
+    if known_total is None and expected_size > 0:
+        known_total = expected_size
+    if known_total is not None and content_range.end >= known_total:
+        return DownloadResponsePlan(
+            action="retry_from_zero",
+            reason="Content-Range end exceeds the final byte offset",
+        )
+
     if expected_size > 0 and content_range.total not in (None, expected_size):
         return DownloadResponsePlan(
             action="retry_from_zero",

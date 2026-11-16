@@ -57,6 +57,10 @@ def make_orchestrator(tmp_path: Path, responses, retry_count=1):
     cfg.tag_audio = False
     db = LibraryVault(tmp_path / "history.db")
     orc = Orchestrator(FakeKernel(responses), cfg, db)
+    # These tests exercise transport and range semantics with tiny sentinel
+    # byte strings rather than real media containers. Structural validation
+    # has dedicated coverage in test_download_failure_recovery.py.
+    orc._validate_local_completion = lambda _path, _size=0: (True, "fixture")
     return orc, db
 
 

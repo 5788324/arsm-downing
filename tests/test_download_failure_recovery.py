@@ -9,9 +9,34 @@ from PIL import Image
 from core.config import ConfigManager
 from core.database import LibraryVault
 from core.local_file_validation import validate_completed_local_file
+
+
+def test_utf16_completed_text_and_part_validate_without_accepting_binary(tmp_path):
+    for name, bom, encoding in (
+        ("script.txt", b"\xff\xfe", "utf-16-le"),
+        ("lyrics.lrc.part", b"\xfe\xff", "utf-16-be"),
+    ):
+        path = tmp_path / name
+        payload = bom + ("[00:01.00] subtitle\n" * 9000).encode(encoding)
+        path.write_bytes(payload)
+        assert validate_completed_local_file(path) == (True, "valid_text")
+        path.write_bytes(payload + b"\x01")
+        assert not validate_completed_local_file(path)[0]
+        path.write_bytes(bom + "text\x00\x01".encode(encoding))
+        assert not validate_completed_local_file(path)[0]
+    path = tmp_path / "unmarked.txt"
+    path.write_bytes(b"binary\x00payload")
+    assert not validate_completed_local_file(path)[0]
 from core.models import TrackItem, WorkMetadata
 from core.network import NetworkKernel
 from core.orchestrator import Orchestrator
+
+
+def test_oversized_image_is_a_validation_result(tmp_path, monkeypatch):
+    path = tmp_path / "huge.jpg"
+    Image.new("RGB", (5, 5)).save(path)
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 10)
+    assert validate_completed_local_file(path) == (False, "image_pixel_limit")
 
 
 def _meta() -> WorkMetadata:
@@ -133,6 +158,37 @@ def test_mixed_worker_results_persist_partial_work(tmp_path):
             }
             assert states == {"good.bin": "completed", "bad.bin": "failed"}
             assert db.get_works_status(_meta().rj_id) == "partial"
+        finally:
+            await kernel.shutdown()
+            db.close()
+
+    asyncio.run(run())
+
+
+def test_exact_size_invalid_wav_is_not_accepted_as_completed(tmp_path):
+    async def run():
+        orchestrator, db, kernel = _orchestrator(tmp_path)
+        path = tmp_path / "raw.wav"
+        path.write_bytes(b"raw pcm without a wav header")
+        target = TrackItem(
+            id="raw", title=path.name, type="audio",
+            url="https://invalid/", size=path.stat().st_size,
+            save_path=path,
+        )
+        download_id = orchestrator._make_dl_id(
+            _meta().rj_id, target.id, target.save_path, target.title)
+        db.upsert_download(
+            download_id, _meta().rj_id, target.title, str(path),
+            "queued", path.stat().st_size, path.stat().st_size,
+        )
+        try:
+            result = await orchestrator.download_file(
+                target, _meta(), None, asyncio.Semaphore(1))
+            assert result is False
+            row = dict(db.get_downloads_by_rj(_meta().rj_id)[0])
+            assert row["status"] == "failed"
+            assert row["error_code"] == "invalid_local_file"
+            assert "structural validation" in row["error"]
         finally:
             await kernel.shutdown()
             db.close()

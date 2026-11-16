@@ -455,9 +455,15 @@ class SettingsView(ft.Container):
             if service is not None:
                 service.output_dir = Path(config.output_dir)
                 service.library_paths = tuple(Path(value) for value in config.library_paths)
-            self.app_controller.show_snack(
-                "设置已保存；浏览器扩展连接已同步，并发线程数重启后完整生效"
+            previous_output = previous.get("output_dir")
+            output_changed = (
+                previous_output is None
+                or Path(previous_output).resolve(strict=False) != output_dir
             )
+            message = "设置已保存；浏览器扩展连接已同步，并发线程数重启后完整生效"
+            if output_changed:
+                message += "；新任务使用新目录，下载中和已排队任务继续使用原目录，不会自动迁移"
+            self.app_controller.show_snack(message)
         except Exception as exc:
             for name, value in previous.items():
                 setattr(config, name, value)

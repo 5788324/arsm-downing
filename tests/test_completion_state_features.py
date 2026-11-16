@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+import wave
 
 import pytest
 
@@ -184,3 +185,204 @@ def test_file_level_retry_preserves_failed_sibling(tmp_path):
         db.close()
 
     asyncio.run(run())
+
+
+def test_download_batch_uses_one_connection_and_preserves_upsert_semantics(tmp_path):
+    db = LibraryVault(tmp_path / "history.db")
+    opened = []
+    original_write_conn = db._write_conn
+
+    def counting_write_conn():
+        opened.append(True)
+        return original_write_conn()
+
+    db._write_conn = counting_write_conn
+    db.upsert_download_batch([
+        {
+            "download_id": "d1", "rj_id": "RJ00000001",
+            "track_title": "one.mp3", "local_path": str(tmp_path / "one.mp3"),
+            "status": "queued", "total_bytes": 10,
+        },
+        {
+            "download_id": "d2", "rj_id": "RJ00000001",
+            "track_title": "two.mp3", "local_path": str(tmp_path / "two.mp3"),
+            "status": "paused", "downloaded_bytes": 3, "total_bytes": 10,
+        },
+    ])
+
+    assert len(opened) == 1
+    assert len(db.get_downloads_by_rj("RJ00000001")) == 2
+
+    db.upsert_download_batch([{
+        "download_id": "d1", "rj_id": "RJ00000001",
+        "track_title": "one.mp3", "local_path": str(tmp_path / "one.mp3"),
+        "status": "completed", "downloaded_bytes": 10, "total_bytes": 10,
+    }])
+    rows = {row["id"]: dict(row) for row in db.get_downloads_by_rj("RJ00000001")}
+    assert len(opened) == 2
+    assert len(rows) == 2
+    assert rows["d1"]["status"] == "completed"
+    assert rows["d2"]["status"] == "paused"
+    db.close()
+
+
+def test_startup_restore_normalizes_interrupted_rows_in_one_batch(tmp_path):
+    config = ConfigManager()
+    config.output_dir = tmp_path
+    config.auto_resume_on_start = False
+    db = LibraryVault(tmp_path / "history.db")
+    metadata = {
+        "title": "Resume", "circle": {"name": "Test"}, "vas": [], "tags": [],
+        "price": 0, "dl_count": 0, "rate_average_2dp": 0,
+        "release_date": "", "mainCoverUrl": "",
+    }
+    for rj_id in ("RJ00000001", "RJ00000002"):
+        db.set_metadata_cache(rj_id, "Resume", "Test", "", metadata, [])
+    db.upsert_download_batch([
+        {
+            "download_id": "d1", "rj_id": "RJ00000001",
+            "track_title": "one.mp3", "local_path": str(tmp_path / "one.mp3"),
+            "status": "downloading", "downloaded_bytes": 4, "total_bytes": 10,
+        },
+        {
+            "download_id": "d2", "rj_id": "RJ00000002",
+            "track_title": "two.mp3", "local_path": str(tmp_path / "two.mp3"),
+            "status": "resuming", "downloaded_bytes": 5, "total_bytes": 10,
+        },
+    ])
+    batches = []
+    original_batch = db.upsert_download_batch
+
+    def recording_batch(items):
+        items = list(items)
+        batches.append(items)
+        return original_batch(items)
+
+    db.upsert_download_batch = recording_batch
+    orc = Orchestrator(NetworkKernel(config), config, db)
+    asyncio.run(orc.restore_pending_downloads())
+
+    assert [len(batch) for batch in batches] == [2]
+    assert {
+        row["status"] for rj_id in ("RJ00000001", "RJ00000002")
+        for row in db.get_downloads_by_rj(rj_id)
+    } == {"paused"}
+    db.close()
+
+
+def test_resume_all_classification_uses_one_snapshot_query(tmp_path):
+    config = ConfigManager()
+    config.output_dir = tmp_path
+    db = LibraryVault(tmp_path / "history.db")
+    metadata = {
+        "title": "Resume", "circle": {"name": "Test"}, "vas": [],
+        "tags": [], "price": 0, "dl_count": 0, "rate_average_2dp": 0,
+        "release_date": "", "mainCoverUrl": "",
+    }
+    db.set_metadata_cache(
+        "RJ00000001", "Resume", "Test", "", metadata, []
+    )
+    db.upsert_download_batch([
+        {
+            "download_id": "d1", "rj_id": "RJ00000001",
+            "track_title": "one.mp3", "local_path": str(tmp_path / "one.mp3"),
+            "status": "failed", "total_bytes": 10,
+        },
+        {
+            "download_id": "d2", "rj_id": "RJ00000001",
+            "track_title": "two.mp3", "local_path": str(tmp_path / "two.mp3"),
+            "status": "paused", "downloaded_bytes": 3, "total_bytes": 10,
+        },
+        {
+            "download_id": "d3", "rj_id": "RJ00000002",
+            "track_title": "three.mp3",
+            "local_path": str(tmp_path / "three.mp3"),
+            "status": "failed", "total_bytes": 10,
+        },
+    ])
+    orc = Orchestrator(NetworkKernel(config), config, db)
+    selects = []
+    db.conn.set_trace_callback(
+        lambda sql: selects.append(sql)
+        if sql.lstrip().upper().startswith(("SELECT", "WITH")) else None
+    )
+
+    result = orc.resume_all()
+    db.conn.set_trace_callback(None)
+
+    assert set(result) == {"RJ00000001", "RJ00000002"}
+    assert len(selects) == 1
+    db.close()
+
+
+@pytest.mark.parametrize("missing_sibling", [False, True])
+def test_startup_reconciles_stale_partial_parent_and_schedules_postprocess(tmp_path, missing_sibling):
+    config = ConfigManager()
+    config.output_dir = tmp_path
+    db = LibraryVault(tmp_path / "history.db")
+    root = tmp_path / "RJ00000001"
+    root.mkdir()
+    audio = root / "track.wav"
+    with wave.open(str(audio), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(8000)
+        output.writeframes(b"\x00\x00" * 80)
+    metadata = {
+        "title": "Recovered", "circle": {"name": "Test"}, "vas": [],
+        "tags": [], "price": 0, "dl_count": 0, "rate_average_2dp": 0,
+        "release_date": "", "mainCoverUrl": "",
+    }
+    names = [audio.name] + (["missing.wav"] if missing_sibling else [])
+    db.set_metadata_cache(
+        "RJ00000001", "Recovered", "Test", "", metadata,
+        [{"title": name, "type": "audio", "mediaDownloadUrl": f"https://example.invalid/{name}"}
+         for name in names])
+    db.register(
+        _meta(), audio.stat().st_size, root, status="partial",
+        postprocess_status="unknown",
+    )
+    db.upsert_download(
+        "d1", "RJ00000001", audio.name, str(audio), "completed",
+        audio.stat().st_size, audio.stat().st_size,
+    )
+    orc = Orchestrator(NetworkKernel(config), config, db)
+
+    asyncio.run(orc.restore_pending_downloads())
+
+    row = dict(db.search("RJ00000001")[0])
+    assert row["status"] == ("partial" if missing_sibling else "completed")
+    assert row["postprocess_status"] == ("unknown" if missing_sibling else "pending")
+    assert db.get_downloads_by_rj("RJ00000001")[0]["status"] == "completed"
+    db.close()
+
+
+def test_startup_rejects_invalid_completed_media_instead_of_closing_parent(tmp_path):
+    config = ConfigManager()
+    config.output_dir = tmp_path
+    db = LibraryVault(tmp_path / "history.db")
+    root = tmp_path / "RJ00000001"
+    root.mkdir()
+    audio = root / "track.wav"
+    audio.write_bytes(b"raw pcm without a wav header")
+    db.set_metadata_cache(
+        "RJ00000001", "Recovered", "Test", "", {},
+        [{"title": audio.name, "type": "audio", "mediaDownloadUrl": "https://example.invalid/track.wav"}])
+    db.register(
+        _meta(), audio.stat().st_size, root, status="partial",
+        postprocess_status="unknown",
+    )
+    db.upsert_download(
+        "d1", "RJ00000001", audio.name, str(audio), "completed",
+        audio.stat().st_size, audio.stat().st_size,
+    )
+    orc = Orchestrator(NetworkKernel(config), config, db)
+
+    result = asyncio.run(orc.reconcile_stale_completed_works())
+
+    assert result == {"found": 1, "completed": 0, "invalid": 1}
+    assert db.get_works_status("RJ00000001") == "partial"
+    download = dict(db.get_downloads_by_rj("RJ00000001")[0])
+    assert download["status"] == "failed"
+    assert download["error_code"] == "invalid_local_file"
+    db.close()

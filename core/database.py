@@ -1,5 +1,7 @@
+import csv
 import json
 import logging
+import shutil
 import sqlite3
 import threading
 from datetime import datetime, timedelta
@@ -19,6 +21,7 @@ from core.library_rebuild import (
     flatten_metadata_track_titles,
     scan_library_snapshot,
 )
+from core.media_assets import find_local_cover
 from core.models import WorkMetadata
 from core.paths import app_path
 
@@ -276,6 +279,35 @@ class LibraryVault:
                 CREATE INDEX IF NOT EXISTS idx_library_items_scan_run
                 ON library_items(scan_run_id)
             """)
+
+        # User-confirmed cloud backup ledger. This does not imply that ARSM
+        # uploaded or independently verified the remote copy. It survives
+        # filesystem rescans so cloud-only works stay visible and protected.
+        conn.execute("""
+                CREATE TABLE IF NOT EXISTS cloud_archives (
+                    rj_id TEXT PRIMARY KEY,
+                    provider TEXT DEFAULT '',
+                    remote_path TEXT DEFAULT '',
+                    note TEXT DEFAULT '',
+                    title TEXT DEFAULT '',
+                    circle TEXT DEFAULT '',
+                    original_local_path TEXT DEFAULT '',
+                    total_files INTEGER DEFAULT 0,
+                    total_size INTEGER DEFAULT 0,
+                    audio_count INTEGER DEFAULT 0,
+                    image_count INTEGER DEFAULT 0,
+                    video_count INTEGER DEFAULT 0,
+                    other_count INTEGER DEFAULT 0,
+                    has_cover INTEGER DEFAULT 0,
+                    cover_cache_path TEXT DEFAULT '',
+                    metadata_json TEXT DEFAULT '{}',
+                    confirmation_source TEXT DEFAULT 'user',
+                    archived_at TIMESTAMP NOT NULL,
+                    updated_at TIMESTAMP NOT NULL
+                )
+            """)
+        self._safe_alter(conn, "cloud_archives", "cover_cache_path", "TEXT DEFAULT ''")
+        self._safe_alter(conn, "cloud_archives", "metadata_json", "TEXT DEFAULT '{}'")
         conn.commit()
 
     def _safe_alter(self, conn, table: str, col_name: str, col_type: str) -> None:
@@ -324,6 +356,23 @@ class LibraryVault:
             logging.warning(f"Metadata cache read error: {e}")
             return None
 
+    def get_recovery_metadata_ids(self) -> set[str]:
+        """List usable cache keys without loading metadata/track JSON blobs."""
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT rj_id, fetched_at FROM metadata_cache"
+            ).fetchall()
+        result = set()
+        for row in rows:
+            try:
+                # Recovery allows expired entries, but malformed dates have
+                # always been rejected by get_metadata_cache.
+                datetime.now() - datetime.fromisoformat(row["fetched_at"])
+            except (TypeError, ValueError):
+                continue
+            result.add(str(row["rj_id"]))
+        return result
+
     def set_metadata_cache(self, rj_id: str, title: str, circle: str,
                            cover_url: str, metadata_raw: dict,
                            tracks_raw: list) -> None:
@@ -340,6 +389,52 @@ class LibraryVault:
              _json.dumps(tracks_raw, ensure_ascii=False),
              now, now))
 
+    def upsert_work_metadata(self, rj_id: str, title: str, circle: str,
+                             cover_url: str, metadata_raw: dict) -> None:
+        """Refresh album metadata without replacing cached track data or state.
+
+        The bulk metadata backfill uses this narrower write path so it cannot
+        reset download status, local paths, post-processing state, or an
+        existing ``tracks_json`` payload.
+        """
+        import json as _json
+        now = datetime.now()
+        metadata_json = _json.dumps(metadata_raw, ensure_ascii=False)
+
+        def write(conn):
+            conn.execute(
+                """INSERT INTO metadata_cache
+                   (rj_id, title, circle, cover_url, metadata_json,
+                    tracks_json, fetched_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, '[]', ?, ?)
+                   ON CONFLICT(rj_id) DO UPDATE SET
+                     title=excluded.title,
+                     circle=excluded.circle,
+                     cover_url=excluded.cover_url,
+                     metadata_json=excluded.metadata_json,
+                     fetched_at=excluded.fetched_at,
+                     updated_at=excluded.updated_at""",
+                (rj_id, title, circle, cover_url, metadata_json, now, now),
+            )
+            conn.execute(
+                """UPDATE works
+                   SET title=?, circle=?, cover_url=?
+                   WHERE rj_id=?""",
+                (title, circle, cover_url, rj_id),
+            )
+            if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='cloud_archives'"
+            ).fetchone():
+                conn.execute(
+                    """UPDATE cloud_archives
+                       SET title=?, circle=?, metadata_json=?, updated_at=?
+                       WHERE rj_id=?""",
+                    (title, circle, metadata_json, now, rj_id),
+                )
+
+        self._write(write)
+
     def invalidate_cache(self, rj_id: str) -> None:
         """Force next lookup to fetch fresh data. Raises on failure."""
         self._execute_write(
@@ -348,6 +443,53 @@ class LibraryVault:
     # ──────────────────────────────────────────────
     #  Download state (P1-2)
     # ──────────────────────────────────────────────
+    _DOWNLOAD_UPSERT_SQL = """INSERT INTO downloads
+               (id, rj_id, track_title, local_path, status,
+                downloaded_bytes, total_bytes, error, error_code,
+                attempt_count, max_attempts, next_retry_at, last_http_status,
+                updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 rj_id=excluded.rj_id,
+                 track_title=excluded.track_title,
+                 local_path=excluded.local_path,
+                 status=excluded.status,
+                 downloaded_bytes=excluded.downloaded_bytes,
+                 total_bytes=excluded.total_bytes,
+                 error=excluded.error,
+                 error_code=excluded.error_code,
+                 attempt_count=excluded.attempt_count,
+                 max_attempts=excluded.max_attempts,
+                 next_retry_at=excluded.next_retry_at,
+                 last_http_status=excluded.last_http_status,
+                 updated_at=excluded.updated_at"""
+
+    @staticmethod
+    def _download_upsert_params(item: dict, updated_at) -> tuple:
+        return (
+            item["download_id"], item["rj_id"], item["track_title"],
+            item["local_path"], item["status"],
+            int(item.get("downloaded_bytes", 0) or 0),
+            int(item.get("total_bytes", 0) or 0), item.get("error", ""),
+            item.get("error_code", ""),
+            max(0, int(item.get("attempt_count", 0) or 0)),
+            max(0, int(item.get("max_attempts", 0) or 0)),
+            item.get("next_retry_at"), item.get("last_http_status"), updated_at,
+        )
+
+    def upsert_download_batch(self, items) -> None:
+        """Write several file states in one transaction."""
+        items = list(items)
+        if not items:
+            return
+        updated_at = datetime.now()
+        params = [self._download_upsert_params(item, updated_at) for item in items]
+
+        def write(conn):
+            conn.executemany(self._DOWNLOAD_UPSERT_SQL, params)
+
+        self._write(write)
+
     def upsert_download(self, download_id: str, rj_id: str,
                         track_title: str, local_path: str,
                         status: str, downloaded_bytes: int = 0,
@@ -356,17 +498,15 @@ class LibraryVault:
                         max_attempts: int = 0, next_retry_at=None,
                         last_http_status: int | None = None) -> None:
         """Write download state. Raises on failure (RC7.1)."""
-        self._execute_write(
-            """INSERT OR REPLACE INTO downloads
-               (id, rj_id, track_title, local_path, status,
-                downloaded_bytes, total_bytes, error, error_code,
-                attempt_count, max_attempts, next_retry_at, last_http_status,
-                updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (download_id, rj_id, track_title, local_path,
-             status, downloaded_bytes, total_bytes, error, error_code,
-             max(0, int(attempt_count)), max(0, int(max_attempts)),
-             next_retry_at, last_http_status, datetime.now()))
+        self.upsert_download_batch([{
+            "download_id": download_id, "rj_id": rj_id,
+            "track_title": track_title, "local_path": local_path,
+            "status": status, "downloaded_bytes": downloaded_bytes,
+            "total_bytes": total_bytes, "error": error,
+            "error_code": error_code, "attempt_count": attempt_count,
+            "max_attempts": max_attempts, "next_retry_at": next_retry_at,
+            "last_http_status": last_http_status,
+        }])
 
     def get_downloads_by_rj(self, rj_id: str) -> List[sqlite3.Row]:
         try:
@@ -416,10 +556,13 @@ class LibraryVault:
             return ""
 
     def get_rj_state_batch(self, rj_ids: Iterable[str]) -> dict[str, dict[str, object]]:
-        """Read library and queue states for many RJ ids with three SELECTs."""
+        """Read local/cloud library and queue states for many RJ ids."""
         canonical = tuple(dict.fromkeys(str(value).upper() for value in rj_ids if value))
         result = {
-            rj_id: {"in_library": False, "statuses": set(), "download_statuses": set()}
+            rj_id: {
+                "in_library": False, "cloud_archived": False,
+                "statuses": set(), "download_statuses": set(),
+            }
             for rj_id in canonical
         }
         if not canonical:
@@ -427,12 +570,18 @@ class LibraryVault:
         placeholders = ",".join("?" for _ in canonical)
         with self._lock:
             for row in self.conn.execute(
-                f"SELECT DISTINCT rj_id FROM library_index "
+                f"SELECT DISTINCT rj_id, 0 AS cloud_archived FROM library_index "
                 f"WHERE rj_id IN ({placeholders}) "
-                "AND LOWER(COALESCE(status, '')) != 'missing'",
-                canonical,
+                "AND LOWER(COALESCE(status, '')) != 'missing' "
+                "UNION ALL SELECT rj_id, 1 AS cloud_archived FROM cloud_archives "
+                f"WHERE rj_id IN ({placeholders})",
+                (*canonical, *canonical),
             ).fetchall():
-                result[str(row["rj_id"]).upper()]["in_library"] = True
+                item = result[str(row["rj_id"]).upper()]
+                item["in_library"] = True
+                item["cloud_archived"] = (
+                    bool(item["cloud_archived"]) or bool(row["cloud_archived"])
+                )
             for row in self.conn.execute(
                 f"SELECT rj_id, status FROM downloads "
                 f"WHERE rj_id IN ({placeholders})",
@@ -636,15 +785,185 @@ class LibraryVault:
              size_bytes, file_count, datetime.now()))
 
     def find_in_library(self, rj_id: str) -> List[sqlite3.Row]:
-        """Check if an RJ exists in any library path."""
+        """Check whether an RJ exists locally or in the cloud archive ledger."""
         try:
             return self.conn.execute(
-                "SELECT * FROM library_index WHERE rj_id = ? AND status != 'missing'",
-                (rj_id,)
+                """SELECT rj_id, library_path, work_dir, status, size_bytes,
+                          file_count, scanned_at
+                   FROM library_index
+                   WHERE rj_id = ? AND status != 'missing'
+                   UNION ALL
+                   SELECT ca.rj_id, 'cloud_archive',
+                          CASE WHEN ca.remote_path != '' THEN ca.remote_path
+                               ELSE '云端归档' END,
+                          'archived', ca.total_size, ca.total_files, ca.archived_at
+                   FROM cloud_archives ca
+                   WHERE ca.rj_id = ?
+                     AND NOT EXISTS (
+                         SELECT 1 FROM library_index li
+                         WHERE li.rj_id=ca.rj_id AND li.status != 'missing'
+                     )""",
+                (rj_id, rj_id)
             ).fetchall()
         except Exception as e:
             logging.error(f"Library lookup error: {e}")
             return []
+
+    def is_cloud_archived(self, rj_id: str) -> bool:
+        """Return whether an RJ has a user-confirmed cloud archive record."""
+        try:
+            return self.conn.execute(
+                "SELECT 1 FROM cloud_archives WHERE rj_id=?", (rj_id,)
+            ).fetchone() is not None
+        except sqlite3.Error as exc:
+            logging.error("is_cloud_archived error for %s: %s", rj_id, exc)
+            return False
+
+    def mark_cloud_archives(self, rj_ids: Iterable[str], *, provider: str = "",
+                            remote_path: str = "", note: str = "") -> list[dict]:
+        """Record user-confirmed cloud backups without deleting local data.
+
+        Only complete, non-active library items are accepted.  The record is a
+        durable user assertion, not an independent verification of the remote.
+        """
+        canonical: list[str] = []
+        for raw in rj_ids:
+            normalized = self.normalize_rj_id(str(raw or ""))
+            if not normalized:
+                raise ValueError(f"RJ 号格式不正确: {raw}")
+            if normalized not in canonical:
+                canonical.append(normalized)
+        if not canonical:
+            raise ValueError("至少需要一个 RJ 号")
+        now = datetime.now()
+
+        def _mark(conn):
+            recorded: list[dict] = []
+            for rj_id in canonical:
+                row = conn.execute(
+                    """SELECT li.*, w.title AS work_title, w.circle AS work_circle,
+                              w.status AS work_status, w.postprocess_status,
+                              w.local_path AS work_local_path,
+                              mc.title AS metadata_title, mc.circle AS metadata_circle,
+                              mc.metadata_json AS metadata_json
+                       FROM library_items li
+                       LEFT JOIN works w ON w.rj_id=li.rj_id
+                       LEFT JOIN metadata_cache mc ON mc.rj_id=li.rj_id
+                       WHERE li.rj_id=?""",
+                    (rj_id,),
+                ).fetchone()
+                if row is None:
+                    raise ValueError(f"{rj_id} 不在当前资源库中，未登记")
+                active = conn.execute(
+                    """SELECT COUNT(*) FROM downloads
+                       WHERE rj_id=? AND status NOT IN
+                       ('completed','registered','stale','ignored')""",
+                    (rj_id,),
+                ).fetchone()[0]
+                if active:
+                    raise ValueError(f"{rj_id} 仍有未完成或异常文件，未登记")
+                work_status = str(row["work_status"] or "")
+                if work_status not in {"completed", "verified", "external", "indexed"}:
+                    raise ValueError(f"{rj_id} 状态为 {work_status or 'unknown'}，未登记")
+                postprocess_status = str(row["postprocess_status"] or "unknown")
+                if (work_status == "completed" and
+                        postprocess_status not in {"completed", "not_required"}):
+                    raise ValueError(f"{rj_id} 后处理尚未完成，未登记")
+                title = str(
+                    row["metadata_title"] or row["work_title"] or
+                    row["folder_name"] or rj_id
+                )
+                circle = str(row["metadata_circle"] or row["work_circle"] or "")
+                original_path = str(row["folder_path"] or row["work_local_path"] or "")
+                cover_cache_path = ""
+                cover = find_local_cover(original_path) if original_path else None
+                if cover is not None:
+                    try:
+                        cover_dir = Path(self.db_path).parent / "cloud_archive_covers"
+                        cover_dir.mkdir(parents=True, exist_ok=True)
+                        cached_cover = cover_dir / f"{rj_id}{cover.suffix.casefold()}"
+                        shutil.copy2(cover, cached_cover)
+                        cover_cache_path = str(cached_cover)
+                    except OSError as exc:
+                        logging.warning("Cloud archive cover copy failed for %s: %s", rj_id, exc)
+                metadata_json = str(row["metadata_json"] or "{}")
+                values = (
+                    rj_id, str(provider or ""), str(remote_path or ""),
+                    str(note or ""), title, circle, original_path,
+                    int(row["total_files"] or 0), int(row["total_size"] or 0),
+                    int(row["audio_count"] or 0), int(row["image_count"] or 0),
+                    int(row["video_count"] or 0), int(row["other_count"] or 0),
+                    int(row["has_cover"] or 0), cover_cache_path,
+                    metadata_json, "user", now, now,
+                )
+                conn.execute(
+                    """INSERT INTO cloud_archives
+                       (rj_id, provider, remote_path, note, title, circle,
+                        original_local_path, total_files, total_size, audio_count,
+                        image_count, video_count, other_count, has_cover,
+                        cover_cache_path, metadata_json, confirmation_source,
+                        archived_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(rj_id) DO UPDATE SET
+                         provider=excluded.provider,
+                         remote_path=excluded.remote_path,
+                         note=excluded.note,
+                         title=excluded.title,
+                         circle=excluded.circle,
+                         original_local_path=excluded.original_local_path,
+                         total_files=excluded.total_files,
+                         total_size=excluded.total_size,
+                         audio_count=excluded.audio_count,
+                         image_count=excluded.image_count,
+                         video_count=excluded.video_count,
+                         other_count=excluded.other_count,
+                         has_cover=excluded.has_cover,
+                         cover_cache_path=CASE
+                           WHEN excluded.cover_cache_path != '' THEN excluded.cover_cache_path
+                           ELSE cloud_archives.cover_cache_path END,
+                         metadata_json=CASE
+                           WHEN excluded.metadata_json NOT IN ('', '{}') THEN excluded.metadata_json
+                           ELSE cloud_archives.metadata_json END,
+                         confirmation_source=excluded.confirmation_source,
+                         updated_at=excluded.updated_at""",
+                    values,
+                )
+                recorded.append({"rj_id": rj_id, "title": title,
+                                 "original_local_path": original_path})
+            return recorded
+
+        return self._write(_mark)
+
+    def list_cloud_archives(self) -> list[dict]:
+        """Return a stable snapshot of user-confirmed cloud archive records."""
+        try:
+            with self._lock:
+                rows = self.conn.execute(
+                    "SELECT * FROM cloud_archives ORDER BY rj_id"
+                ).fetchall()
+            return [dict(row) for row in rows]
+        except sqlite3.Error as exc:
+            logging.error("list_cloud_archives error: %s", exc)
+            return []
+
+    def export_cloud_archives_csv(self, destination: str | Path) -> Path:
+        """Export the durable cloud ledger as a portable UTF-8 CSV backup."""
+        target = Path(destination).expanduser()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        rows = self.list_cloud_archives()
+        fieldnames = [
+            "rj_id", "title", "circle", "provider", "remote_path", "note",
+            "original_local_path", "total_files", "total_size", "audio_count",
+            "image_count", "video_count", "other_count", "has_cover",
+            "cover_cache_path", "metadata_json", "confirmation_source",
+            "archived_at", "updated_at",
+        ]
+        with target.open("w", encoding="utf-8-sig", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({name: row.get(name, "") for name in fieldnames})
+        return target
 
     @staticmethod
     def normalize_rj_id(raw: str) -> str:
@@ -723,7 +1042,8 @@ class LibraryVault:
             for row in self.conn.execute(
                 "SELECT rj_id, folder_path FROM library_items"
             ).fetchall():
-                preferred.setdefault(row["rj_id"], []).append(row["folder_path"])
+                if row["folder_path"]:
+                    preferred.setdefault(row["rj_id"], []).append(row["folder_path"])
         canonical = choose_canonical_entries(snapshot, preferred)
         result = LibraryRebuildResult(
             success=True,
@@ -778,6 +1098,23 @@ class LibraryVault:
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 [entry.to_library_item_row(snapshot.run_id, snapshot.scanned_at)
                  for entry in canonical.values()],
+            )
+            conn.execute(
+                """INSERT INTO library_items
+                   (rj_id, folder_path, folder_name, total_files, total_size,
+                    audio_count, image_count, video_count, other_count,
+                    has_audio, has_cover, warnings_json, scan_run_id, scanned_at)
+                   SELECT ca.rj_id, '',
+                          COALESCE(NULLIF(ca.title, ''), ca.rj_id),
+                          ca.total_files, ca.total_size, ca.audio_count,
+                          ca.image_count, ca.video_count, ca.other_count,
+                          CASE WHEN ca.audio_count > 0 THEN 1 ELSE 0 END,
+                          ca.has_cover, '[]', ?, ca.updated_at
+                   FROM cloud_archives ca
+                   WHERE NOT EXISTS (
+                       SELECT 1 FROM library_items li WHERE li.rj_id=ca.rj_id
+                   )""",
+                (snapshot.run_id,),
             )
 
             for rj_id, entry in canonical.items():
@@ -1181,6 +1518,9 @@ class LibraryVault:
                         "WHERE warnings_json IS NOT NULL "
                         "AND warnings_json != '[]' AND warnings_json != ''"
                     ).fetchone()[0],
+                    "cloud_archived": self.conn.execute(
+                        "SELECT COUNT(*) FROM cloud_archives"
+                    ).fetchone()[0],
                 }
         except Exception as e:
             logging.error(f"get_library_summary error: {e}")
@@ -1215,6 +1555,7 @@ class LibraryVault:
                         "COALESCE(w.postprocess_status,'unknown') NOT IN "
                         "('completed','not_required')"
                     ),
+                    "cloud_archived": "ca.rj_id IS NOT NULL",
                 }
                 if category in category_conditions:
                     conditions.append(category_conditions[category])
@@ -1227,15 +1568,23 @@ class LibraryVault:
                 where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
                 total = int(self.conn.execute(
                     f"""SELECT COUNT(*) FROM library_items li
-                         LEFT JOIN works w ON w.rj_id=li.rj_id {where}""", params
+                         LEFT JOIN works w ON w.rj_id=li.rj_id
+                         LEFT JOIN cloud_archives ca ON ca.rj_id=li.rj_id
+                         {where}""", params
                 ).fetchone()[0])
                 rows = self.conn.execute(
                     f"""SELECT li.*, mc.cover_url AS metadata_cover_url,
                                w.status AS work_status,
-                               w.postprocess_status, w.postprocess_error
+                               w.postprocess_status, w.postprocess_error,
+                               ca.provider AS archive_provider,
+                               ca.remote_path AS archive_remote_path,
+                               ca.note AS archive_note,
+                               ca.archived_at, ca.original_local_path,
+                               ca.cover_cache_path AS archive_cover_path
                         FROM library_items li
                         LEFT JOIN metadata_cache mc ON mc.rj_id = li.rj_id
                         LEFT JOIN works w ON w.rj_id = li.rj_id
+                        LEFT JOIN cloud_archives ca ON ca.rj_id = li.rj_id
                         {where}
                         ORDER BY {order_by}
                         LIMIT ? OFFSET ?""",
@@ -1269,10 +1618,17 @@ class LibraryVault:
                                w.postprocess_updated_at,
                               mc.title AS metadata_title, mc.circle AS metadata_circle,
                               mc.cover_url AS metadata_cover_url,
-                              mc.metadata_json, mc.tracks_json, mc.fetched_at
+                              COALESCE(mc.metadata_json, ca.metadata_json) AS metadata_json,
+                              mc.tracks_json, mc.fetched_at,
+                              ca.provider AS archive_provider,
+                              ca.remote_path AS archive_remote_path,
+                              ca.note AS archive_note,
+                              ca.archived_at, ca.original_local_path,
+                              ca.cover_cache_path AS archive_cover_path
                        FROM library_items li
                        LEFT JOIN works w ON w.rj_id = li.rj_id
                        LEFT JOIN metadata_cache mc ON mc.rj_id = li.rj_id
+                       LEFT JOIN cloud_archives ca ON ca.rj_id = li.rj_id
                        WHERE li.rj_id = ?""",
                     (normalized,),
                 ).fetchone()

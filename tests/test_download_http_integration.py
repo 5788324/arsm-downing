@@ -21,14 +21,14 @@ def meta() -> WorkMetadata:
     )
 
 
-async def start_range_server():
+async def start_range_server(payload=PAYLOAD):
     seen_ranges = []
 
     async def media(request: web.Request):
         range_header = request.headers.get("Range")
         seen_ranges.append(range_header)
         if not range_header:
-            return web.Response(body=PAYLOAD, status=200)
+            return web.Response(body=payload, status=200)
         start = int(range_header.removeprefix("bytes=").removesuffix("-"))
         if start >= len(PAYLOAD):
             return web.Response(
@@ -55,8 +55,9 @@ async def start_range_server():
     return runner, f"http://127.0.0.1:{port}/track", seen_ranges
 
 
-async def run_download(tmp_path: Path, initial_part: bytes | None):
-    runner, url, seen_ranges = await start_range_server()
+async def run_download(tmp_path: Path, initial_part: bytes | None, *,
+                       filename="track.bin", payload=PAYLOAD, twice=False):
+    runner, url, seen_ranges = await start_range_server(payload)
     config = ConfigManager()
     config.retry_count = 1
     config.chunk_size = 4
@@ -64,23 +65,42 @@ async def run_download(tmp_path: Path, initial_part: bytes | None):
     db = LibraryVault(tmp_path / "history.db")
     kernel = NetworkKernel(config)
     orchestrator = Orchestrator(kernel, config, db)
-    final_path = tmp_path / "track.bin"
-    part_path = final_path.with_suffix(".bin.part")
+    final_path = tmp_path / filename
+    part_path = final_path.with_suffix(final_path.suffix + ".part")
     if initial_part is not None:
         part_path.write_bytes(initial_part)
     track = TrackItem(
-        id="track", title="track.bin", type="file", url=url,
-        size=len(PAYLOAD), save_path=final_path,
+        id="track", title=filename, type="file", url=url,
+        size=len(payload), save_path=final_path,
     )
     try:
         result = await orchestrator.download_file(
             track, meta(), None, asyncio.Semaphore(1))
+        if twice:
+            assert result is True
+            result = await orchestrator.download_file(
+                track, meta(), None, asyncio.Semaphore(1))
         row = dict(db.get_downloads_by_rj(meta().rj_id)[0])
         return result, final_path, part_path, row, seen_ranges
     finally:
         await kernel.shutdown()
         db.close()
         await runner.cleanup()
+
+
+def test_http_source_confirmed_empty_txt_is_preserved_and_not_downloaded_twice(tmp_path):
+    result, final, _part, row, ranges = asyncio.run(run_download(
+        tmp_path, None, filename="empty.txt", payload=b"", twice=True))
+    assert result and final.is_file() and final.stat().st_size == 0
+    assert row["status"] == "completed"
+    assert row["error_code"] == "source_empty_txt"
+    assert ranges == [None]
+
+
+def test_http_empty_audio_is_not_marked_complete(tmp_path):
+    result, _final, _part, row, _ranges = asyncio.run(run_download(
+        tmp_path, None, filename="empty.wav", payload=b""))
+    assert not result and row["status"] == "failed"
 
 
 def test_real_http_full_download(tmp_path: Path) -> None:

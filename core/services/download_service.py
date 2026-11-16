@@ -151,10 +151,27 @@ class DownloadService:
     def _aggregate_sql() -> str:
         terminal = ",".join(f"'{value}'" for value in sorted(_TERMINAL_WORK))
         return f"""
-            WITH queue_keys AS (
+            WITH file_totals AS (
+                SELECT rj_id,
+                    COUNT(id) AS file_count,
+                    SUM(CASE WHEN status IN ('completed','registered') THEN 1 ELSE 0 END) AS completed_files,
+                    SUM(CASE WHEN status = 'registered' THEN 1 ELSE 0 END) AS registered_files,
+                    SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END) AS queued_files,
+                    SUM(CASE WHEN status = 'downloading' THEN 1 ELSE 0 END) AS downloading_files,
+                    SUM(CASE WHEN status = 'resuming' THEN 1 ELSE 0 END) AS resuming_files,
+                    SUM(CASE WHEN status = 'paused' THEN 1 ELSE 0 END) AS paused_files,
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_files,
+                    SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_files,
+                    SUM(downloaded_bytes) AS downloaded_bytes,
+                    SUM(total_bytes) AS total_bytes,
+                    MAX(CASE WHEN status IN ('downloading','resuming') THEN track_title END) AS current_file,
+                    MAX(NULLIF(error, '')) AS error_summary,
+                    MAX(CAST(updated_at AS TEXT)) AS updated_at
+                FROM downloads GROUP BY rj_id
+            ), queue_keys AS (
                 SELECT rj_id FROM works WHERE LOWER(COALESCE(status, '')) != 'missing'
                 UNION
-                SELECT rj_id FROM downloads
+                SELECT rj_id FROM file_totals
             )
             SELECT
                 k.rj_id,
@@ -163,30 +180,26 @@ class DownloadService:
                 COALESCE(w.cover_url, '') AS cover_url,
                 COALESCE(w.local_path, '') AS local_path,
                 LOWER(COALESCE(w.status, '')) AS work_status,
-                COUNT(d.id) AS file_count,
-                SUM(CASE WHEN d.status IN ('completed','registered') THEN 1 ELSE 0 END) AS completed_files,
-                SUM(CASE WHEN d.status = 'registered' THEN 1 ELSE 0 END) AS registered_files,
-                SUM(CASE WHEN d.status = 'queued' THEN 1 ELSE 0 END) AS queued_files,
-                SUM(CASE WHEN d.status = 'downloading' THEN 1 ELSE 0 END) AS downloading_files,
-                SUM(CASE WHEN d.status = 'resuming' THEN 1 ELSE 0 END) AS resuming_files,
-                SUM(CASE WHEN d.status = 'paused' THEN 1 ELSE 0 END) AS paused_files,
-                SUM(CASE WHEN d.status = 'failed' THEN 1 ELSE 0 END) AS failed_files,
-                SUM(CASE WHEN d.status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_files,
-                COALESCE(SUM(d.downloaded_bytes), 0) AS downloaded_bytes,
-                COALESCE(SUM(d.total_bytes), 0) AS total_bytes,
-                COALESCE(MAX(CASE WHEN d.status IN ('downloading','resuming')
-                                  THEN d.track_title END), '') AS current_file,
-                COALESCE(MAX(CASE WHEN d.error IS NOT NULL AND d.error != ''
-                                  THEN d.error END), '') AS error_summary,
-                COALESCE(MAX(CAST(d.updated_at AS TEXT)),
+                COALESCE(d.file_count, 0) AS file_count,
+                COALESCE(d.completed_files, 0) AS completed_files,
+                COALESCE(d.registered_files, 0) AS registered_files,
+                COALESCE(d.queued_files, 0) AS queued_files,
+                COALESCE(d.downloading_files, 0) AS downloading_files,
+                COALESCE(d.resuming_files, 0) AS resuming_files,
+                COALESCE(d.paused_files, 0) AS paused_files,
+                COALESCE(d.failed_files, 0) AS failed_files,
+                COALESCE(d.cancelled_files, 0) AS cancelled_files,
+                COALESCE(d.downloaded_bytes, 0) AS downloaded_bytes,
+                COALESCE(d.total_bytes, 0) AS total_bytes,
+                COALESCE(d.current_file, '') AS current_file,
+                COALESCE(d.error_summary, '') AS error_summary,
+                COALESCE(d.updated_at,
                          CAST(w.downloaded_at AS TEXT), '') AS updated_at,
                 CASE WHEN LOWER(COALESCE(w.status, '')) IN ({terminal})
                      THEN 1 ELSE 0 END AS terminal_work
             FROM queue_keys AS k
             LEFT JOIN works AS w ON w.rj_id = k.rj_id
-            LEFT JOIN downloads AS d ON d.rj_id = k.rj_id
-            GROUP BY k.rj_id, w.title, w.circle, w.cover_url, w.local_path,
-                     w.status, w.downloaded_at
+            LEFT JOIN file_totals AS d ON d.rj_id = k.rj_id
         """
 
     def _row_to_item(self, row: sqlite3.Row) -> DownloadQueueItem:
@@ -514,6 +527,13 @@ class DownloadService:
                 str(row[0]).upper() for row in self.connection.execute(
                     f"SELECT DISTINCT rj_id FROM library_index "
                     f"WHERE rj_id IN ({placeholders}) AND LOWER(COALESCE(status,'')) != 'missing'",
+                    params,
+                ).fetchall()
+            )
+        if "cloud_archives" in tables:
+            library_ids.update(
+                str(row[0]).upper() for row in self.connection.execute(
+                    f"SELECT rj_id FROM cloud_archives WHERE rj_id IN ({placeholders})",
                     params,
                 ).fetchall()
             )

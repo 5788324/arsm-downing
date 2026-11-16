@@ -50,6 +50,8 @@ def test_extension_contract_injects_status_and_delegates_downloads() -> None:
     assert "chrome.storage.local" in worker
     assert "X-ARSM-Token" in worker
     assert "已入库" in shared
+    assert "云盘资源" in shared
+    assert "cloud_archive" in shared
     assert "未入库" in shared
     assert "下载到 ARSM" in content
     assert "使用 ARSM 下载" in content

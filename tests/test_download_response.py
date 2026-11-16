@@ -74,3 +74,12 @@ def test_local_partial_size_reads_disk_not_database(tmp_path: Path) -> None:
 def test_numeric_rj_endpoint_removes_display_padding() -> None:
     from core.orchestrator import Orchestrator
     assert Orchestrator._numeric_rj_id("RJ01575399") == "1575399"
+def test_partial_response_rejects_impossible_end_and_changed_local_offset():
+    for content_range, local_size in (("bytes 5-10/10", 5),
+                                      ("bytes 5-10/*", 5),
+                                      ("bytes 5-9/10", 4)):
+        plan = plan_download_response(
+            status=206, headers={"Content-Range": content_range},
+            requested_offset=5, expected_size=10, local_size=local_size,
+        )
+        assert plan.action == "retry_from_zero"

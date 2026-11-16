@@ -138,11 +138,15 @@ def test_failed_partial_resumes_from_largest_local_source(tmp_path):
     db.close()
 
 
-def test_complete_part_is_atomically_reconciled_without_network(tmp_path):
+def test_complete_part_is_atomically_reconciled_without_network(
+    tmp_path, monkeypatch
+):
     orc, db, _config, _kernel = make_orchestrator(tmp_path)
     _meta, target, _dl_id, _root = seed_work(orc, db, size=10)
     part = target.save_path.with_suffix(".mp3.part")
     part.write_bytes(b"1234567890")
+    monkeypatch.setattr(
+        orc, "_validate_local_completion", lambda _path, _size=0: (True, "fixture"))
 
     result = asyncio.run(orc.resume_job("RJ00000001"))
 
@@ -152,6 +156,27 @@ def test_complete_part_is_atomically_reconciled_without_network(tmp_path):
     assert not part.exists()
     assert row_dict(db, "RJ00000001")["status"] == "completed"
     assert db.get_works_status("RJ00000001") == "completed"
+    db.close()
+
+
+def test_resume_with_all_files_present_runs_album_postprocess(tmp_path, monkeypatch):
+    orc, db, _config, _kernel = make_orchestrator(tmp_path)
+    _meta, target, _dl_id, root = seed_work(orc, db, size=10)
+    target.save_path.write_bytes(b"1234567890")
+    monkeypatch.setattr(orc, "_validate_local_completion", lambda *_: (True, "fixture"))
+    seen = []
+
+    async def finalize(meta, root_path, cover_path=None, target_paths=None):
+        assert db.get_work(meta.rj_id)["postprocess_status"] == "pending"
+        seen.append((root_path, target_paths))
+        db.set_postprocess_status(meta.rj_id, "completed")
+        return True
+
+    monkeypatch.setattr(orc, "_run_postprocess", finalize)
+    result = asyncio.run(orc.resume_job("RJ00000001"))
+    assert result["status"] == "reconciled_complete"
+    assert seen == [(root, [target.save_path])]
+    assert orc.download_queue.empty()
     db.close()
 
 

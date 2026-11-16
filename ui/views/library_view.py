@@ -205,6 +205,7 @@ class LibraryView(ft.Container):
             ("warnings", "有警告"),
             ("completed", "已完成"),
             ("postprocess_pending", "待后处理"),
+            ("cloud_archived", "云盘资源"),
         )
         for key, label in choices:
             self.category_chips.controls.append(ft.Chip(
@@ -394,6 +395,7 @@ class LibraryView(ft.Container):
             f"已索引 {int(summary.get('total_works', 0))} · "
             f"文件 {int(summary.get('total_files', 0))} · "
             f"容量 {fmt_size(int(summary.get('total_size', 0)))} · "
+            f"云盘资源 {int(summary.get('cloud_archived', 0))} · "
             f"警告 {int(summary.get('with_warnings', 0))}"
         )
 
@@ -406,6 +408,7 @@ class LibraryView(ft.Container):
         sort = snapshot.get("sort", "size_desc")
         category_label = {
             "all": "全部作品", "audio": "有音频", "missing_cover": "无本地封面", "warnings": "有警告",
+            "completed": "已完成", "postprocess_pending": "待后处理", "cloud_archived": "云盘资源",
         }.get(category, "全部作品")
         sort_label = {
             "size_desc": "容量", "files_desc": "文件数", "name_asc": "文件夹名", "rj_desc": "RJ 编号",
@@ -452,7 +455,10 @@ class LibraryView(ft.Container):
             folder_path = item.get("folder_path", "") or ""
             folder_name = item.get("folder_name", rj_id) or rj_id
             display_name = folder_name if len(folder_name) <= 44 else folder_name[:41] + "…"
-            cover_src = _resolve_local_cover(folder_path, bool(item.get("has_cover")))
+            cover_src = _resolve_local_cover(
+                folder_path, bool(item.get("has_cover")),
+                str(item.get("archive_cover_path") or ""),
+            )
             # Remote covers are downloaded only by NetworkKernel and shown
             # after they exist in the local cache. Flet never receives URLs.
             cover = _cover_widget(cover_src, 180) if cover_src else _no_cover_widget(180)
@@ -470,6 +476,10 @@ class LibraryView(ft.Container):
                 badges.append(_badge(f"{int(item['audio_count'])} 音频", SUCCESS))
             if not cover_src:
                 badges.append(_badge("无本地封面", WARNING))
+            if item.get("archived_at"):
+                badges.append(_badge("云盘资源", ACCENT_SECONDARY))
+                if not folder_path:
+                    badges.append(_badge("仅云端", BG_SURFACE_LIGHT))
             postprocess_status = str(item.get("postprocess_status") or "unknown")
             if (str(item.get("work_status") or "") == "completed"
                     and postprocess_status in {"completed", "not_required"}):
@@ -513,9 +523,13 @@ class LibraryView(ft.Container):
             detail = self.app_controller.db.get_library_detail(self._selected_rj_id)
             if not detail:
                 return {"error": "未找到这张专辑的索引记录"}
-            detail["files"] = collect_file_preview(
-                str(detail.get("folder_path") or ""), FILE_PREVIEW_LIMIT
-            )
+            folder_path = str(detail.get("folder_path") or "")
+            if folder_path and Path(folder_path).is_dir():
+                detail["files"] = collect_file_preview(folder_path, FILE_PREVIEW_LIMIT)
+            elif detail.get("archived_at"):
+                detail["files"] = {"items": [], "cloud_only": True}
+            else:
+                detail["files"] = {"items": [], "error": "本地专辑目录不存在"}
             return detail
 
         def apply(detail: dict[str, Any]) -> None:
@@ -534,11 +548,15 @@ class LibraryView(ft.Container):
         folder_path = str(detail.get("folder_path") or "")
         title = str(detail.get("metadata_title") or detail.get("work_title") or detail.get("folder_name") or rj_id)
         circle = str(detail.get("metadata_circle") or detail.get("work_circle") or "未知社团")
-        cover_source = _resolve_local_cover(folder_path, bool(detail.get("has_cover")))
+        cover_source = _resolve_local_cover(
+            folder_path, bool(detail.get("has_cover")),
+            str(detail.get("archive_cover_path") or ""),
+        )
         # Keep the detail panel on the local-cover-only boundary.
         cover = _cover_widget(cover_source, 156) if cover_source else _no_cover_widget(156)
         metadata = detail.get("metadata_json") if isinstance(detail.get("metadata_json"), dict) else {}
         tags = _metadata_tags(metadata)
+        voice_actors = _metadata_voice_actors(metadata)
         files_snapshot = detail.get("files") or {}
         entries = files_snapshot.get("items") or []
         file_rows = [
@@ -550,7 +568,11 @@ class LibraryView(ft.Container):
                 ], expand=True, spacing=1),
             ], spacing=8)
             for entry in entries
-        ] or [ft.Text("未发现可显示的文件", size=12, color="grey")]
+        ] or [ft.Text(
+            "云端归档记录；本地媒体已移除" if files_snapshot.get("cloud_only")
+            else "未发现可显示的文件",
+            size=12, color="grey",
+        )]
         if files_snapshot.get("error"):
             file_rows = [ft.Text(str(files_snapshot["error"]), size=12, color=ERROR)]
         if files_snapshot.get("truncated"):
@@ -563,6 +585,10 @@ class LibraryView(ft.Container):
             _badge(f"{int(detail.get('total_files', 0))} 文件", ACCENT_PRIMARY),
             _badge(fmt_size(int(detail.get('total_size', 0))), ACCENT_SECONDARY),
         ]
+        if detail.get("archived_at"):
+            badge_controls.append(_badge("云盘资源", ACCENT_SECONDARY))
+            if not folder_path:
+                badge_controls.append(_badge("仅云端", BG_SURFACE_LIGHT))
         if str(detail.get("work_status") or "") == "completed":
             postprocess_status = str(detail.get("postprocess_status") or "unknown")
             badge_controls.append(_badge(
@@ -589,8 +615,15 @@ class LibraryView(ft.Container):
             ft.Text(title, size=14, weight=ft.FontWeight.W_600, max_lines=2,
                     overflow=ft.TextOverflow.ELLIPSIS, tooltip=title),
             ft.Text(f"{rj_id} · {circle}", size=12, color=ACCENT_PRIMARY),
+            *([ft.Text("声优：" + "、".join(voice_actors), size=11, color="grey")]
+              if voice_actors else []),
             badges,
             tag_row,
+            *([ft.Text(
+                "归档位置：" + str(detail.get("archive_remote_path") or "未填写")
+                + (" · " + str(detail.get("archive_provider")) if detail.get("archive_provider") else ""),
+                size=11, color=ACCENT_SECONDARY, selectable=True,
+            )] if detail.get("archived_at") else []),
             ft.Divider(height=10),
             ft.Text("文件列表", size=14, weight=ft.FontWeight.BOLD),
             ft.ListView(file_rows, spacing=7, expand=True),
@@ -747,6 +780,21 @@ def _metadata_tags(metadata: dict[str, Any]) -> list[str]:
             tags.append(value)
     return tags
 
+def _metadata_voice_actors(metadata: dict[str, Any]) -> list[str]:
+    raw = metadata.get("vas") or metadata.get("voice_actors") or []
+    if isinstance(raw, dict):
+        raw = list(raw.values())
+    if not isinstance(raw, list):
+        raw = [raw]
+    names: list[str] = []
+    for item in raw:
+        value = item.get("name") if isinstance(item, dict) else item
+        value = str(value or "").strip()
+        if value and value not in names:
+            names.append(value)
+    return names
+
+
 def _badge(text: str, color: str) -> ft.Container:
     return ft.Container(
         content=ft.Text(text, size=9, color="white"),
@@ -756,11 +804,14 @@ def _badge(text: str, color: str) -> ft.Container:
     )
 
 
-def _resolve_local_cover(folder_path: str, has_cover: bool) -> str | None:
-    if not folder_path:
-        return None
-    cover = find_local_cover(folder_path)
-    return str(cover) if cover else None
+def _resolve_local_cover(folder_path: str, has_cover: bool,
+                         archive_cover_path: str = "") -> str | None:
+    if folder_path:
+        cover = find_local_cover(folder_path)
+        if cover:
+            return str(cover)
+    cached = Path(archive_cover_path) if archive_cover_path else None
+    return str(cached) if cached and cached.is_file() else None
 
 
 def _cover_widget(source: str, height: int = 180) -> ft.Container:

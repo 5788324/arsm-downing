@@ -321,12 +321,29 @@ def choose_canonical_entries(
     selected: dict[str, LibraryScanEntry] = {}
     for rj_id, entries in grouped.items():
         by_key = {_path_key(entry.work_dir): entry for entry in entries}
+        # A stale preferred path must never make a cover-only shell canonical
+        # while another copy of the same RJ contains playable audio.
+        best_has_audio = max(entry.has_audio for entry in entries)
+        eligible = [
+            entry for entry in entries
+            if entry.has_audio == best_has_audio
+        ]
         chosen = None
         for candidate in preferred_paths.get(rj_id, ()):  # works path, then previous item path
-            chosen = by_key.get(_path_key(candidate))
-            if chosen is not None:
+            preferred = by_key.get(_path_key(candidate))
+            if preferred is not None and preferred in eligible:
+                chosen = preferred
                 break
-        selected[rj_id] = chosen or entries[0]
+        selected[rj_id] = chosen or max(
+            eligible,
+            key=lambda entry: (
+                entry.audio_count,
+                entry.has_cover,
+                entry.total_files,
+                entry.total_size,
+                _path_key(entry.work_dir),
+            ),
+        )
     return selected
 
 

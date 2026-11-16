@@ -4,6 +4,7 @@
   const RJ_PATTERN = /(?:^|[^A-Z0-9])RJ?(\d{6,8})(?=$|[^0-9])/i;
   const STATE_PRESENTATION = Object.freeze({
     in_library: { label: "已入库", tone: "success", action: "open-library" },
+    cloud_archive: { label: "云盘资源", tone: "success", action: "open-library" },
     not_in_library: { label: "未入库", tone: "neutral", action: "download" },
     queued: { label: "已排队", tone: "pending", action: "open-download" },
     downloading: { label: "下载中", tone: "pending", action: "open-download" },

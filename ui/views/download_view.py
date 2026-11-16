@@ -66,6 +66,8 @@ class DownloadView(BaseDownloadView):
         self._queue_generation = 0
         self._queue_refresh_pending = False
         self._queue_fast_page_pending = False
+        self._queue_verification_running = False
+        self._queue_verification_pending = None
         self._queue_snapshot_dirty = False
         super().__init__(app_controller)
 
@@ -260,6 +262,9 @@ class DownloadView(BaseDownloadView):
         """Render the SQLite snapshot first, then verify disk state in background."""
         self._queue_refreshing = True
         self._queue_refresh_pending = False
+        if self.queue_model is None:
+            self.queue_summary.value = "正在读取下载记录，请稍候…（不会清空任务）"
+            self._safe_update(getattr(self, "queue_summary", None))
         if hasattr(self, "queue_refresh_btn"):
             self.queue_refresh_btn.disabled = True
 
@@ -316,18 +321,38 @@ class DownloadView(BaseDownloadView):
     def _launch_disk_verification(
             self, generation: int, model: DownloadQueuePage, *,
             status_filter: str) -> None:
-        """Patch the visible snapshot only if it is still the current page."""
+        """Verify one page at a time and retain only the newest pending page."""
+        if self._queue_verification_running:
+            self._queue_verification_pending = (
+                generation, model, status_filter
+            )
+            return
+        self._queue_verification_running = True
+
         def verify():
             return self.download_service.apply_disk_verification(
                 model, status_filter=status_filter)
 
+        def finish():
+            self._queue_verification_running = False
+            pending = self._queue_verification_pending
+            self._queue_verification_pending = None
+            if pending is not None:
+                next_generation, next_model, next_filter = pending
+                self._launch_disk_verification(
+                    next_generation, next_model, status_filter=next_filter
+                )
+
         def render_verified(result):
-            if generation != self._queue_generation:
-                return
-            self._apply_queue_page(result)
+            try:
+                if generation == self._queue_generation:
+                    self._apply_queue_page(result)
+            finally:
+                finish()
 
         def fail_verify(exc):
             logging.warning("Queue disk verification failed: %s", exc)
+            finish()
 
         try:
             self.app_controller.run_blocking(
@@ -335,6 +360,8 @@ class DownloadView(BaseDownloadView):
                 action_label="后台核验下载文件")
         except Exception as exc:
             logging.warning("Unable to launch queue disk verification: %s", exc)
+            finish()
+
     @staticmethod
     def _enum_for_item(item: DownloadQueueItem) -> WorkStatus:
         return {

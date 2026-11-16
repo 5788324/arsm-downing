@@ -68,10 +68,13 @@ def _row_value(row: object, key: str, default: object = "") -> object:
 
 
 def _state_payload(
-    canonical: str, *, in_library: bool, statuses: Iterable[object]
+    canonical: str, *, in_library: bool, statuses: Iterable[object],
+    cloud_archived: bool = False,
 ) -> dict[str, object]:
     normalized = {str(value or "").strip().lower() for value in statuses if value}
-    if in_library:
+    if cloud_archived:
+        state = "cloud_archive"
+    elif in_library:
         state = "in_library"
     elif normalized & {"downloading", "resuming"}:
         state = "downloading"
@@ -104,10 +107,13 @@ def sanitized_rj_state(db, rj_id: str) -> dict[str, object]:
     # Per-file rows are authoritative once present.  A stale works.status must
     # not turn an all-completed work into a browser failure.
     statuses = download_statuses or [db.get_works_status(canonical) or ""]
+    archive_reader = getattr(db, "is_cloud_archived", None)
+    cloud_archived = bool(archive_reader(canonical)) if callable(archive_reader) else False
     return _state_payload(
         canonical,
         in_library=bool(db.find_in_library(canonical)),
         statuses=statuses,
+        cloud_archived=cloud_archived,
     )
 
 
@@ -127,6 +133,7 @@ def sanitized_rj_states(db, rj_ids: Iterable[str]) -> dict[str, dict[str, object
             rj_id,
             in_library=bool(row.get("in_library", False)),
             statuses=download_statuses or row.get("statuses", ()),
+            cloud_archived=bool(row.get("cloud_archived", False)),
         )
     return result
 
@@ -405,7 +412,7 @@ class BrowserBridge:
             return self._error(request, 400, "invalid_rj_id", str(exc))
 
         before = sanitized_rj_state(self.db, rj_id)
-        if before["state"] == "in_library":
+        if before["state"] in {"in_library", "cloud_archive"}:
             return self._error(request, 409, "already_in_library", "作品已经在 ARSM 资源库中")
         if before["state"] in {"queued", "downloading"}:
             return self._error(request, 409, "already_queued", "作品已经在下载队列中")

@@ -782,3 +782,43 @@ def test_file_detail_retry_button_targets_only_selected_row(view_controller) -> 
     row.controls[5].on_click(None)
 
     assert calls == [("RJ00000001", "file-1")]
+
+
+def test_disk_verification_coalesces_to_latest_pending_page(tmp_path) -> None:
+    view, controller = _deferred_view(tmp_path)
+    try:
+        query_first, render_first = controller.pending[0]
+        render_first(query_first())
+        assert len(controller.pending) == 2
+        assert view._queue_verification_running is True
+
+        verify_first, render_verify_first = controller.pending[1]
+        view.refresh_queue_async(force=True)
+        assert len(controller.pending) == 3
+        query_second, render_second = controller.pending[2]
+        render_second(query_second())
+
+        # The second snapshot is visible immediately, but it must not launch a
+        # second concurrent disk walk while the first one is still running.
+        assert len(controller.pending) == 3
+        assert view._queue_verification_running is True
+        assert view._queue_verification_pending is not None
+
+        view.refresh_queue_async(force=True)
+        query_third, render_third = controller.pending[3]
+        render_third(query_third())
+        assert len(controller.pending) == 4
+
+        # Finishing the stale scan launches exactly one verification for the
+        # newest page; the superseded second page is discarded.
+        render_verify_first(verify_first())
+        assert len(controller.pending) == 5
+        assert view._queue_verification_running is True
+        assert view._queue_verification_pending is None
+
+        verify_latest, render_verify_latest = controller.pending[4]
+        render_verify_latest(verify_latest())
+        assert view._queue_verification_running is False
+        assert view._queue_verification_pending is None
+    finally:
+        controller.db.close()

@@ -305,11 +305,15 @@ def test_batch_state_reader_uses_three_selects_for_many_cards(tmp_path):
         db.upsert_download(
             "track-1", "RJ00000003", "track.mp3", str(tmp_path / "track.mp3"), "downloading"
         )
+        db.execute_write(
+            """INSERT INTO cloud_archives (rj_id, archived_at, updated_at)
+               VALUES ('RJ00000004', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"""
+        )
         statements = []
         db.conn.set_trace_callback(statements.append)
 
         states = sanitized_rj_states(
-            db, ["RJ00000001", "RJ00000002", "RJ00000003"]
+            db, ["RJ00000001", "RJ00000002", "RJ00000003", "RJ00000004"]
         )
 
         selects = [sql for sql in statements if sql.lstrip().upper().startswith("SELECT")]
@@ -317,6 +321,7 @@ def test_batch_state_reader_uses_three_selects_for_many_cards(tmp_path):
         assert states["RJ00000001"]["state"] == "not_in_library"
         assert states["RJ00000002"]["state"] == "in_library"
         assert states["RJ00000003"]["state"] == "downloading"
+        assert states["RJ00000004"]["state"] == "cloud_archive"
         assert "path" not in repr(states).lower()
     finally:
         db.close()

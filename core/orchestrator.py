@@ -32,7 +32,9 @@ from core.download_failures import (
     retry_delay_seconds,
 )
 from core.url_refresh import SignedUrlRefresher
-from core.local_file_validation import validate_completed_local_file
+from core.local_file_validation import (
+    SOURCE_EMPTY_TXT, is_confirmed_empty_txt, validate_completed_local_file,
+)
 
 logger = logging.getLogger("echovault")
 
@@ -121,6 +123,24 @@ class Orchestrator:
         key = f"{rj_id}:{track_id}:{save_path.name}"
         h = hashlib.sha1(key.encode()).hexdigest()[:12]
         return f"{rj_id}:{h}"
+
+    @staticmethod
+    def _validate_local_completion(
+            path: Path, expected_size: int = 0) -> tuple[bool, str]:
+        """Validate known formats; keep exact-size unknown files compatible."""
+        valid, reason = validate_completed_local_file(path)
+        if reason == "unsupported_format":
+            try:
+                exact_unknown = (
+                    path.is_file() and path.stat().st_size > 0
+                    and expected_size > 0
+                    and path.stat().st_size == expected_size
+                )
+            except OSError:
+                exact_unknown = False
+            return exact_unknown, (
+                "exact_size_unsupported" if exact_unknown else reason)
+        return valid, reason
 
     # ── worker loop ──
     async def boot_worker(self):
@@ -624,14 +644,20 @@ class Orchestrator:
         Exclude already active/queued.
         """
         rows = self.db.conn.execute(
-            "SELECT DISTINCT rj_id, status FROM downloads "
-            "WHERE status IN ('paused','queued','failed','downloading','resuming')"
+            """SELECT DISTINCT d.rj_id, d.status,
+                      CASE WHEN mc.rj_id IS NULL THEN 0 ELSE 1 END AS has_cache
+               FROM downloads d
+               LEFT JOIN metadata_cache mc ON mc.rj_id=d.rj_id
+               WHERE d.status IN
+                 ('paused','queued','failed','downloading','resuming')"""
         ).fetchall()
 
         # Classify by status
         counts = {"paused": 0, "failed": 0, "queued": 0,
                   "downloading": 0, "resuming": 0}
         seen = set()
+        statuses_by_rj = {}
+        cache_by_rj = {}
         for row in rows:
             rj_id = row["rj_id"]
             st = row["status"]
@@ -639,6 +665,8 @@ class Orchestrator:
                     or rj_id in self.preparing_rj_ids
                     or rj_id in self.resuming_rj_ids):
                 continue
+            statuses_by_rj.setdefault(rj_id, set()).add(st)
+            cache_by_rj[rj_id] = bool(row["has_cache"])
             if rj_id not in seen:
                 seen.add(rj_id)
                 if st in counts:
@@ -646,20 +674,16 @@ class Orchestrator:
 
         result = list(seen)
 
-        # ── RC7.10: Also scan for failed that are resumable/retryable ──
-        failed_rj = set()
+        # Classify failed tasks from the same snapshot; avoid two extra
+        # SQLite queries per RJ before the actual reconciliation starts.
         retry_from_zero = 0
         resumable = 0
         skipped = 0
         for rj_id in result:
-            dl = self.db.get_downloads_summary(rj_id)
-            if dl.get("failed", 0) > 0:
-                failed_rj.add(rj_id)
-                # Check if this failed RJ can be retried (has metadata cache)
-                if self.db.get_metadata_cache(rj_id, allow_stale=True):
-                    # Check for partial files
-                    has_partial = any(
-                        dl.get(s, 0) > 0 for s in ("paused", "downloading"))
+            statuses = statuses_by_rj.get(rj_id, set())
+            if "failed" in statuses:
+                if cache_by_rj.get(rj_id, False):
+                    has_partial = bool(statuses & {"paused", "downloading"})
                     if has_partial:
                         resumable += 1
                     else:
@@ -888,8 +912,23 @@ class Orchestrator:
             }
         selected_matched = False
         resume_targets = []
+        complete_paths = []
+        download_updates = []
+
+        def record_download(
+                download_id, item_rj_id, track_title, local_path, status,
+                downloaded_bytes=0, total_bytes=0, error="", **fields):
+            download_updates.append({
+                "download_id": download_id, "rj_id": item_rj_id,
+                "track_title": track_title, "local_path": local_path,
+                "status": status, "downloaded_bytes": downloaded_bytes,
+                "total_bytes": total_bytes, "error": error, **fields,
+            })
+
         for target_index, target in enumerate(all_targets):
             if target_index and target_index % 16 == 0:
+                self.db.upsert_download_batch(download_updates)
+                download_updates.clear()
                 # Let other albums and active download workers progress while a
                 # large cached album is being reconciled from disk.
                 await asyncio.sleep(0)
@@ -933,7 +972,7 @@ class Orchestrator:
                 part_size = part_path.stat().st_size if part_path.exists() else 0
             except OSError as exc:
                 summary["unrecoverable"] += 1
-                self.db.upsert_download(
+                record_download(
                     dl_id, rj_id, target.title, str(final_path), "failed",
                     int(row.get("downloaded_bytes", 0) or 0), expected,
                     error=f"Unable to inspect partial file: {exc}",
@@ -944,17 +983,26 @@ class Orchestrator:
             # Missing or truncated completed/registered files are repaired using the
             # same partial/zero-byte policy as failed rows.
             if status in {"completed", "registered"}:
+                if is_confirmed_empty_txt(final_path, expected, row.get("error_code", "")):
+                    complete_paths.append(final_path)
+                    summary["already_complete"] += 1
+                    continue
                 tagged_overage = (
                     final_size > expected > 0
                     and self.config.tag_audio
                     and AudioProcessor.has_embedded_cover(final_path)
                 )
+                valid, validation = self._validate_local_completion(
+                    final_path, expected)
                 if final_size > 0 and (
-                        expected <= 0 or final_size == expected or tagged_overage):
+                        tagged_overage or (
+                            (expected <= 0 or final_size == expected) and valid
+                        )):
                     if tagged_overage:
-                        self.db.upsert_download(
+                        record_download(
                             dl_id, rj_id, target.title, str(final_path),
                             "completed", final_size, final_size)
+                    complete_paths.append(final_path)
                     summary["already_complete"] += 1
                     if part_path.exists():
                         try:
@@ -962,15 +1010,26 @@ class Orchestrator:
                         except OSError:
                             pass
                     continue
+                if final_size > 0 and expected > 0 and final_size == expected:
+                    summary["unrecoverable"] += 1
+                    record_download(
+                        dl_id, rj_id, target.title, str(final_path), "failed",
+                        final_size, expected,
+                        error=("Completed-size file failed structural validation: "
+                               f"{validation}"),
+                        error_code="invalid_local_file",
+                    )
+                    continue
                 status = "failed"
 
             # A previous run may finish tagging before its final DB update.
             # Embedded cover art legitimately enlarges WAV/MP4 as well as MP3.
             if (final_size > expected > 0 and self.config.tag_audio
                     and AudioProcessor.has_embedded_cover(final_path)):
-                self.db.upsert_download(
+                record_download(
                     dl_id, rj_id, target.title, str(final_path),
                     "completed", final_size, final_size)
+                complete_paths.append(final_path)
                 summary["already_complete"] += 1
                 continue
 
@@ -986,9 +1045,10 @@ class Orchestrator:
                         rj_id, target.title[:80], validation,
                         expected, final_size,
                     )
-                    self.db.upsert_download(
+                    record_download(
                         dl_id, rj_id, target.title, str(final_path),
                         "completed", final_size, final_size)
+                    complete_paths.append(final_path)
                     summary["already_complete"] += 1
                     continue
 
@@ -1000,7 +1060,7 @@ class Orchestrator:
                         os.replace(str(part_path), str(final_path))
                     except OSError as exc:
                         summary["unrecoverable"] += 1
-                        self.db.upsert_download(
+                        record_download(
                             dl_id, rj_id, target.title, str(final_path), "failed",
                             part_size, expected,
                             error=f"Unable to finalize validated partial file: {exc}",
@@ -1011,16 +1071,17 @@ class Orchestrator:
                         "expected=%s actual=%s",
                         rj_id, target.title[:80], validation, expected, part_size,
                     )
-                    self.db.upsert_download(
+                    record_download(
                         dl_id, rj_id, target.title, str(final_path),
                         "completed", part_size, part_size,
                     )
+                    complete_paths.append(final_path)
                     summary["already_complete"] += 1
                     continue
 
             if expected > 0 and (final_size > expected or part_size > expected):
                 summary["unrecoverable"] += 1
-                self.db.upsert_download(
+                record_download(
                     dl_id, rj_id, target.title, str(final_path), "failed",
                     max(final_size, part_size), expected,
                     error="Local file is larger than expected; manual review required",
@@ -1028,7 +1089,19 @@ class Orchestrator:
                 continue
 
             if expected > 0 and final_size == expected:
-                self.db.upsert_download(
+                valid, validation = self._validate_local_completion(
+                    final_path, expected)
+                if not valid:
+                    summary["unrecoverable"] += 1
+                    record_download(
+                        dl_id, rj_id, target.title, str(final_path), "failed",
+                        final_size, expected,
+                        error=("Completed-size file failed structural validation: "
+                               f"{validation}"),
+                        error_code="invalid_local_file",
+                    )
+                    continue
+                record_download(
                     dl_id, rj_id, target.title, str(final_path), "completed",
                     expected, expected,
                 )
@@ -1037,25 +1110,39 @@ class Orchestrator:
                         part_path.unlink()
                     except OSError:
                         pass
+                complete_paths.append(final_path)
                 summary["already_complete"] += 1
                 continue
 
             if expected > 0 and part_size == expected:
+                valid, validation = self._validate_local_completion(
+                    part_path, expected)
+                if not valid:
+                    summary["unrecoverable"] += 1
+                    record_download(
+                        dl_id, rj_id, target.title, str(final_path), "failed",
+                        part_size, expected,
+                        error=("Complete-size partial failed structural validation: "
+                               f"{validation}"),
+                        error_code="invalid_local_file",
+                    )
+                    continue
                 try:
                     final_path.parent.mkdir(parents=True, exist_ok=True)
                     os.replace(str(part_path), str(final_path))
                 except OSError as exc:
                     summary["unrecoverable"] += 1
-                    self.db.upsert_download(
+                    record_download(
                         dl_id, rj_id, target.title, str(final_path), "failed",
                         part_size, expected,
                         error=f"Unable to finalize complete partial file: {exc}",
                     )
                     continue
-                self.db.upsert_download(
+                record_download(
                     dl_id, rj_id, target.title, str(final_path), "completed",
                     expected, expected,
                 )
+                complete_paths.append(final_path)
                 summary["already_complete"] += 1
                 continue
 
@@ -1069,7 +1156,7 @@ class Orchestrator:
                 "paused", "queued", "downloading", "resuming", "failed",
                 "partial", "prepared", "no_pending", "metadata_failed",
             } or not row:
-                self.db.upsert_download(
+                record_download(
                     dl_id, rj_id, target.title, str(final_path), "queued",
                     actual, expected,
                 )
@@ -1080,6 +1167,8 @@ class Orchestrator:
                 resume_targets.append(target)
             else:
                 summary["unrecoverable"] += 1
+
+        self.db.upsert_download_batch(download_updates)
 
         if only_download_id and not selected_matched:
             return {
@@ -1097,10 +1186,23 @@ class Orchestrator:
                 }
             if (summary["already_complete"] and not summary["unrecoverable"]
                     and not summary["skipped_cancelled"]):
-                self.db.execute_write(
-                    "UPDATE works SET status='completed' WHERE rj_id=?", (rj_id,)
+                prior = self.db.get_work(rj_id)
+                already_finalized = (
+                    prior is not None and prior["status"] == "completed"
+                    and prior["postprocess_status"] in {"completed", "not_required"}
                 )
-                self._emit_work_status(rj_id, "Completed")
+                if not already_finalized:
+                    paths = list(dict.fromkeys(complete_paths))
+                    final_size = sum(path.stat().st_size for path in paths)
+                    self.db.register(meta, final_size, root_path,
+                                     postprocess_status="pending")
+                    finalized = await self._run_postprocess(
+                        meta, root_path, target_paths=paths)
+                else:
+                    finalized = True
+                self._emit_work_status(
+                    rj_id, "Completed" if finalized
+                    else "Completed (post-processing failed)")
                 return {
                     "status": "reconciled_complete",
                     "message": "All files were already complete",
@@ -1142,6 +1244,105 @@ class Orchestrator:
     # ══════════════════════════════════════════════
     #  P1.5-2:  restore on startup
     # ══════════════════════════════════════════════
+    async def reconcile_stale_completed_works(self) -> dict:
+        """Close stale partial parents whose durable child files all completed."""
+        rows = self.db.conn.execute(
+            """SELECT w.rj_id
+                 FROM works w
+                WHERE w.status='partial'
+                  AND NOT EXISTS (SELECT 1 FROM cloud_archives ca WHERE ca.rj_id=w.rj_id)
+                  AND EXISTS (
+                      SELECT 1 FROM downloads d WHERE d.rj_id=w.rj_id)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM downloads d
+                       WHERE d.rj_id=w.rj_id
+                         AND d.status NOT IN ('completed','registered'))
+                ORDER BY w.rj_id"""
+        ).fetchall()
+        result = {"found": len(rows), "completed": 0, "invalid": 0}
+        for work in rows:
+            rj_id = str(work["rj_id"])
+            downloads = self.db.get_downloads_by_rj(rj_id)
+            work_row = self.db.get_work(rj_id)
+            cache = self.db.get_metadata_cache(rj_id, allow_stale=True)
+            # A surviving subset of completed rows is not proof that the
+            # album is complete. Compare against the stored download plan.
+            try:
+                root = Path(work_row["local_path"]) if work_row else None
+                if root is None or not work_row["local_path"] or not cache:
+                    continue
+                nodes = self.parse_hierarchy(_json.loads(cache["tracks_json"]), root, root)
+                targets = []
+                nodes.reverse()
+                while nodes:
+                    node = nodes.pop()
+                    if node.type == "folder":
+                        nodes.extend(reversed(node.children))
+                    else:
+                        targets.append(node)
+                targets = self.deduplicate_tracks(targets)
+            except (TypeError, ValueError, AttributeError, KeyError):
+                continue
+            recorded_paths = {Path(row["local_path"]) for row in downloads}
+            if not targets or any(target.save_path not in recorded_paths for target in targets):
+                logger.info("STARTUP_COMPLETION_PLAN_INCOMPLETE rj=%s", rj_id)
+                continue
+
+            def inspect() -> list[tuple[dict, str]]:
+                invalid = []
+                for raw in downloads:
+                    row = dict(raw)
+                    path = Path(str(row.get("local_path") or ""))
+                    expected = int(row.get("total_bytes", 0) or 0)
+                    if is_confirmed_empty_txt(path, expected, row.get("error_code", "")):
+                        continue
+                    valid, reason = self._validate_local_completion(
+                        path, expected)
+                    if not valid:
+                        invalid.append((row, reason))
+                return invalid
+
+            invalid = await asyncio.to_thread(inspect)
+            if invalid:
+                updates = []
+                for row, reason in invalid:
+                    path = Path(str(row.get("local_path") or ""))
+                    try:
+                        actual = path.stat().st_size if path.is_file() else 0
+                    except OSError:
+                        actual = 0
+                    updates.append({
+                        "download_id": row["id"], "rj_id": rj_id,
+                        "track_title": row["track_title"],
+                        "local_path": str(path), "status": "failed",
+                        "downloaded_bytes": actual,
+                        "total_bytes": int(row.get("total_bytes", 0) or 0),
+                        "error": (
+                            "Startup completion validation failed: " + reason),
+                        "error_code": "invalid_local_file",
+                    })
+                self.db.upsert_download_batch(updates)
+                result["invalid"] += 1
+                continue
+
+            self.db.execute_write(
+                """UPDATE works
+                      SET status='completed',
+                          postprocess_status=CASE
+                            WHEN postprocess_status IN ('completed','not_required')
+                              THEN postprocess_status
+                            ELSE 'pending'
+                          END,
+                          postprocess_error=''
+                    WHERE rj_id=? AND status='partial'""",
+                (rj_id,),
+            )
+            result["completed"] += 1
+            self._emit_work_status(rj_id, "Completed")
+        if rows:
+            logger.info("STARTUP_COMPLETION_RECONCILE %s", result)
+        return result
+
     async def restore_pending_downloads(self):
         """Cold-start: normalize ONLY interrupted active states → paused.
 
@@ -1149,22 +1350,28 @@ class Orchestrator:
         queued → kept as queued (user explicitly queued, should not be lost).
         paused → kept as paused.
         """
-        pending = self.db.get_pending_downloads()
+        await self.reconcile_stale_completed_works()
+        pending = await asyncio.to_thread(self.db.get_pending_downloads)
         if not pending:
             return
+
+        recovery_metadata_ids = await asyncio.to_thread(
+            self.db.get_recovery_metadata_ids)
 
         auto_resume = getattr(self.config, 'auto_resume_on_start', False)
         normalized_downloads = 0
         normalized_works = set()
 
-        rj_groups: Dict[str, set] = {}
+        rj_groups: Dict[str, list] = {}
         for row in pending:
-            rj_groups.setdefault(row["rj_id"], set()).add(row["status"])
+            rj_groups.setdefault(row["rj_id"], []).append(row)
 
         paused_rj_ids = []
+        normalized_rows = []
 
         for rj_id in sorted(rj_groups):
-            statuses = rj_groups[rj_id]
+            rows = rj_groups[rj_id]
+            statuses = {row["status"] for row in rows}
 
             # A Pause All can race with an older resume batch: every child
             # row is safely paused, but the resume coroutine may leave the
@@ -1179,21 +1386,24 @@ class Orchestrator:
 
             # Only normalize truly interrupted states (downloading/resuming).
             # queued and paused stay as-is.
-            for row in pending:
-                if row["rj_id"] != rj_id:
-                    continue
+            for row in rows:
                 if row["status"] in ('downloading', 'resuming'):
-                    self.db.upsert_download(
-                        row["id"], rj_id, row["track_title"],
-                        row["local_path"], 'paused',
-                        row["downloaded_bytes"], row["total_bytes"])
+                    normalized_rows.append({
+                        "download_id": row["id"], "rj_id": rj_id,
+                        "track_title": row["track_title"],
+                        "local_path": row["local_path"], "status": "paused",
+                        "downloaded_bytes": row["downloaded_bytes"],
+                        "total_bytes": row["total_bytes"],
+                    })
                     normalized_downloads += 1
                     normalized_works.add(rj_id)
 
-            if self.db.get_metadata_cache(rj_id, allow_stale=True):
+            if rj_id in recovery_metadata_ids:
                 paused_rj_ids.append(rj_id)
             else:
                 logger.warning(f"Skip restore {rj_id}: no metadata cache")
+
+        self.db.upsert_download_batch(normalized_rows)
 
         # ── RC7.9: normalize works.status for interrupted works ──
         for rj_id in normalized_works:
@@ -1487,18 +1697,24 @@ class Orchestrator:
             self._emit_work_status(rj_id, "No tracks found")
             return None, None, None, False
 
-        # Write downloads as queued
+        # Register the whole album in one transaction. Large works can contain
+        # hundreds of files, so one commit per target makes preparation slow.
+        download_rows = []
         for t in targets:
             dl_id = self._make_dl_id(rj_id, t.id or t.title,
                                      t.save_path, t.title)
             existing_size = t.save_path.stat().st_size \
                 if t.save_path.exists() else 0
-            self.db.upsert_download(
-                dl_id, rj_id, t.title, str(t.save_path),
-                status='completed' if existing_size == t.size > 0 else 'queued',
-                downloaded_bytes=existing_size, total_bytes=t.size)
+            download_rows.append({
+                "download_id": dl_id, "rj_id": rj_id,
+                "track_title": t.title, "local_path": str(t.save_path),
+                "status": "completed" if existing_size == t.size > 0 else "queued",
+                "downloaded_bytes": existing_size, "total_bytes": t.size,
+            })
+        self.db.upsert_download_batch(download_rows)
+        for t, row in zip(targets, download_rows):
             self._emit_progress(rj_id, t.id or t.title, t.title,
-                                existing_size, t.size, "pending")
+                                row["downloaded_bytes"], t.size, "pending")
 
         status_msg = "Prepared (cached)" if from_cache else "Prepared"
         logger.info(f"prepare_work {rj_id}: {status_msg}, {len(targets)} tracks")
@@ -1574,14 +1790,43 @@ class Orchestrator:
         dl_id = getattr(track, "download_id_override", None) or self._make_dl_id(
             meta.rj_id, track.id or track.title, final_path, track.title)
 
+        def reject_invalid_completion(actual_size: int, reason: str) -> bool:
+            self.stats.failed += 1
+            message = f"Completed-size file failed structural validation: {reason}"
+            self.db.upsert_download(
+                dl_id, meta.rj_id, track.title, str(final_path), "failed",
+                actual_size, track.size, error=message,
+                error_code="invalid_local_file",
+            )
+            self._emit_progress(
+                meta.rj_id, track.id or track.title, track.title,
+                actual_size, track.size, "failed",
+            )
+            logger.warning(
+                "LOCAL_COMPLETION_REJECTED rj=%s track=%s reason=%s size=%s",
+                meta.rj_id, track.title[:80], reason, actual_size,
+            )
+            return False
+
         persisted = self.db.conn.execute(
-            "SELECT status, total_bytes FROM downloads WHERE id=?", (dl_id,)
+            "SELECT status, total_bytes, error_code FROM downloads WHERE id=?", (dl_id,)
         ).fetchone()
         persisted_status = str(persisted["status"] or "").lower() if persisted else ""
         persisted_size = int(persisted["total_bytes"] or 0) if persisted else 0
         if (persisted_status in {"completed", "registered"}
+                and is_confirmed_empty_txt(final_path, persisted_size, persisted["error_code"])):
+            self.stats.skipped += 1
+            self._emit_progress(meta.rj_id, track.id or track.title, track.title,
+                                0, 0, "completed")
+            return True
+        if (persisted_status in {"completed", "registered"}
                 and persisted_size > 0 and final_path.is_file()
                 and final_path.stat().st_size == persisted_size):
+            valid, validation = self._validate_local_completion(
+                final_path, persisted_size)
+            if not valid:
+                return reject_invalid_completion(
+                    persisted_size, validation)
             self.stats.skipped += 1
             self._emit_progress(
                 meta.rj_id, track.id or track.title, track.title,
@@ -1606,6 +1851,10 @@ class Orchestrator:
             return False
 
         if final_path.exists() and final_path.stat().st_size == track.size > 0:
+            valid, validation = self._validate_local_completion(
+                final_path, track.size)
+            if not valid:
+                return reject_invalid_completion(track.size, validation)
             self.stats.skipped += 1
             self.db.upsert_download(
                 dl_id, meta.rj_id, track.title, str(final_path),
@@ -1685,6 +1934,7 @@ class Orchestrator:
                             raise OSError(str(resp_or_err))
 
                         resp = resp_or_err
+                        confirmed_empty = False
                         try:
                             local_size = local_partial_size(
                                 final_path, part_path, track.size)
@@ -1765,6 +2015,13 @@ class Orchestrator:
                                             low_speed_bytes = 0
 
                                 actual = part_path.stat().st_size
+                                confirmed_empty = (
+                                    actual == 0 and track.size == 0
+                                    and final_path.suffix.casefold() == ".txt"
+                                    and resp.status == 200
+                                    and resp.headers.get("Content-Length") == "0"
+                                    and not resp.headers.get("Content-Range")
+                                )
                                 if track.size > 0 and actual != track.size:
                                     raise IOError(
                                         f"Size mismatch {actual} != {track.size}")
@@ -1775,10 +2032,17 @@ class Orchestrator:
 
 
                         final_size = final_path.stat().st_size
+                        valid, validation = ((True, SOURCE_EMPTY_TXT) if confirmed_empty
+                                             else self._validate_local_completion(final_path, final_size))
+                        if not valid:
+                            return reject_invalid_completion(
+                                final_size, validation
+                            )
                         self.stats.success += 1
                         self.db.upsert_download(
                             dl_id, meta.rj_id, track.title, str(final_path),
-                            'completed', final_size, final_size)
+                            'completed', final_size, final_size,
+                            error_code=SOURCE_EMPTY_TXT if confirmed_empty else "")
                         self._emit_progress(
                             meta.rj_id, track.id or track.title, track.title,
                             final_size, final_size, "completed")
@@ -2129,24 +2393,28 @@ class Orchestrator:
         self.db.set_postprocess_status(meta.rj_id, "running")
         self._emit_work_status(meta.rj_id, "Finalizing")
         try:
-            tagged = await asyncio.to_thread(
-                self._postprocess_completed_work,
-                meta, cover_path, root_path, target_paths,
-            )
-            if self.config.tag_audio:
-                if target_paths is None:
-                    candidates = [
-                        path for path in root_path.rglob("*")
-                        if path.is_file()
-                        and path.suffix.casefold() in AudioProcessor.SUPPORTED_EXTENSIONS
+            if target_paths is None:
+                resolved_target_paths = await asyncio.to_thread(
+                    lambda: [
+                        path for path in root_path.rglob("*") if path.is_file()
                     ]
-                else:
-                    candidates = [
+                )
+            else:
+                resolved_target_paths = await asyncio.to_thread(
+                    lambda: [
                         Path(path) for path in target_paths
                         if Path(path).is_file()
-                        and Path(path).suffix.casefold()
-                        in AudioProcessor.SUPPORTED_EXTENSIONS
                     ]
+                )
+            tagged = await asyncio.to_thread(
+                self._postprocess_completed_work,
+                meta, cover_path, root_path, resolved_target_paths,
+            )
+            if self.config.tag_audio:
+                candidates = [
+                    path for path in resolved_target_paths
+                    if path.suffix.casefold() in AudioProcessor.SUPPORTED_EXTENSIONS
+                ]
                 if len(tagged) < len(candidates):
                     raise RuntimeError(
                         f"audio_tag_incomplete:{len(tagged)}/{len(candidates)}")
@@ -2154,13 +2422,19 @@ class Orchestrator:
                 str(Path(row["local_path"])): row
                 for row in self.db.get_downloads_by_rj(meta.rj_id)
             }
+            tagged_rows = []
             for media_path, tagged_size in tagged:
                 row = rows_by_path.get(str(media_path))
                 if row is None:
                     continue
-                self.db.upsert_download(
-                    row["id"], meta.rj_id, row["track_title"],
-                    str(media_path), "completed", tagged_size, tagged_size)
+                tagged_rows.append({
+                    "download_id": row["id"], "rj_id": meta.rj_id,
+                    "track_title": row["track_title"],
+                    "local_path": str(media_path), "status": "completed",
+                    "downloaded_bytes": tagged_size,
+                    "total_bytes": tagged_size,
+                })
+            self.db.upsert_download_batch(tagged_rows)
             self.db.set_postprocess_status(meta.rj_id, "completed")
             return True
         except Exception as exc:
@@ -2287,6 +2561,10 @@ class Orchestrator:
             # successful current targets durable before evaluating aggregate
             # state, otherwise that obsolete row keeps a completed work stuck
             # in the queue forever.
+            empty_evidence = {
+                row["id"] for row in self.db.get_downloads_by_rj(rj_id)
+                if row["error_code"] == SOURCE_EMPTY_TXT
+            }
             for t in success_targets:
                 dl_id = getattr(t, "download_id_override", None) or self._make_dl_id(
                     rj_id, t.id or t.title, t.save_path, t.title)
@@ -2296,7 +2574,10 @@ class Orchestrator:
                 )
                 self.db.upsert_download(
                     dl_id, rj_id, t.title, str(t.save_path),
-                    "completed", actual_size, actual_size)
+                    "completed", actual_size, actual_size,
+                    error_code=(SOURCE_EMPTY_TXT if dl_id in empty_evidence
+                                and is_confirmed_empty_txt(t.save_path, actual_size, SOURCE_EMPTY_TXT)
+                                else ""))
 
             rows = self.db.get_downloads_by_rj(rj_id)
             blocking_statuses = {

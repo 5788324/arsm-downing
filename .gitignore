@@ -37,6 +37,8 @@ build/
 Downloads/
 logs/
 .local_backups/
+/cloud_archive_covers/
+/scripts/launch_desktop.ps1
 backup_*.db
 backup_*.db-wal
 backup_*.db-shm

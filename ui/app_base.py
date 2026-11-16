@@ -155,13 +155,12 @@ class AppController:
         # ── Start background workers (work_concurrency) ──
         async def _start_workers():
             self.worker_tasks = await self.orc.boot_workers()
+            # State convergence must finish before pending post-processing is
+            # discovered, otherwise a stale partial parent can miss this boot.
+            await self.orc.restore_pending_downloads()
+            await self.orc.restore_pending_postprocessing()
         asyncio.run_coroutine_threadsafe(_start_workers(), self.loop)
 
-        # ── Restore pending downloads from previous session ──
-        asyncio.run_coroutine_threadsafe(
-            self.orc.restore_pending_downloads(), self.loop)
-        asyncio.run_coroutine_threadsafe(
-            self.orc.restore_pending_postprocessing(), self.loop)
 
         # ── Start UI message queue poller ──
         self._start_ui_poller()
