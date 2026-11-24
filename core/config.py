@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import secrets
 from pathlib import Path
 from typing import Optional
 
@@ -48,6 +49,8 @@ class ConfigManager:
         self.chunk_size: int = 1048576  # 1 MB
         self.retry_count: int = 5
         self.retry_backoff: int = 2    # exponential base seconds
+        self.low_speed_limit_bps: int = 1024
+        self.low_speed_window_seconds: int = 30
 
         # ── Proxy: three-channel split ──
         self.metadata_proxy: Optional[str] = None   # API metadata requests
@@ -69,10 +72,21 @@ class ConfigManager:
         # ── Features ──
         self.tag_audio = True
         self.sort_files = False
+        self.browser_bridge_enabled: bool = False
+        self.browser_bridge_port: int = 17641
+        self.browser_extension_token: str = ""
+        self.subtitle_archive_dir: str = r"E:\arsm\arsm字幕文件"
         self.dir_template = "{rj_id} {title}"
 
         # ── Game-ish ──
         self.achievements: list = []
+
+
+    def ensure_browser_extension_token(self) -> str:
+        """Return a durable-quality local bridge token without logging it."""
+        if len(str(self.browser_extension_token or "")) < 32:
+            self.browser_extension_token = secrets.token_urlsafe(36)
+        return self.browser_extension_token
 
     # ── Proxy helpers ──
     def get_proxy_for(self, purpose: str) -> Optional[str]:
@@ -131,8 +145,20 @@ class ConfigManager:
                     data.get('retry_count', 5))
                 config.retry_backoff = int(
                     data.get('retry_backoff', 2))
+                config.low_speed_limit_bps = max(0, int(
+                    data.get('low_speed_limit_bps', 1024)))
+                config.low_speed_window_seconds = max(10, int(
+                    data.get('low_speed_window_seconds', 30)))
                 config.tag_audio = bool(
                     data.get('tag_audio', True))
+                config.browser_bridge_enabled = bool(
+                    data.get('browser_bridge_enabled', False))
+                config.browser_bridge_port = max(1024, min(int(
+                    data.get('browser_bridge_port', 17641)), 65535))
+                config.browser_extension_token = str(
+                    data.get('browser_extension_token') or "")
+                config.subtitle_archive_dir = str(
+                    data.get('subtitle_archive_dir', config.subtitle_archive_dir) or "")
                 config.sort_files = bool(
                     data.get('sort_files', False))
                 config.mirror = data.get(
@@ -182,6 +208,8 @@ class ConfigManager:
             "chunk_size": self.chunk_size,
             "retry_count": self.retry_count,
             "retry_backoff": self.retry_backoff,
+            "low_speed_limit_bps": self.low_speed_limit_bps,
+            "low_speed_window_seconds": self.low_speed_window_seconds,
             "metadata_proxy": self.metadata_proxy,
             "download_proxy": self.download_proxy,
             "cover_proxy": self.cover_proxy,
@@ -196,7 +224,11 @@ class ConfigManager:
             "auth_token": self.auth_token,
             "timeout": self.timeout,
             "dns": self.dns,
-            "achievements": self.achievements
+            "achievements": self.achievements,
+            "browser_bridge_enabled": self.browser_bridge_enabled,
+            "browser_bridge_port": self.browser_bridge_port,
+            "browser_extension_token": self.browser_extension_token,
+            "subtitle_archive_dir": self.subtitle_archive_dir,
         }
         config_file = _config_file()
         temp_file = config_file.with_suffix(config_file.suffix + ".tmp")

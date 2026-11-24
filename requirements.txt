@@ -4,6 +4,7 @@ flet==0.27.6
 aiohttp==3.13.5
 aiofiles==25.1.0
 mutagen==1.48.1
+opencc-python-reimplemented==0.1.7
 yarl==1.24.5
 pystray==0.19.5
 Pillow==11.3.0

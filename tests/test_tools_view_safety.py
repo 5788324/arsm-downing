@@ -25,3 +25,22 @@ def test_network_diagnostic_does_not_get_proxy_url_as_destination():
     assert "session.get(mirror, proxy=proxy)" in source
     assert "session.get(proxy" not in source
     assert "s.get(mp" not in source
+
+
+def test_tools_view_uses_beginner_friendly_guidance():
+    source = Path("ui/views/tools_view.py").read_text(encoding="utf-8")
+    assert "日常使用建议" in source
+    assert "去设置扫描目录" in source
+    assert "不删除媒体文件" in source
+    assert "不修改任务状态" in source
+    assert "config.json 设置 external_intake_root" not in source
+    assert "library_paths 中的 RJ 目录" not in source
+    assert "分析 downloads 表" not in source
+
+
+def test_tools_view_constructs_with_flet_027():
+    from types import SimpleNamespace
+    from ui.views.tools_view import ToolsView
+
+    view = ToolsView(SimpleNamespace())
+    assert view.external_settings_btn.text == "去设置扫描目录"

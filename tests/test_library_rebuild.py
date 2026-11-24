@@ -7,7 +7,13 @@ import sqlite3
 import pytest
 
 from core.database import LibraryVault
-from core.library_rebuild import LibraryScanError, scan_library_snapshot
+from core.library_rebuild import (
+    LibraryScanEntry,
+    LibraryScanError,
+    LibraryScanSnapshot,
+    choose_canonical_entries,
+    scan_library_snapshot,
+)
 
 
 def make_work(root: Path, name: str, files: dict[str, bytes]) -> Path:
@@ -47,6 +53,36 @@ def test_snapshot_scans_nested_rj_and_file_categories(tmp_path: Path) -> None:
     assert entry.has_cover == 1
     assert entry.warnings == ()
 
+
+def test_snapshot_recognizes_nested_nonstandard_main_cover(tmp_path: Path) -> None:
+    root = tmp_path / "library"
+    make_work(
+        root,
+        "RJ01234568 Demo",
+        {"audio/track.mp3": b"audio", "images/RJ01234568_img_main.jpg": b"image"},
+    )
+
+    snapshot = scan_library_snapshot([root])
+
+    assert snapshot.entries[0].has_cover == 1
+    assert "no_cover" not in snapshot.entries[0].warnings
+
+
+
+def test_snapshot_uses_shared_cover_matcher_for_named_cover_directory(tmp_path: Path) -> None:
+    root = tmp_path / "library"
+    make_work(
+        root,
+        "RJ01234569 Demo",
+        {
+            "audio/track.mp3": b"audio",
+            "封面图片/01.jpg": b"image",
+        },
+    )
+
+    entry = scan_library_snapshot([root]).entries[0]
+    assert entry.has_cover == 1
+    assert "no_cover" not in entry.warnings
 
 def test_rebuild_replaces_stale_indexes_and_syncs_work_tables(tmp_path: Path) -> None:
     root = tmp_path / "library"
@@ -271,3 +307,57 @@ def test_directory_disappearing_after_scan_preserves_old_indexes(
         ).fetchone()[0] == 1
     finally:
         vault.close()
+
+
+def test_canonical_selection_rejects_preferred_cover_only_shell(tmp_path):
+    shell = tmp_path / "old" / "RJ01000009 Shell"
+    complete = tmp_path / "new" / "RJ01000009 Complete"
+    entries = (
+        LibraryScanEntry(
+            rj_id="RJ01000009", library_path=str(tmp_path),
+            work_dir=str(shell), folder_name=shell.name,
+            total_files=1, total_size=100, audio_count=0,
+            image_count=1, video_count=0, other_count=0,
+            has_audio=0, has_cover=1,
+            warnings=("duplicate_rj", "no_audio"),
+        ),
+        LibraryScanEntry(
+            rj_id="RJ01000009", library_path=str(tmp_path),
+            work_dir=str(complete), folder_name=complete.name,
+            total_files=20, total_size=10_000, audio_count=10,
+            image_count=1, video_count=0, other_count=9,
+            has_audio=1, has_cover=1,
+            warnings=("duplicate_rj",),
+        ),
+    )
+    snapshot = LibraryScanSnapshot(
+        run_id="run", scanned_at="2026-09-28T00:00:00",
+        roots=(str(tmp_path),), entries=entries,
+    )
+
+    selected = choose_canonical_entries(
+        snapshot, {"RJ01000009": [str(shell)]})
+
+    assert selected["RJ01000009"].work_dir == str(complete)
+
+
+def test_canonical_selection_keeps_preferred_path_when_both_have_audio(tmp_path):
+    preferred = LibraryScanEntry(
+        rj_id="RJ01000010", library_path=str(tmp_path), work_dir="preferred",
+        folder_name="preferred", total_files=2, total_size=20,
+        audio_count=1, image_count=1, video_count=0, other_count=0,
+        has_audio=1, has_cover=1,
+    )
+    larger = LibraryScanEntry(
+        rj_id="RJ01000010", library_path=str(tmp_path), work_dir="larger",
+        folder_name="larger", total_files=4, total_size=40,
+        audio_count=2, image_count=1, video_count=0, other_count=1,
+        has_audio=1, has_cover=1,
+    )
+    snapshot = LibraryScanSnapshot(
+        run_id="run", scanned_at="2026-09-28T00:00:00",
+        roots=(str(tmp_path),), entries=(preferred, larger),
+    )
+    selected = choose_canonical_entries(
+        snapshot, {"RJ01000010": ["preferred"]})
+    assert selected["RJ01000010"].work_dir == "preferred"

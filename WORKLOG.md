@@ -236,3 +236,144 @@ Git 远端写入：无
 - Windows 隔离验收：安装、启动、--shutdown 协作退出、运行中卸载、用户数据保留及零残留进程均通过。
 - 最终安装器 SHA-256：2a7df244d6c07d289c7dea3a9788a271c48b6eb33f296b4a5de81e8c27b171e6。
 - 当前状态：等待 Git PR、CI、合并、v1.0.0 标签和正式 GitHub Release；正式 E:\arsm 与既有运行数据零接触。
+
+## 2026-08-05：v1.0.1 P0 修复（Issue #20 / #19，同分支同 PR）
+
+- 在同一分支 `fix/v1.0.1-download-freeze-ui`、同一 PR（#21，Draft）内完成 Issue #20（冻结/签名 URL 重试风暴/虚假总进度）与 Issue #19（下载页布局闪烁）修复，符合 owner 对 #19 必须与 #20 同 PR 的要求。
+- P0-A：`core/ui_dispatch.py` 按 `(rj_id, track_id)` 去重、保护终态事件，`ui/app_base.py` 预算化 dispatch（256 条 + 50ms 时间双预算）。
+- P0-B：`core/download_workers.py` 固定 worker 池，orchestrator `_process_download` 以稳定 `id(task)` 关联结果。
+- P0-C：`core/url_refresh.py` 单飞刷新 + `core/download_errors.py` `SignedUrlExpired`（HTTP 400/401/403）。
+- P0-D：`core/progress.py` 磁盘核验进度，`DownloadQueueItem` 增加 verified 字段，UI 百分比全部钳制 ≤100%。
+- 提交：`872ef7c`（P0 #20）、`dde1ed9`（#19）、`98e3b07`（bump 1.0.1）。
+- 全量回归 `347 passed, 3 skipped`；release_check `ready: true`；PyInstaller `ARSM-Suite-1.0.1-windows-x64.zip` 已构建。
+
+## 2026-08-06：PR #21 审查 NO-GO 集中修复
+
+- 代码审查发现 7 个发布阻塞并全部修复（当前分支，Draft 保持）：
+  1. Signed URL 竞态：`SignedUrlRefresher.ensure_refreshed_once()` 让并发 403 全部 await 同一 future；成功复用、失败返回同一失败结果，不再靠计数猜测完成状态。
+  2. 二次签名失效：transport retry budget 与 signed-URL refresh budget 分离；每文件 `refresh_used` 只授一次新 URL 尝试；新 URL 再次 400/401/403 立即 fail-closed；`retry_count=1` 时新 URL 仍会被尝试；日志不再输出 `fresh_url`（只记 host + 稳定键 + attempt）。
+  3. 磁盘核验移出 UI 线程：`refresh_queue_async`/`load_queue` 经 `run_blocking`（`asyncio.to_thread`）执行，generation token 丢弃过期快照，多余请求合并为一次重拉。
+  4. 真实进度：UI 容量/摘要改用 `verified_bytes`；`registered` 不再被当作终态 100%/绿色；orchestrator 成功保持 `completed` 不再改写 `registered`；`verified_download_progress` 只把已知大小文件计入进度分母，unknown-size 字节不会把未完成已知文件推到 100%。
+  5. UI 调度：`_ui_schedule_lock` 单调度器守卫（poller 与 drain 共享），数量+时间双预算，`await asyncio.sleep(0)` 让出；真实 asyncio 测试验证任意时刻最多一个 drain、backlog 归零、控制消息可响应。
+  6. #19 详情面板：文件树（相对路径 key + 目录缩进）、每文件失败原因、`.part` 恢复状态；重复文件名不再碰撞；每状态唯一操作按钮（不再同时出现暂停/继续）。
+  7. 交付记录：本文档、CURRENT_STATE、DECISIONS、ROADMAP、HANDOFF、README 同步；PR 描述测试数更新为 `350 passed`（远端 CI）。
+- 新增回归：多文件并发 403 共享单次刷新、`retry_count=1` 新 URL 尝试、二次 403 fail-closed、日志脱敏、unknown+known 混合进度、非阻塞队列刷新 + generation、单调度器真实 asyncio、文件树重复名/错误/.part、每状态唯一按钮。
+- 全量回归：`367 passed, 3 skipped`；3 项 skipped 均为 Windows 无法创建符号链接。
+- 仍保持 Draft；真实 GUI/DPI/托盘验收、9 任务约 2700 文件 30 分钟压力与 300 个集中 400 场景在通过前保持 NO-GO。
+
+## 2026-08-06：PR #21 第二轮审查 4 项修复
+
+- **unknown-size 进度贯通**：`VerifiedDownloadSummary` 新增 `known_verified_bytes/known_expected_bytes`；`DownloadQueueItem` 新增 `verified_known_bytes/verified_expected_bytes/verified_progress`，`progress` 属性优先返回磁盘核验的 known-size 比率。卡片与详情的进度条/容量都使用该值；`completed/registered` 展示完成态服从磁盘核验，不再无条件强制 100%。
+- **启动单次磁盘核验**：`load_queue()` 并入 `refresh_queue_async` 同一管道，子类构造末尾不再二次调用 `reload_queue_from_database`；初始化后 pending query 恰为 1，后续请求合并而非再开一轮 SQLite+stat I/O。
+- **重复文件名实时更新**：`update_track_progress` 维护 track_id 键控 `_live_tracks`；`_file_details` 以 download id（`_make_dl_id`）优先、basename 回退映射 live 进度；实时更新经 `_detail_key_by_track` 按 track_id 解析，同名不同目录各自更新自己的行，重绘不产生重复顶层节点。
+- **文档事实源**：CURRENT_STATE 顶部状态、head SHA、远端 Windows CI `371 passed`、最新构建 SHA `dfa29fc1…` 已同步。
+- 全量回归：`368 passed, 3 skipped`；release_check `ready: true`；PyInstaller `ARSM-Suite-1.0.1-windows-x64.zip` SHA-256 `dfa29fc1adafcdf0476c6f00a98ce97f368774b8734591ac33955528ed1e7d0f`。
+- 保持 Draft；真实 GUI/DPI/托盘、9 任务约 2700 文件 30 分钟压力、300 个集中 400 场景通过前保持 NO-GO。
+
+## 2026-08-06：PR #21 第三轮审查 2 组修复
+
+- **实时总进度统一**：`_get_progress_value`（左侧卡片与右侧总进度共用单一来源）改为以 track_id 键控的 `_live_tracks` 聚合：只把 known-size 文件计入字节分子/分母，同名文件分别统计；live 数据一旦建立就优先于旧磁盘快照（恢复任务的进度条实时动），快照仅在 live 建立前作为基线。
+- **registered/completed 磁盘不完整降级**：`apply_disk_verification` 增加 `status_filter` 参数；磁盘核验未齐全的 `completed/registered` 下载作品在 presentation/read-model 层降级为 `partial`（`is_terminal=False`、`can_resume=True`、`ui_status="部分完成"`、黄色警示），不再显示绿色 100%；working 筛选纳入这类候选，核验后保留不完整项、丢弃真正完成项。不修改正式数据库。
+- 新增端到端测试：live 进度推进卡片与详情、unknown-size 不虚高总进度、同名文件分别计入、registered 缺文件被服务链降级且 UI 非绿色 100%。
+- 全量回归：`373 passed, 3 skipped`；release_check `ready: true`；PyInstaller `ARSM-Suite-1.0.1-windows-x64.zip` SHA-256 `fada0cc4afabdaabf33871987559d5ab4316e4a2acf6a746b1f20cf17cb612b0`。
+- 保持 Draft；待重新审查；真实 GUI/DPI/托盘、9 任务约 2700 文件 30 分钟压力、300 个集中 400 场景通过前保持 NO-GO。
+
+## 2026-08-08：第五轮审查 CONDITIONAL GO + 无头压力验收通过
+
+- 第五轮代码审查：第四轮 4 个阻塞全部通过，产品代码层 **CONDITIONAL GO**。
+- 新增 `scripts/v101_stress_acceptance.py` 无头压力验收（真实 Orchestrator + DownloadWorkerPool + SignedUrlRefresher + 本地 aiohttp 服务器），运行 30 分钟：**ACCEPTANCE PASS**。
+  - 9 作品 × 300 文件 + 300 文件 400/401/403 集中风暴 = 3000 文件全部完成（0 失败）；
+  - single-flight：10 个 RJ 各恰好 1 次刷新；3000 个过期 URL 各命中 1 次（无重试风暴）；
+  - 恢复场景：9/10 完成 + 50% `.part` 经 HTTP 206 Range 续传至 100%，DB 比率 0.9 → 1.0，进度单调不回退；
+  - RSS 48.8 → 62.3 MB 后稳定，CPU 峰值 92%、平均 1.2%；180 个 10s 采样（连续 ≥30 分钟）。
+- 最终 head `facf351` 双平台 CI 全绿：Windows **380 passed**、Ubuntu **379 passed, 1 skipped**。
+- 保持 Draft；仅剩真实 Windows 视觉 GUI 验收（1366×768/1920×1080、DPI 125/150/200%、托盘、暂停/继续/取消、三次退出无残留）需人工在桌面完成；通过前 NO-GO。
+
+## 2026-08-06：PR #21 第四轮审查 4 项修复
+
+- **恢复任务全作品实时总进度**：`_live_tracks` 改为完整 per-track 基线；新一轮下载/准备/恢复开始时 `update_work_status` 使旧 live 缓存失效，首个进度事件用数据库全部文件行重建基线（含已完成文件），`_apply_live_event` 按 title/dl_id 关联合并实时增量。恢复 9 完成 + 1 续传显示 90% → 95% → 100%，不再退化为剩余文件进度。
+- **mixed known/unknown 完整性判定**：`_disk_confirms_complete` 同时要求 `complete_files == file_count`、无 overage、known-size 比率 100%；已知完整 + 未知缺失不再误判完成。
+- **partial 卡片改走 resume/reconcile**：`partial` 按钮调用 `resume_download`（`_resume_one`/`resume_job` 核验 completed/registered/.part/缺失文件，仅在 `metadata_required`/缓存损坏时重新获取 metadata），不再被 `prepare_work` duplicate guard 拦截 `library_index` 已存在作品。
+- **Working 核验后分页**：新增 `DownloadService.fetch_working_page`——over-fetch working 候选（≤200）→ 磁盘核验降级/丢弃 → 再分页并重算 `total_items/page_count`；前 24 个完整、第 25 个不完整时，不完整作品出现在默认页。
+- 新增端到端测试：恢复 90/95/100、mixed 完整性、partial 走 resume（含 library_index）、working 分页填充。
+- 全量回归：`377 passed, 3 skipped`；release_check `ready: true`；PyInstaller `ARSM-Suite-1.0.1-windows-x64.zip` SHA-256 `169d71fe808d14690a0edeb8d5a9b31213e88ee8b674008ba2f1c914e52d7444`。
+- 保持 Draft；待 CI 与重新审查；真实 GUI/DPI/托盘、9 任务约 2700 文件 30 分钟压力、300 个集中 400 场景通过前保持 NO-GO。
+
+## 2026-08-07：PR #21 第四轮修复 CI 通过 + 超时诊断
+
+- CI（head `02350af`）通过：Windows **380 passed**；Ubuntu **379 passed, 1 skipped**。
+- Ubuntu 曾两次在 15 分钟 workflow 超时被取消；经排查为 CI runner CPU 资源拥挤（同一 head 曾以 51s 通过，Windows/Python 3.11/3.12 本地与各文件独立运行均无挂起），并非代码缺陷。
+- 为 `tests/conftest.py` 加入 Linux 专属 60s 单测超时守卫（POSIX `SIGALRM`，Windows 为 no-op），后续此类问题会直接点名超时测试，避免整段 CI 静默超时。
+- 保持 Draft；待重新审查；真实 GUI/DPI/托盘、9 任务约 2700 文件 30 分钟压力、300 个集中 400 场景通过前保持 NO-GO。
+## 2026-08-23：浏览器扩展真人联调与 Escape 修复
+
+- Edge `www.asmr.one` 列表页确认 8 组扩展状态控件，双域名注入已生效；
+- 首次未配置时正确显示“ARSM 未连接”，设置按钮打开扩展内部连接页；
+- 桌面端审计发现批量粘贴弹窗 Escape 不关闭；以当前视图键盘分发做最小修复，不改变批量预览、队列或数据库语义；
+- Windows Flet 实机复测：输入自动聚焦，Escape 一次关闭，队列保持 0；
+- 聚焦 `24 passed`，全量 `410 passed, 3 skipped`；
+- 测试实例误用 `LOCALAPPDATA` 后生成的 `config.json`、`history.db`、`logs/app.log` 已在正常退出后精确删除；真实媒体未接触；
+- 用户手工保存隔离 Profile 地址与令牌后，Edge 8 组控件均切换为
+
+## 2026-08-23：浏览器扩展分支交接收口
+
+- 最终本地提交：`0fe8afcb0a45f4f554f923b62f68581c7e3ad723`（`feat: finish ARSM browser extension integration`）；
+- 用户确认已完成 GitHub 推送；本机因 GitHub 直连和 7897 上游 TLS 中断未独立回读远端；
+- 全量回归：`410 passed, 3 skipped`；compileall、扩展 JavaScript 语法、`git diff --check` 通过；
+- 扩展源码与隔离打包目录 9/9 文件 SHA-256 一致；
+- Edge 列表页注入和连接状态通过；Chrome、详情页入队和重启恢复保持 NOT RUN；
+- 已更新 README、CURRENT_STATE、两份路线图、扩展任务/验收文档和 HANDOFF；
+- 已清理仓库内忽略的旧 build/dist、运行日志、pytest/Python 缓存及空临时目录，共 195,260,866 bytes；保留 Git 跟踪的 UI 截图和验收报告；
+- 正式 `E:\arsm` 与正式运行数据零接触。
+## 2026-09-20：下载恢复、完成判定与诊断维护
+
+- 恢复全部任务由逐作品串行准备改为受控并行；大作品核验主动让出事件循环，UI 点击后立即显示恢复状态，下载 worker 可在其余作品仍核验时开始工作。
+- 队列采用“立即展示 SQLite 快照 + 后台磁盘核验”，换页/筛选不再同步等待文件系统扫描。
+- 新增结构化错误分类、退避/抖动/Retry-After、低速检测、文件级失败详情与单文件重试；单文件重试保持兄弟任务状态，不清理同作品其他行。
+- 新增镜像健康度、后处理持久状态、启动补偿、资源库“已完成/待后处理”筛选与后处理诊断报告。
+- 所有验证均在仓库外隔离副本和临时数据库执行；未访问 `E:\arsm`、正式数据库、正式队列或现有下载文件。
+- 回归：核心聚焦 `51 passed`；完整锁定依赖回归 `487 passed, 3 skipped`；compile 与 `git diff --check` 通过。
+- Git 提交 `0e7f75a` 已普通 fast-forward 推送至 Draft PR #24；GitHub Ubuntu / Windows portable-test-gate 均通过，PR 保持 Draft。
+
+## 2026-09-21：下载维护性能收口
+
+- 下载状态写入由 `INSERT OR REPLACE` 单文件事务改为显式 UPSERT；专辑准备、恢复核对、启动状态规范化和后处理回写均使用批量事务，避免大专辑逐文件打开 SQLite 并提交。
+- 启动恢复改为一次构建 `RJ -> 文件记录` 分组，不再为每个 RJ 重复遍历全部待恢复行；恢复核对每 16 个文件批量落库并继续让出事件循环。
+- 队列 SQLite 快照仍立即展示；后台磁盘核验增加单在途守卫，快速换页/筛选时只保留最新待核验页面，过期结果既不覆盖 UI，也不继续堆积新的磁盘扫描。
+- 后处理复用一次目录枚举结果，并批量更新标签写入后的文件大小，避免同一专辑重复 `rglob` 和逐文件提交。
+- 新增批量 UPSERT、启动恢复单批事务、磁盘核验最新请求合并回归；针对性回归 `27 passed`。
+- 完整隔离回归先因 `--basetemp` 位于隔离仓库内触发 3 项验收目录安全保护；将这 3 项改用仓库外临时目录重跑后通过。合并结果为 `490 passed, 3 skipped`。
+- 全程未启动正式下载、未读取或写入 `E:\arsm`、正式数据库及正式队列。
+
+## 2026-09-21：用户确认式云端归档清单
+
+- 新增独立 `cloud_archives` 持久表：只记录用户确认已经上传的 RJ、网盘位置/备注及登记时的标题、原路径、文件数和容量；登记时另存一份轻量封面缓存，不接管上传，不移动或删除媒体。
+- 登记前强制检查：作品必须在资源库中、状态已完成/已验证/已索引，不能存在活动、暂停、失败或取消文件；下载完成作品还必须完成后处理。
+- 资源库扫描会为已移除本地目录的归档作品恢复只读卡片，统一显示“云盘资源”（无本地目录时另显示“仅云端”）；增加“云盘资源”筛选和统计。
+- 归档时固化 asmr.one 元数据 JSON，并在详情中保留标签、声优和社团；即使之后清理普通元数据缓存，云盘卡片仍能显示这些信息。
+- 设置页在下载目录发生变化时明确提示：新任务使用新目录，下载中和已排队任务继续使用各自原目录，不自动迁移。
+- 核心重复保护、浏览器扩展批量状态和下载中心批量预览均识别云端归档；asmr.one 列表页/详情页对归档 RJ 显示“云盘资源”，批量浏览器状态仍保持固定 3 次 SELECT。
+- 新增 `tools/cloud_archive.py`，支持 `mark/list/export`；每次登记自动在数据库同目录生成 UTF-8 CSV 备份。工具不提供删除命令。
+- 新增归档登记安全、CSV 导出、全入口防重复及本地目录消失后重建卡片测试。
+- 完整隔离回归：`494 passed, 3 skipped`；`py_compile` 与 `git diff --check` 通过。
+- 全程未启动正式程序，未读取或写入 `E:\arsm`、正式数据库、正式队列或媒体文件。
+
+## 2026-11-04：启动与大队列读取性能维护
+
+- 只读核对：此前启动日志 `auto_resume=False, enqueued=0`，因此恢复记录后没有实际调度，速度为零；本轮后续日志已有媒体 HTTP 200 传输。未代用户点击全部继续，也未重启正在下载的实例。
+- 队列先按 RJ 汇总文件，再关联作品字段，避免对每个文件重复携带标题、路径等大字段做临时 GROUP BY；保留分页、筛选、计数、错误和状态规则。
+- 同一正式数据库只读事务比较：3139 个条目逐字段一致；基线 0.813 秒，优化后 0.304 秒。较早单次测量为 1.907/0.348 秒，缓存和运行负载不同，不把查询收益等同于完整启动收益。
+- 启动恢复改为一次轻量元数据键/时间查询，不逐作品读取 metadata_json/tracks_json；过期缓存仍允许恢复，损坏时间仍排除。待恢复文件读取移至后台线程，自动恢复开关和任务持久状态规则不变。
+- 初次队列读取显示等待提示，避免尚未加载时呈现空白而误认为数据丢失。
+- 新增 3 项回归：轻量缓存索引、启动不读大 JSON/不擅自入队、大字段队列聚合与孤立文件记录；系统临时目录空库副本完整回归 `504 passed, 3 skipped`。首次完整运行的 4 项失败由副本缺少构建文件及测试证据目录放在副本内部引起，修正测试环境后全部通过。
+- 正式库仅只读测量，未修改下载/队列/资源库记录或媒体；未提交推送。新代码需下次正常启动加载，完整启动耗时未实机复测。
+
+## 2026-09-22：asmr.one 专辑元数据全库补取
+
+- 新增 `tools/backfill_metadata.py`：候选范围合并 `works`、`downloads`、`library_items`、`library_index` 与 `cloud_archives`，覆盖当前下载、排队、历史记录和资源库；默认只补缺失/不完整条目，支持 dry-run、限量验证、断点续跑、限流、失败清单与 SQLite 一致性备份。
+- 新增 `LibraryVault.upsert_work_metadata`：只更新专辑标题、社团、封面地址和原始元数据 JSON；保留已有 `tracks_json`、下载状态、队列状态、本地路径与后处理状态。
+- 正式执行前统计 2,861 个唯一专辑，已有完整元数据 2,386 个、待补 475 个；备份保存为 `.local_backups/metadata-backfill-20260922-001347-history.db`。
+- 正式补取成功 474 个；执行后 2,860/2,861 个专辑元数据完整。`downloads` 表涉及的 2,386 个唯一专辑全部完整，包含当前下载和排队任务。
+- 唯一未补取项 `RJ01005847` 在 `api.asmr-200.com`、`api.asmr.one`、`api.asmr-100.com`、`api.asmr-300.com` 四个镜像均返回 HTTP 404；保留为明确失败，不伪造元数据。
+- 正式库 `PRAGMA integrity_check=ok`；未扫描、移动或改写 `E:\arsm` 媒体文件，也未改变下载/排队状态。
+- 新增候选并集、不完整检测、元数据更新保留曲目缓存与队列状态测试；针对性回归 `14 passed`，完整隔离回归 `496 passed, 3 skipped`，`py_compile` 与 `git diff --check` 通过。

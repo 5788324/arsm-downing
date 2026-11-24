@@ -40,12 +40,16 @@ class FakeController:
             library_paths=[str(tmp_path / "Library")],
         )
         self.snacks = []
+        self.navigations = []
 
     def run_blocking(self, function, on_success, **_kwargs):
         on_success(function())
 
     def show_snack(self, message):
         self.snacks.append(message)
+
+    def navigate_to_view(self, index):
+        self.navigations.append(index)
 
 
 def test_library_search_is_forwarded_to_database(tmp_path: Path) -> None:
@@ -55,6 +59,48 @@ def test_library_search_is_forwarded_to_database(tmp_path: Path) -> None:
     view.on_search()
     assert controller.db.page_calls[-1]["search"] == "RJ00000042"
     assert "搜索“RJ00000042”" in view.page_info.value
+
+
+def test_empty_library_guides_user_to_settings(tmp_path: Path) -> None:
+    controller = FakeController(tmp_path)
+    view = LibraryView(controller)
+    view.load_library()
+
+    empty = view.grid.controls[0].content
+    assert any(getattr(control, "value", "") == "资源库还是空的"
+               for control in empty.controls)
+    button = next(control for control in empty.controls
+                  if getattr(control, "text", "") == "去设置仓库目录")
+    button.on_click(None)
+    assert controller.navigations == [3]
+    assert view.detail_panel.visible is False
+
+
+def test_library_with_items_shows_detail_panel(tmp_path: Path) -> None:
+    view = LibraryView(FakeController(tmp_path))
+    view._apply_cards({
+        "page": 0,
+        "total_pages": 1,
+        "total": 1,
+        "search": "",
+        "category": "all",
+        "sort": "size_desc",
+        "works_count": 1,
+        "summary": {},
+        "items": [{
+            "rj_id": "RJ00000001",
+            "folder_path": str(tmp_path / "RJ00000001"),
+            "folder_name": "Sample",
+            "total_files": 2,
+            "total_size": 10,
+            "audio_count": 1,
+            "has_audio": True,
+            "has_cover": False,
+            "warnings": [],
+        }],
+    })
+
+    assert view.detail_panel.visible is True
 
 
 def test_library_summary_is_dynamic(tmp_path: Path) -> None:
@@ -216,3 +262,165 @@ def test_library_vault_page_category_and_sort(tmp_path: Path) -> None:
 
     assert [row["rj_id"] for row in audio["items"]] == ["RJ00000002"]
     assert [row["rj_id"] for row in warnings["items"]] == ["RJ00000001"]
+
+
+def test_library_search_keeps_total_past_last_page_and_summary_tracks_external_writes(tmp_path):
+    from core.database import LibraryVault
+
+    with LibraryVault(tmp_path / "history.db") as db:
+        assert db.get_library_summary()["total_works"] == 0
+        first = db.get_library_summary()
+        first["total_works"] = 999
+        assert db.get_library_summary()["total_works"] == 0
+        db.execute_write(
+            "INSERT INTO library_items(rj_id,folder_path,folder_name) VALUES(?,?,?)",
+            ("RJ00000042", str(tmp_path / "album"), "聲音專輯"),
+        )
+        assert db.get_library_summary()["total_works"] == 1
+        assert db.get_library_page(search="rj00000042")["items"][0]["rj_id"] == "RJ00000042"
+        page = db.get_library_page(search="声音专辑", offset=200)
+        assert page["total"] == 1 and page["items"] == []
+
+
+def test_library_search_migrates_legacy_metadata_and_tracks_changes(tmp_path):
+    from core.database import LibraryVault
+
+    path = tmp_path / "legacy.db"
+    rid = "RJ00000009"
+    with LibraryVault(path) as vault:
+        vault.conn.execute("INSERT INTO library_items (rj_id, folder_path, folder_name) "
+                           "VALUES (?, '', 'Archive')", (rid,))
+        vault.set_metadata_cache(rid, "作品", "社團", "", {"vas": [{"name": "寶石"}]}, [])
+        for trigger in ("insert", "update", "delete"):
+            vault.conn.execute(f"DROP TRIGGER metadata_search_{trigger}")
+        vault.conn.execute("DROP TABLE library_metadata_search")
+
+    with LibraryVault.open_read_only(path) as legacy:
+        assert legacy.get_library_page(search="宝石")["total"] == 1
+    with LibraryVault(path) as upgraded:
+        assert upgraded.get_library_page(search="宝石")["total"] == 1
+        upgraded.set_metadata_cache(rid, "作品", "社團", "", {"vas": [{"name": "聲音"}]}, [])
+        assert upgraded.get_library_page(search="宝石")["total"] == 0
+        assert upgraded.get_library_page(search="声音")["total"] == 1
+        upgraded.upsert_work_metadata(rid, "作品新版", "社團", "", {"tags": ["奇幻"]})
+        assert upgraded.get_library_page(search="奇幻")["total"] == 1
+        upgraded.invalidate_cache(rid)
+        assert upgraded.get_library_page(search="奇幻")["total"] == 0
+
+
+def test_cover_thumbnail_uses_disposable_cache_and_respects_pixel_limit(tmp_path, monkeypatch):
+    from PIL import Image
+    from core.media_assets import get_cover_thumbnail
+
+    source = tmp_path / "cover.png"
+    Image.new("RGB", (1200, 600), "navy").save(source)
+    original = source.read_bytes()
+    thumbnail = get_cover_thumbnail(source)
+    assert thumbnail and thumbnail != source
+    with Image.open(thumbnail) as image:
+        assert image.size == (400, 200)
+    assert get_cover_thumbnail(source) == thumbnail
+    assert source.read_bytes() == original
+
+    oversized = tmp_path / "oversized.png"
+    Image.new("RGB", (1200, 600)).save(oversized)
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 100_000)
+    assert get_cover_thumbnail(oversized) is None
+
+
+def test_library_renders_cards_before_starting_cover_worker(tmp_path):
+    class DeferredController(FakeController):
+        def __init__(self, location):
+            super().__init__(location)
+            self.jobs = []
+
+        def run_blocking(self, function, on_success, **_kwargs):
+            self.jobs.append((function, on_success))
+
+    controller = DeferredController(tmp_path)
+    view = LibraryView(controller)
+    controller.db.get_library_page = lambda **_: {
+        "items": [{"rj_id": "RJ00000001", "folder_path": "", "folder_name": "Sample"}],
+        "total": 1,
+    }
+    view.load_library()
+    fetch, render = controller.jobs.pop()
+    render(fetch())
+    slot = view.grid.controls[0].content.controls[0]
+    assert slot.content is None
+
+    cover_worker, cover_render = controller.jobs.pop()
+    cover_render(cover_worker())
+    assert slot.content is not None
+
+def test_library_sorts_by_first_admission_and_saved_release_date(tmp_path):
+    from core.database import LibraryVault
+
+    first, second, cloud, unknown = (f"RJ{n:08d}" for n in range(1, 5))
+    with LibraryVault(tmp_path / "history.db") as db:
+        items = "INSERT INTO library_items (rj_id,folder_path,folder_name,scanned_at) VALUES (?,?,?,?)"
+        db.conn.execute("INSERT INTO works (rj_id,local_path,status,downloaded_at) VALUES (?,?,?,?)",
+                        (first, "local", "completed", "2024-01-01T00:00:00"))
+        db.conn.executemany(items, [
+            (first, "local", "Series A", "2026-11-20"), (second, "local", "Series B", "2025-02-01"),
+            (cloud, "", "Series C", None), (unknown, "", "Series D", None),
+        ])
+        db.conn.execute("INSERT INTO cloud_archives (rj_id,archived_at,updated_at,metadata_json) "
+                        "VALUES (?, '2024-06-01','2026-01-01',?)", (cloud, '{"release":"2026-01-01"}'))
+        db.set_metadata_cache(first, "First", "", "", {"release": "2025-02-01"}, [])
+        db.set_metadata_cache(second, "Second", "", "", {"release_date": "2025-01-01"}, [])
+        db.set_metadata_cache(unknown, "Unknown", "", "", {"release": "2026-02-31"}, [])
+        db.set_metadata_cache(cloud, "Cloud", "", "", {"release_date": ""}, [])
+
+        def order(sort, **kwargs):
+            result = db.get_library_page(sort=sort, **kwargs)
+            assert "error" not in result
+            return [item["rj_id"] for item in result["items"]]
+
+        assert order("admitted_desc") == [second, cloud, first, unknown]
+        assert order("release_desc", search="Series", offset=1, limit=2) == [first, second]
+        assert order("release_desc") == [cloud, first, second, unknown]
+        db.conn.execute("DELETE FROM library_items WHERE rj_id=?", (first,))
+        db.conn.execute(items, (first, "local", "Series A", "2026-11-22"))
+        assert order("admitted_desc", search="Series") == [second, cloud, first, unknown]
+        db.upsert_work_metadata(unknown, "Updated", "", "", {"release": "2026-11-22"})
+        assert order("release_desc") == [unknown, cloud, first, second]
+        db.invalidate_cache(unknown)
+        assert order("release_desc") == [cloud, first, second, unknown]
+
+
+def test_exact_album_tag_filter_matches_local_and_cloud_tags_and_updates(tmp_path):
+    from core.database import LibraryVault
+
+    local, cloud, similar = (f"RJ{i:08d}" for i in range(1, 4))
+    with LibraryVault(tmp_path / "history.db") as db:
+        db.conn.executemany("INSERT INTO library_items (rj_id,folder_path,folder_name) VALUES (?,'',?)",
+                            [(local, "One"), (cloud, "Two"), (similar, "Three")])
+        db.set_metadata_cache(local, "One", "", "", {"tags": [{"name": "ASMR"}, "ASMR"]}, [])
+        db.set_metadata_cache(similar, "ASMR", "", "", {"tags": ["ASMR drama"]}, [])
+        db.set_metadata_cache(cloud, "Two", "", "", {"tags": []}, [])
+        db.conn.execute("INSERT INTO cloud_archives (rj_id,archived_at,updated_at,metadata_json) "
+                        "VALUES (?,'2026-01-01','2026-01-01',?)",
+                        (cloud, '{"tag":{"123":{"name":"ASMR"}}}'))
+        page = db.get_library_page(tag="asmr", sort="rj_desc")
+        assert [item["rj_id"] for item in page["items"]] == [cloud, local]
+        assert db.get_library_page(tag="ASMR", search="Two")["total"] == 1
+        assert db.get_library_detail(cloud)["album_tags"] == ["ASMR"]
+        db.set_metadata_cache(local, "One", "", "", {"tags": "Relaxation"}, [])
+        assert db.get_library_page(tag="ASMR")["total"] == 1
+        assert db.get_library_page(tag="Relaxation")["items"][0]["card_tags"] == ["Relaxation"]
+
+
+def test_clicking_and_clearing_tag_preserves_sort(tmp_path):
+    controller = FakeController(tmp_path)
+    view = LibraryView(controller)
+    view._sort = "release_desc"
+    view.search_input.value = "RJ00000001"
+    view._tag_button("ASMR").on_click(None)
+    assert view.tag_filter.visible
+    assert controller.db.page_calls[-1]["tag"] == "ASMR"
+    assert controller.db.page_calls[-1]["search"] == ""
+    assert controller.db.page_calls[-1]["sort"] == "release_desc"
+    view.tag_filter.on_delete(None)
+    assert not view.tag_filter.visible
+    assert "tag" not in controller.db.page_calls[-1]

@@ -30,6 +30,8 @@ class TrackItem:
     save_path: Path
     level: int = 0
     children: List['TrackItem'] = field(default_factory=list)
+    source_key: str = ""
+    legacy_track_id: str = ""
 
 @dataclass
 class SessionStats:

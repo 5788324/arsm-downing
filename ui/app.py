@@ -40,6 +40,19 @@ class AppController(BaseAppController):
         except Exception:
             pass
 
+    def navigate_to_view(self, index: int) -> None:
+        """Navigate from an in-page call to action using the same lifecycle path."""
+        if index not in self.views:
+            return
+        self.nav_rail.selected_index = index
+        self.on_nav_change(type("NavEvent", (), {
+            "control": type("NavControl", (), {"selected_index": index})()
+        })())
+        try:
+            self.page.update()
+        except Exception:
+            pass
+
     def on_nav_change(self, e):
         idx = e.control.selected_index
         if idx not in self.views:

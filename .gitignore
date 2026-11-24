@@ -37,6 +37,8 @@ build/
 Downloads/
 logs/
 .local_backups/
+/cloud_archive_covers/
+/scripts/launch_desktop.ps1
 backup_*.db
 backup_*.db-wal
 backup_*.db-shm
@@ -55,3 +57,8 @@ tmp_probe_*/
 .venv-build/
 release/
 .pytest_cache/
+.venv-py311/
+
+# Resource library runtime output
+library_playlists/
+reports/library-anomalies-*.csv

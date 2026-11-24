@@ -9,6 +9,7 @@ import time
 from typing import Dict, Any, Optional
 from pathlib import Path
 
+from core.media_assets import find_local_cover
 from ui.theme import Styles, ACCENT_PRIMARY, ACCENT_SECONDARY, SUCCESS, WARNING, ERROR, BG_SURFACE_LIGHT
 from core.status import WorkStatus
 from core.orchestrator import Orchestrator
@@ -18,11 +19,6 @@ QUEUE_FILE = Path("queue.json")
 
 
 class DownloadView(ft.Container):
-    COVER_CANDIDATES = (
-        "cover.jpg", "cover.jpeg", "cover.png", "cover.webp",
-        "main.jpg", "main.png", "package.jpg", "package.png",
-    )
-
     def __init__(self, app_controller):
         super().__init__()
         self.app_controller = app_controller
@@ -466,22 +462,8 @@ class DownloadView(ft.Container):
     def _resolve_cover_source(self, rj_id: str) -> Optional[str]:
         """Return only a local cover path; remote URLs must use NetworkKernel."""
         work_dir = self._find_work_dir(rj_id)
-        if work_dir and work_dir.exists():
-            for name in self.COVER_CANDIDATES:
-                candidate = work_dir / name
-                if candidate.exists():
-                    return str(candidate)
-            try:
-                for child in work_dir.iterdir():
-                    if child.is_file() and child.suffix.lower() in {
-                        ".jpg", ".jpeg", ".png", ".webp",
-                    }:
-                        lower_name = child.name.lower()
-                        if any(token in lower_name for token in ("cover", "package", "main")):
-                            return str(child)
-            except OSError:
-                pass
-        return None
+        cover = find_local_cover(work_dir) if work_dir else None
+        return str(cover) if cover else None
 
     def _build_cover(self, rj_id: str, width: int = 72, height: int = 72):
         src = self._resolve_cover_source(rj_id)
@@ -664,13 +646,16 @@ class DownloadView(ft.Container):
                 break
             t_total = tdata.get("total", 0)
             t_dl = tdata.get("downloaded", 0)
-            t_pct = t_dl / t_total if t_total > 0 else 0
+            # P0-D: never display over 100%; flag oversized local files.
+            overage = t_total > 0 and t_dl > t_total
+            t_pct = min(1.0, t_dl / t_total) if t_total > 0 else 0
             t_color = SUCCESS if t_pct >= 1.0 else ACCENT_PRIMARY
             short_name = tname[:35] + ".." if len(tname) > 35 else tname
+            label = f"{t_pct*100:.0f}%" + ("  ⚠" if overage else "")
             track_items.append(ft.Column([
                 ft.Row([
                     ft.Text(short_name, size=10, color=ACCENT_SECONDARY, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
-                    ft.Text(f"{t_pct*100:.0f}%", size=10, color="grey"),
+                    ft.Text(label, size=10, color="grey"),
                 ], spacing=6, alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                 ft.ProgressBar(value=t_pct, color=t_color, bar_height=3),
             ], spacing=1))
@@ -779,6 +764,13 @@ class DownloadView(ft.Container):
             data["status"] = cn_status
             ns = self.normalize_status(status)
 
+            if ns in ("paused", "cancelled", "completed", "failed", "partial"):
+                # A stopped task must never keep advertising stale throughput
+                # or an ETA from the final in-flight progress callback.
+                data["last_speed_bps"] = 0
+                data["last_track_speed"] = 0
+                data["last_eta"] = None
+
             # Cache hit detection
             if "cached" in status.lower():
                 data["cache_hit"] = True
@@ -861,6 +853,7 @@ class DownloadView(ft.Container):
             return
         if data["status"] in ("已暂停", "Paused (partial)") or data["status"].startswith("Paused"):
             data["status"] = "队列中"
+            data.pop("_ignore_active_progress", None)
             data["cache_hit"] = False
             self.build_queue_item(rj_id)
             self.app_controller.resume_download(rj_id)
@@ -869,9 +862,14 @@ class DownloadView(ft.Container):
             self.update_work_status(rj_id, "Paused")
 
     def _retry_failed(self, rj_id: str):
-        """Ask the core to reconcile the failure before changing card state."""
-        if rj_id not in self.active_downloads:
+        """Show immediate feedback, then let core reconcile the failed files."""
+        data = self.active_downloads.get(rj_id)
+        if not data:
             return
+        data["status"] = "恢复中..."
+        data.pop("_ignore_active_progress", None)
+        data["cache_hit"] = False
+        self.build_queue_item(rj_id)
         self.app_controller.resume_download(rj_id)
         self.app_controller.show_snack(f"{rj_id} 正在检查断点与失败状态…")
 
@@ -881,6 +879,7 @@ class DownloadView(ft.Container):
         if not data:
             return
         data["status"] = "队列中"
+        data.pop("_ignore_active_progress", None)
         data["cache_hit"] = False
         self.build_queue_item(rj_id)
         self.app_controller.start_download(rj_id, allow_duplicate=True)
@@ -949,20 +948,13 @@ class DownloadView(ft.Container):
         self.save_queue()
 
     def cancel_item(self, rj_id: str):
-        """Cancel durably, remove the card, and preserve partial bytes."""
+        """Cancel durably while keeping the resumable terminal card visible."""
         data = self.active_downloads.get(rj_id)
         if not data:
             return
         if not self._is_terminal(data["status"]):
             self.app_controller.cancel_download(rj_id)
-        if data.get("control") and data["control"] in self.queue_list.controls:
-            self.queue_list.controls.remove(data["control"])
-        self.active_downloads.pop(rj_id, None)
-        try:
-            if self.queue_list.page:
-                self.queue_list.update()
-        except Exception:
-            pass
+            self.update_work_status(rj_id, "Cancelled")
         self.save_queue()
 
     # ══════════════════════════════════════════════
@@ -1074,15 +1066,17 @@ class DownloadView(ft.Container):
             for d in details:
                 total = d["total"]
                 dl = d["downloaded"]
-                prog = dl / total if total > 0 else 0
+                prog = min(1.0, dl / total) if total > 0 else 0
+                overage = total > 0 and dl > total
                 color = (SUCCESS if d["status"] == "completed"
                          else ERROR if d["status"] == "failed"
                          else ACCENT_SECONDARY)
                 title = d["title"][:40]
+                label = f"{prog*100:.1f}%" + ("  ⚠" if overage else "")
                 self.dialog_list.controls.append(ft.Column([
                     ft.Row([
                         ft.Text(title, size=12),
-                        ft.Text(f"{prog*100:.1f}%", size=12),
+                        ft.Text(label, size=12),
                     ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                     ft.ProgressBar(value=prog, color=color),
                 ]))

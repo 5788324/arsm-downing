@@ -206,9 +206,8 @@ def test_download_center_filter_and_batch_labels_match_visible_flet_controls():
         "queued": "等待中",
         "paused": "已暂停",
         "failed": "失败",
-        "completed": "已完成",
         "cancelled": "已取消",
-        "all": "全部",
+        "queue_all": "全部任务",
     }
     cls = class_node("ui/views/download_view.py", "DownloadView")
     visible_strings = {
@@ -251,7 +250,8 @@ def test_library_all_modes_search_navigation_and_async_guards_exist():
         "_set_mode", "_set_category", "_set_sort",
         "_set_anomaly_filter", "select_album", "_open_folder", "_copy_text",
     } <= methods
-    assert '(("cards", "索引视图"), ("anomalies", "异常视图"))' in text
+    for label in ("全部作品", "待补齐", "字幕待下载", "云盘", "异常"):
+        assert label in text
     assert "generation != self._load_generation" in text
     assert "generation != self._detail_generation" in text
     assert "not self._active" in text

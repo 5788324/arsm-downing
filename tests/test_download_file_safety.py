@@ -39,7 +39,10 @@ class FakeKernel:
 
     async def stream(self, _url, _headers=None, purpose="download"):
         assert purpose == "download"
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        return response
 
     async def shutdown(self):
         return None
@@ -54,6 +57,10 @@ def make_orchestrator(tmp_path: Path, responses, retry_count=1):
     cfg.tag_audio = False
     db = LibraryVault(tmp_path / "history.db")
     orc = Orchestrator(FakeKernel(responses), cfg, db)
+    # These tests exercise transport and range semantics with tiny sentinel
+    # byte strings rather than real media containers. Structural validation
+    # has dedicated coverage in test_download_failure_recovery.py.
+    orc._validate_local_completion = lambda _path, _size=0: (True, "fixture")
     return orc, db
 
 
@@ -70,6 +77,24 @@ def make_track(path: Path, size: int) -> TrackItem:
         id="1", title=path.name, type="audio",
         url="https://example.invalid/track", size=size, save_path=path,
     )
+
+
+def test_retry_count_one_still_retries_a_transient_timeout(tmp_path: Path) -> None:
+    success = FakeResponse(
+        200, chunks=[b"abcd"], headers={"Content-Length": "4"}
+    )
+    orc, db = make_orchestrator(
+        tmp_path, [asyncio.TimeoutError("temporary timeout"), success],
+        retry_count=1,
+    )
+    final = tmp_path / "track.mp3"
+
+    result = asyncio.run(orc.download_file(
+        make_track(final, 4), make_meta(), None, asyncio.Semaphore(1)))
+
+    assert result is True
+    assert final.read_bytes() == b"abcd"
+    db.close()
 
 
 def test_complete_part_plus_416_is_verified_and_renamed(tmp_path: Path) -> None:

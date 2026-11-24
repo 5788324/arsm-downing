@@ -76,3 +76,31 @@ RC2 批量粘贴必须使用 `page.open(dialog)` / `page.close(dialog)`；`page.
 - Windows 隔离验收：安装、启动、--shutdown 协作退出、运行中卸载、用户数据保留及零残留进程均通过。
 - 最终安装器 SHA-256：2a7df244d6c07d289c7dea3a9788a271c48b6eb33f296b4a5de81e8c27b171e6。
 - 当前状态：等待 Git PR、CI、合并、v1.0.0 标签和正式 GitHub Release；正式 E:\arsm 与既有运行数据零接触。
+
+## D-20260805：Issue #19 必须与 #20 同分支同 PR
+
+Issue #20（冻结/重试风暴/虚假进度）与 Issue #19（下载页布局）在 owner 要求下必须于同一分支、同一 PR 内交付，不能拆成两个合并单元。
+
+## D-20260805：Signed URL 刷新预算与传输重试预算分离
+
+每个文件的 signed-URL 刷新最多一次（`refresh_used`），新 URL 至少获得一次完整尝试；若新 URL 再次 400/401/403 立即 fail-closed（保留 `.part`），不再机械重试同一 URL。`retry_count` 只约束普通传输错误，不消耗于签名刷新。
+
+## D-20260805：并发签名失效必须共享同一刷新 future
+
+`ensure_refreshed_once()` 取代按 `refresh_count` 猜测完成状态的旧逻辑：in-flight 的调用方 await 同一 task，成功结果复用，失败返回同一失败，杜绝“计数已变但映射未生成”的竞态误判。
+
+## D-20260805：签名参数禁止进入日志
+
+`fresh_url`（含 query token）不得写入日志；只记录 host、稳定文件键和脱敏的错误分类，防止签名泄漏。
+
+## D-20260805：磁盘核验必须在 UI 线程外执行
+
+`apply_disk_verification`（逐文件 `stat`）与队列抓取经 `run_blocking`/`asyncio.to_thread` 执行，结果经 UI queue 回传；用 generation token 丢弃过期快照。约 2700 文件的现场绝不能再次阻塞 Flet。
+
+## D-20260805：真实进度以磁盘核验为准
+
+`registered` 不是终态：只有磁盘核验确认的文件才算完成。UI 容量/摘要显示 `verified_bytes`；下载成功保持 `completed`，不再改写为 `registered`。unknown-size 文件的字节不进入已知文件进度分子。
+
+## D-20260805：UI 调度采用单调度器守卫
+
+后台 poller 与 drain 任务共用 `_ui_schedule_lock`，任意时刻至多一个 drain；控制消息与 progress 都执行数量 + 时间双预算，并以 `await asyncio.sleep(0)` 让出事件循环，保证 UI 永远可响应。

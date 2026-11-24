@@ -15,6 +15,7 @@ from typing import Callable, Iterable, Mapping, Sequence
 CANONICAL_RJ_RE = re.compile(r"^RJ\d{8}$", re.IGNORECASE)
 
 ANOMALY_ORDER = (
+    "offline_drive",
     "indexed_path_missing",
     "configured_root_not_indexed",
     "outside_configured_roots",
@@ -25,6 +26,7 @@ ANOMALY_ORDER = (
 )
 
 ANOMALY_LABELS = {
+    "offline_drive": "磁盘离线",
     "indexed_path_missing": "路径丢失",
     "configured_root_not_indexed": "目录未索引",
     "outside_configured_roots": "配置目录之外",
@@ -140,8 +142,10 @@ def classify_library_anomalies(
         except OSError:
             local_exists = False
         if local_path and not local_exists:
-            categories.append("indexed_path_missing")
-        elif local_path and path_is_under_roots(local_path, roots) and not indexed:
+            drive_root = Path(local_path).anchor
+            offline = bool(path_exists is None and drive_root and not Path(drive_root).exists())
+            categories.append("offline_drive" if offline else "indexed_path_missing")
+        elif local_path and path_is_under_roots(local_path, roots) and not (indexed and indexed.get("folder_path", local_path)):
             categories.append("configured_root_not_indexed")
         elif local_path and roots and not path_is_under_roots(local_path, roots):
             categories.append("outside_configured_roots")
@@ -170,6 +174,11 @@ def classify_library_anomalies(
     for values in groups.values():
         values.sort(key=lambda item: (item["rj_id"], item["local_path"]))
     return groups
+
+
+def filter_anomaly_groups(groups: Mapping[str, Sequence[dict]], search: str) -> dict[str, list[dict]]:
+    return {key: [item for item in items if _matches_search(item, search)]
+            for key, items in groups.items()}
 
 
 def flatten_anomaly_groups(groups: Mapping[str, Sequence[dict]],

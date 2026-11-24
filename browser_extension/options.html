@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ARSM 网页助手设置</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main class="shell">
+    <section class="panel" aria-labelledby="page-title">
+      <p class="eyebrow">ARSM SUITE</p>
+      <h1 id="page-title">网页助手连接设置</h1>
+      <p class="intro">连接后，asmr.one 会显示作品是否已入库，并能把未入库作品交给 ARSM 下载。</p>
+
+      <dl class="connection">
+        <div>
+          <dt>本机地址</dt>
+          <dd id="endpoint">http://127.0.0.1:17641</dd>
+        </div>
+        <div>
+          <dt>扩展 ID</dt>
+          <dd id="extension-id"></dd>
+        </div>
+      </dl>
+
+      <label for="token">连接令牌</label>
+      <div class="token-row">
+        <input id="token" type="password" autocomplete="off"
+               placeholder="从 ARSM 设置页复制连接令牌">
+        <button id="toggle-token" class="secondary" type="button">显示</button>
+      </div>
+      <p class="help">令牌只保存在浏览器扩展本地存储中，不会发送给网页。</p>
+
+      <div class="actions">
+        <button id="save" type="button">保存并检查连接</button>
+        <button id="check" class="secondary" type="button">仅检查连接</button>
+      </div>
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+
+      <ol class="steps">
+        <li>启动 ARSM Suite。</li>
+        <li>打开 ARSM 的“设置 → 浏览器扩展”。</li>
+        <li>启用连接，复制令牌并粘贴到上方。</li>
+        <li>返回 asmr.one，刷新网页。</li>
+      </ol>
+    </section>
+  </main>
+  <script src="options.js"></script>
+</body>
+</html>

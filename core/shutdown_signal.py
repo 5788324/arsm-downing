@@ -2,12 +2,26 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import os
 import threading
 from collections.abc import Callable
 
-_SHUTDOWN_EVENT = r"Local\ARSM-Suite-Shutdown"
-_STOPPED_EVENT = r"Local\ARSM-Suite-Stopped"
+from core.paths import application_dir
+
+
+def _event_names() -> tuple[str, str]:
+    """Scope cooperative shutdown to one installation/profile.
+
+    Portable and isolated copies may run side by side. A process from one copy
+    must never close another copy merely because both use the ARSM Suite name.
+    """
+    scope = str(application_dir()).casefold().encode("utf-8", errors="replace")
+    suffix = hashlib.sha256(scope).hexdigest()[:16]
+    return (
+        rf"Local\ARSM-Suite-Shutdown-{suffix}",
+        rf"Local\ARSM-Suite-Stopped-{suffix}",
+    )
 _EVENT_MODIFY_STATE = 0x0002
 _SYNCHRONIZE = 0x00100000
 _WAIT_OBJECT_0 = 0
@@ -52,8 +66,9 @@ class ShutdownSignal:
         if os.name != "nt":
             return False
         kernel32 = _kernel32()
-        shutdown = kernel32.CreateEventW(None, False, False, _SHUTDOWN_EVENT)
-        stopped = kernel32.CreateEventW(None, True, False, _STOPPED_EVENT)
+        shutdown_event, stopped_event = _event_names()
+        shutdown = kernel32.CreateEventW(None, False, False, shutdown_event)
+        stopped = kernel32.CreateEventW(None, True, False, stopped_event)
         if not shutdown or not stopped:
             if shutdown:
                 kernel32.CloseHandle(shutdown)
@@ -96,10 +111,11 @@ def request_shutdown(timeout_ms: int = 20_000) -> bool:
     if os.name != "nt":
         return False
     kernel32 = _kernel32()
-    shutdown = kernel32.OpenEventW(_EVENT_MODIFY_STATE, False, _SHUTDOWN_EVENT)
+    shutdown_event, stopped_event = _event_names()
+    shutdown = kernel32.OpenEventW(_EVENT_MODIFY_STATE, False, shutdown_event)
     if not shutdown:
         return False
-    stopped = kernel32.OpenEventW(_SYNCHRONIZE, False, _STOPPED_EVENT)
+    stopped = kernel32.OpenEventW(_SYNCHRONIZE, False, stopped_event)
     try:
         if not kernel32.SetEvent(shutdown) or not stopped:
             return False

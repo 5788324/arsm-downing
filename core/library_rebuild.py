@@ -11,20 +11,19 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 import json
 import os
+import re
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 from uuid import uuid4
+
+from core.audio import AudioProcessor
+from core.media_assets import find_local_cover
 
 AUDIO_EXTENSIONS = {
     ".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma",
 }
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".avi", ".mov", ".wmv"}
-COVER_NAMES = {
-    "cover.jpg", "cover.jpeg", "cover.png", "cover.webp",
-    "main.jpg", "main.jpeg", "main.png", "main.webp",
-    "package.jpg", "package.jpeg", "package.png", "package.webp",
-}
 ACTIVE_DOWNLOAD_STATUSES = {"queued", "paused", "downloading", "failed", "resuming"}
 
 
@@ -47,6 +46,7 @@ class LibraryScanEntry:
     has_audio: int
     has_cover: int
     warnings: tuple[str, ...] = ()
+    missing_lrc: int = 0
 
     def to_library_index_row(self, scanned_at: str) -> tuple:
         return (
@@ -143,12 +143,11 @@ class LibraryRebuildResult:
 
 
 def _normalize_rj_id(name: str) -> str:
-    import re
-
-    match = re.search(r"(?:RJ)?(\d{6,8})", str(name or ""), re.IGNORECASE)
+    value = str(name or "").strip()
+    match = re.search(r"(?<![A-Za-z0-9])RJ([0-9]{6,8})(?![0-9])", value, re.IGNORECASE)
     if not match:
-        return ""
-    return f"RJ{int(match.group(1)):08d}"
+        match = re.fullmatch(r"([0-9]{6,8})", value)
+    return f"RJ{int(match.group(1)):08d}" if match else ""
 
 
 def _path_key(path: str | Path) -> str:
@@ -157,18 +156,21 @@ def _path_key(path: str | Path) -> str:
 
 def _scan_work_dir(path: Path, *, rj_id: str, library_root: Path) -> LibraryScanEntry:
     audio = image = video = other = total_files = total_size = 0
-    has_cover = False
     warning_set: set[str] = set()
+    vtt_paths: list[Path] = []
+
+    def fail(error: OSError) -> None:
+        raise error
 
     try:
         if path.is_symlink():
             raise LibraryScanError(f"RJ directory is a symbolic link: {path}")
-        for current_root, dir_names, file_names in os.walk(path, followlinks=False):
+        for current_root, dir_names, file_names in os.walk(path, followlinks=False, onerror=fail):
             current = Path(current_root)
             kept_dirs: list[str] = []
             for name in dir_names:
                 child = current / name
-                if child.is_symlink():
+                if child.is_symlink() or os.path.isjunction(child):
                     warning_set.add("symlink_skipped")
                 else:
                     kept_dirs.append(name)
@@ -187,6 +189,8 @@ def _scan_work_dir(path: Path, *, rj_id: str, library_root: Path) -> LibraryScan
                 total_size += int(stat.st_size)
                 suffix = file_path.suffix.casefold()
                 lowered = file_path.name.casefold()
+                if suffix == ".vtt":
+                    vtt_paths.append(file_path)
                 if suffix in AUDIO_EXTENSIONS:
                     audio += 1
                 elif suffix in IMAGE_EXTENSIONS:
@@ -195,8 +199,6 @@ def _scan_work_dir(path: Path, *, rj_id: str, library_root: Path) -> LibraryScan
                     video += 1
                 else:
                     other += 1
-                if lowered in COVER_NAMES:
-                    has_cover = True
                 if suffix == ".part" or lowered.endswith(".part"):
                     warning_set.add("contains_part")
     except PermissionError as exc:
@@ -204,6 +206,7 @@ def _scan_work_dir(path: Path, *, rj_id: str, library_root: Path) -> LibraryScan
     except OSError as exc:
         raise LibraryScanError(f"Filesystem error while scanning {path}: {exc}") from exc
 
+    has_cover = find_local_cover(path) is not None
     if audio == 0:
         warning_set.add("no_audio")
     if not has_cover:
@@ -225,10 +228,13 @@ def _scan_work_dir(path: Path, *, rj_id: str, library_root: Path) -> LibraryScan
         has_audio=int(audio > 0),
         has_cover=int(has_cover),
         warnings=tuple(sorted(warning_set)),
+        missing_lrc=sum(not AudioProcessor.canonical_lyrics_path(item).is_file()
+                        for item in vtt_paths),
     )
 
 
-def _discover_rj_directories(root: Path, max_depth: int = 2) -> list[Path]:
+def _discover_rj_directories(root: Path, max_depth: int = 2,
+                             excluded: frozenset[Path] = frozenset()) -> list[Path]:
     discovered: list[Path] = []
     queue = deque([(root, 0)])
     while queue:
@@ -240,7 +246,7 @@ def _discover_rj_directories(root: Path, max_depth: int = 2) -> list[Path]:
         except OSError as exc:
             raise LibraryScanError(f"Cannot list {current}: {exc}") from exc
         for child in children:
-            if child.is_symlink():
+            if child in excluded or child.is_symlink() or os.path.isjunction(child):
                 continue
             if not child.is_dir():
                 continue
@@ -252,12 +258,14 @@ def _discover_rj_directories(root: Path, max_depth: int = 2) -> list[Path]:
     return discovered
 
 
-def scan_library_snapshot(paths: Sequence[str | Path], *, max_depth: int = 2) -> LibraryScanSnapshot:
+def scan_library_snapshot(paths: Sequence[str | Path], *, max_depth: int = 2,
+                          exclude_paths: Iterable[str | Path] = ()) -> LibraryScanSnapshot:
     """Build a complete immutable filesystem snapshot without changing SQLite."""
     roots: list[str] = []
     warnings: list[str] = []
     entries: list[LibraryScanEntry] = []
     seen_work_dirs: set[str] = set()
+    excluded = frozenset(Path(path).expanduser().resolve() for path in exclude_paths if path)
 
     for raw_path in paths:
         value = str(raw_path or "").strip()
@@ -267,13 +275,14 @@ def scan_library_snapshot(paths: Sequence[str | Path], *, max_depth: int = 2) ->
         if raw_root.is_symlink():
             raise LibraryScanError(f"Library root is a symbolic link: {raw_root}")
         root = raw_root.resolve()
+        if any(root == item or item in root.parents for item in excluded):
+            raise LibraryScanError("扫描范围不能是字幕目录")
         roots.append(str(root))
         if not root.exists():
-            warnings.append(f"missing_root:{root}")
-            continue
+            raise LibraryScanError(f"仓库离线或目录不存在：{root}")
         if not root.is_dir():
             raise LibraryScanError(f"Library root is not a directory: {root}")
-        for work_dir in _discover_rj_directories(root, max_depth=max_depth):
+        for work_dir in _discover_rj_directories(root, max_depth=max_depth, excluded=excluded):
             key = _path_key(work_dir)
             if key in seen_work_dirs:
                 continue
@@ -326,12 +335,29 @@ def choose_canonical_entries(
     selected: dict[str, LibraryScanEntry] = {}
     for rj_id, entries in grouped.items():
         by_key = {_path_key(entry.work_dir): entry for entry in entries}
+        # A stale preferred path must never make a cover-only shell canonical
+        # while another copy of the same RJ contains playable audio.
+        best_has_audio = max(entry.has_audio for entry in entries)
+        eligible = [
+            entry for entry in entries
+            if entry.has_audio == best_has_audio
+        ]
         chosen = None
         for candidate in preferred_paths.get(rj_id, ()):  # works path, then previous item path
-            chosen = by_key.get(_path_key(candidate))
-            if chosen is not None:
+            preferred = by_key.get(_path_key(candidate))
+            if preferred is not None and preferred in eligible:
+                chosen = preferred
                 break
-        selected[rj_id] = chosen or entries[0]
+        selected[rj_id] = chosen or max(
+            eligible,
+            key=lambda entry: (
+                entry.audio_count,
+                entry.has_cover,
+                entry.total_files,
+                entry.total_size,
+                _path_key(entry.work_dir),
+            ),
+        )
     return selected
 
 

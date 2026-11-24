@@ -34,14 +34,37 @@ class DownloadQueueItem:
     can_retry: bool
     is_terminal: bool
     cancelled_files: int = 0
+    # P0-D: disk-verified progress (None = no on-disk verification was run).
+    verified_bytes: int | None = None
+    verified_files: int | None = None
+    overage_file_count: int = 0
+    # Known-size byte totals: unknown-size files are excluded from both
+    # numerator and denominator so they can never push the ratio to 100%.
+    verified_known_bytes: int | None = None
+    verified_expected_bytes: int | None = None
+    # The final known-size-only ratio from the disk verification.
+    verified_progress: float | None = None
 
     @property
     def progress(self) -> float:
-        if self.total_bytes <= 0:
+        # The disk-verified ratio is the single source of truth when present;
+        # it is computed from known-size files only and can never exceed 1.0.
+        if self.verified_progress is not None:
+            return max(0.0, min(1.0, self.verified_progress))
+        expected = max(0, self.total_bytes)
+        if expected <= 0:
+            if self.verified_files is not None:
+                if self.file_count > 0 and self.verified_files >= self.file_count:
+                    return 1.0
+                return 0.0
             if self.file_count > 0 and self.completed_files >= self.file_count:
                 return 1.0
             return 0.0
-        return max(0.0, min(1.0, self.downloaded_bytes / self.total_bytes))
+        # Prefer on-disk verified bytes; fall back to the DB byte total only
+        # when no verification was possible.  Either way the ratio stays <= 1.
+        verified = (self.verified_bytes
+                    if self.verified_bytes is not None else self.downloaded_bytes)
+        return max(0.0, min(1.0, verified / expected))
 
 
 @dataclass(frozen=True)
