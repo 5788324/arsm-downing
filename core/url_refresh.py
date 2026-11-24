@@ -92,7 +92,15 @@ class SignedUrlRefresher:
             self.refresh_failures[rj_id] = self.refresh_failures.get(rj_id, 0) + 1
             self._last_outcome[rj_id] = None
             return None
-        mapping = {self._key_of(track): track for track in fresh}
+        mapping = {}
+        ambiguous = set()
+        for track in fresh:
+            key = self._key_of(track)
+            if key in mapping:
+                del mapping[key]
+                ambiguous.add(key)
+            elif key not in ambiguous:
+                mapping[key] = track
         self._latest[rj_id] = mapping
         self._last_outcome[rj_id] = mapping
         return mapping

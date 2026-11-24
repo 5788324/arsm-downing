@@ -29,5 +29,6 @@
     "low_speed_window_seconds": 30,
     "browser_bridge_enabled": false,
     "browser_bridge_port": 17641,
-    "browser_extension_token": null
+    "browser_extension_token": null,
+    "subtitle_archive_dir": "E:\\arsm\\arsm字幕文件"
 }

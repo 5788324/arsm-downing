@@ -10,10 +10,12 @@ from __future__ import annotations
 import asyncio
 import hmac
 import logging
+import os
 import re
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Awaitable, Callable, Iterable, Mapping, Optional
 
 from aiohttp import web
@@ -30,6 +32,8 @@ MAX_BATCH_RJ_IDS = 200
 RATE_LIMIT_REQUESTS = 120
 RATE_LIMIT_WINDOW_SECONDS = 60.0
 _RJ_PATTERN = re.compile(r"^(?:RJ)?(\d{6,8})$", re.IGNORECASE)
+_SUBTITLE_ARCHIVE_PATTERN = re.compile(r"RJ([0-9]{6,8})\.zip", re.IGNORECASE)
+_SUBTITLE_REFRESH_SECONDS = 120.0
 
 QueueDownload = Callable[[str], Awaitable[Mapping[str, object]]]
 OpenView = Callable[[str, str], None]
@@ -138,6 +142,20 @@ def sanitized_rj_states(db, rj_ids: Iterable[str]) -> dict[str, dict[str, object
     return result
 
 
+def _subtitle_archive_ids(root: Path) -> frozenset[str]:
+    """Index the RJ-named ZIPs of the dedicated subtitle collection."""
+    def fail(error: OSError) -> None:
+        raise error
+
+    ids = set()
+    for _, _, files in os.walk(root, onerror=fail):
+        for filename in files:
+            match = _SUBTITLE_ARCHIVE_PATTERN.fullmatch(filename)
+            if match:
+                ids.add(normalize_browser_rj_id(match.group(1)))
+    return frozenset(ids)
+
+
 class BrowserBridge:
     """Small aiohttp service bound only to the local loopback interface."""
 
@@ -153,6 +171,7 @@ class BrowserBridge:
         port: int = BROWSER_BRIDGE_PORT,
         allowed_extension_ids: Iterable[str] = (BROWSER_EXTENSION_ID,),
         rate_limit: int = RATE_LIMIT_REQUESTS,
+        subtitle_archive_dir: Path | None = None,
     ) -> None:
         self.db = db
         self.queue_download = queue_download
@@ -175,6 +194,10 @@ class BrowserBridge:
         self._running = False
         self._bound_port = self.port
         self._last_error = ""
+        self._subtitle_archive_dir = subtitle_archive_dir
+        self._subtitle_ids: frozenset[str] = frozenset()
+        self._subtitle_refresh_at = 0.0
+        self._subtitle_lock = asyncio.Lock()
 
     @property
     def running(self) -> bool:
@@ -371,6 +394,22 @@ class BrowserBridge:
             "extension_id": BROWSER_EXTENSION_ID,
         })
 
+    async def _subtitle_index(self) -> frozenset[str]:
+        if self._subtitle_archive_dir is None:
+            return frozenset()
+        if time.monotonic() >= self._subtitle_refresh_at:
+            async with self._subtitle_lock:
+                if time.monotonic() >= self._subtitle_refresh_at:
+                    try:
+                        self._subtitle_ids = await asyncio.to_thread(
+                            _subtitle_archive_ids, self._subtitle_archive_dir,
+                        )
+                    except OSError:
+                        # An unavailable library must not serve stale positive tags.
+                        self._subtitle_ids = frozenset()
+                    self._subtitle_refresh_at = time.monotonic() + _SUBTITLE_REFRESH_SECONDS
+        return self._subtitle_ids
+
     async def _handle_library_status(self, request: web.Request) -> web.Response:
         denied = self._authorize(request)
         if denied is not None:
@@ -388,7 +427,10 @@ class BrowserBridge:
         except ValueError as exc:
             return self._error(request, 400, "invalid_request", str(exc))
 
+        subtitles = await self._subtitle_index() if canonical else frozenset()
         states = sanitized_rj_states(self.db, canonical)
+        for rj_id, state in states.items():
+            state["has_subtitles"] = rj_id in subtitles
         return self._json(request, {"ok": True, "states": states})
 
     async def _handle_download_status(self, request: web.Request) -> web.Response:

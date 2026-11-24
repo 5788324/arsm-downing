@@ -122,6 +122,9 @@ class AppController:
             token=self.config.browser_extension_token,
             enabled=self.config.browser_bridge_enabled,
             port=self.config.browser_bridge_port,
+            subtitle_archive_dir=(
+                Path(self.config.subtitle_archive_dir) if self.config.subtitle_archive_dir else None
+            ),
         )
         self.orc = Orchestrator(self.kernel, self.config, self.db)
 
@@ -513,6 +516,11 @@ class AppController:
                     )()
                 })())
                 self.page.update()
+            views = getattr(self, "views", {})
+            library = views.get(target) if hasattr(views, "get") else None
+            focus = getattr(library, "focus_album", None)
+            if view == "library" and callable(focus):
+                focus(rj_id)
             self.show_snack(f"已从浏览器打开 {rj_id}")
 
         self.ui_queue.put(("ui_callback", navigate, None))

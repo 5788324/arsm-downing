@@ -7,6 +7,7 @@ import sys
 import logging
 import urllib.parse
 import time
+from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Callable, Optional, Dict
@@ -20,6 +21,7 @@ from core.config import ConfigManager
 from core.database import LibraryVault
 from core.network import NetworkKernel
 from core.audio import AudioProcessor
+from core.library_assets import materialize_track_lyrics
 from core.media_assets import find_local_cover
 from core.speed import SpeedTracker
 from core.status import WorkStatus
@@ -124,6 +126,21 @@ class Orchestrator:
         h = hashlib.sha1(key.encode()).hexdigest()[:12]
         return f"{rj_id}:{h}"
 
+    def _track_download_id(self, rj_id: str, track: TrackItem) -> str:
+        return self._make_dl_id(
+            rj_id, track.id or track.title, track.save_path, track.title)
+
+    def _matching_download_row(self, rj_id: str, track: TrackItem, rows: dict):
+        download_id = self._track_download_id(rj_id, track)
+        if download_id in rows or not track.legacy_track_id:
+            return download_id, rows.get(download_id, {})
+        legacy_id = self._make_dl_id(
+            rj_id, track.legacy_track_id, track.save_path, track.title)
+        legacy_row = rows.get(legacy_id, {})
+        if Path(legacy_row.get("local_path") or "") == track.save_path:
+            return legacy_id, legacy_row
+        return download_id, {}
+
     @staticmethod
     def _validate_local_completion(
             path: Path, expected_size: int = 0) -> tuple[bool, str]:
@@ -206,6 +223,7 @@ class Orchestrator:
                     work_data["targets"],
                     work_data["root_path"],
                     authoritative_plan=work_data.get("authoritative_plan", True),
+                    reconciled_paths=work_data.get("reconciled_paths"),
                 ))
             self.active_tasks[rj_id] = task
             try:
@@ -910,7 +928,24 @@ class Orchestrator:
                 "message": "The selected download row no longer exists",
                 **summary,
             }
-        selected_matched = False
+        selected_target = None
+        if selected_row is not None:
+            matching_targets = [
+                target for target in all_targets
+                if self._matching_download_row(rj_id, target, db_states)[0] == only_download_id
+            ]
+            if not matching_targets:
+                selected_path = Path(selected_row.get("local_path") or "")
+                matching_targets = [
+                    target for target in all_targets if target.save_path == selected_path
+                ]
+            if len(matching_targets) != 1:
+                return {
+                    "status": "file_not_found",
+                    "message": "The selected file cannot be uniquely matched to current metadata",
+                    **summary,
+                }
+            selected_target = matching_targets[0]
         resume_targets = []
         complete_paths = []
         download_updates = []
@@ -932,25 +967,13 @@ class Orchestrator:
                 # Let other albums and active download workers progress while a
                 # large cached album is being reconciled from disk.
                 await asyncio.sleep(0)
-            dl_id = self._make_dl_id(
-                rj_id, target.id or target.title, target.save_path, target.title
-            )
-            row = db_states.get(dl_id, {})
-            if only_download_id:
-                selected_path = Path(str(selected_row.get("local_path") or ""))
-                same_selected_file = (
-                    dl_id == only_download_id
-                    or (
-                        str(target.title) == str(selected_row.get("track_title") or "")
-                        and target.save_path.name == selected_path.name
-                    )
-                )
-                if not same_selected_file:
-                    continue
-                dl_id = only_download_id
-                row = selected_row
-                target.download_id_override = only_download_id
-                selected_matched = True
+            if selected_target is not None and target is not selected_target:
+                continue
+            dl_id, row = self._matching_download_row(rj_id, target, db_states)
+            if selected_target is not None:
+                dl_id, row = only_download_id, selected_row
+            if row:
+                target.download_id_override = dl_id
             status = str(row.get("status", "queued") or "queued").lower()
             final_path = Path(row.get("local_path") or target.save_path)
             target.save_path = final_path
@@ -976,6 +999,25 @@ class Orchestrator:
                     dl_id, rj_id, target.title, str(final_path), "failed",
                     int(row.get("downloaded_bytes", 0) or 0), expected,
                     error=f"Unable to inspect partial file: {exc}",
+                )
+                continue
+
+            legacy_partial = (
+                target.legacy_track_id
+                and (
+                    not row or dl_id != self._track_download_id(rj_id, target)
+                    or row.get("error_code") == "legacy_partial_ambiguous"
+                )
+                and (part_size > 0 or 0 < final_size < expected)
+                and not (final_size > 0 and final_size == expected)
+            )
+            if legacy_partial:
+                summary["unrecoverable"] += 1
+                record_download(
+                    dl_id, rj_id, target.title, str(final_path), "failed",
+                    max(final_size, part_size), expected,
+                    error="Partial file from ambiguous legacy track requires manual review",
+                    error_code="legacy_partial_ambiguous",
                 )
                 continue
 
@@ -1170,13 +1212,6 @@ class Orchestrator:
 
         self.db.upsert_download_batch(download_updates)
 
-        if only_download_id and not selected_matched:
-            return {
-                "status": "file_not_found",
-                "message": "The selected file is absent from current metadata",
-                **summary,
-            }
-
         if not resume_targets:
             if only_download_id and summary["already_complete"]:
                 return {
@@ -1229,7 +1264,12 @@ class Orchestrator:
         )
         self._queued_work_data[rj_id] = {
             "meta": meta, "targets": resume_targets, "root_path": root_path,
-            "authoritative_plan": only_download_id is None,
+            "authoritative_plan": (
+                only_download_id is None
+                and not summary["unrecoverable"]
+                and not summary["skipped_cancelled"]
+            ),
+            "reconciled_paths": complete_paths,
         }
         self.queued_rj_ids.add(rj_id)
         await self.download_queue.put(rj_id)
@@ -1459,16 +1499,31 @@ class Orchestrator:
 
     @staticmethod
     def deduplicate_tracks(targets: List[TrackItem]) -> List[TrackItem]:
-        seen: Dict[str, int] = {}
-        for t in targets:
-            key = str(t.save_path)
-            if key in seen:
-                seen[key] += 1
-                t.save_path = t.save_path.parent / \
-                    f"{t.save_path.stem}_{seen[key]}{t.save_path.suffix}"
-                t.title = f"{t.title}_{seen[key]}"
-            else:
-                seen[key] = 1
+        reserved = {os.path.normcase(str(track.save_path)) for track in targets}
+        used = set()
+        for track in targets:
+            path = track.save_path
+            key = os.path.normcase(str(path))
+            if key in used:
+                number = 2
+                while True:
+                    renamed = path.with_name(f"{path.stem}_{number}{path.suffix}")
+                    key = os.path.normcase(str(renamed))
+                    if key not in used and key not in reserved:
+                        break
+                    number += 1
+                track.save_path = renamed
+                track.title = f"{track.title}_{number}"
+            used.add(key)
+
+        identities = Counter((track.id or track.title, track.save_path.name)
+                             for track in targets)
+        for track in targets:
+            legacy_id = track.id or track.title
+            if identities[legacy_id, track.save_path.name] > 1:
+                track.legacy_track_id = legacy_id
+                source = track.source_key or str(track.save_path)
+                track.id = "source:" + hashlib.sha256(source.encode()).hexdigest()
         return targets
 
     def get_save_path(self, meta: WorkMetadata) -> Path:
@@ -1521,7 +1576,8 @@ class Orchestrator:
                     type=node.get("type", "file"),
                     url=str(yarl.URL(fixed, encoded=True)),
                     size=node.get("size", 0),
-                    save_path=save_path, level=level))
+                    save_path=save_path, level=level,
+                    source_key=(root_path.relative_to(base_path) / title).as_posix()))
         return items
 
     @staticmethod
@@ -1700,9 +1756,20 @@ class Orchestrator:
         # Register the whole album in one transaction. Large works can contain
         # hundreds of files, so one commit per target makes preparation slow.
         download_rows = []
+        existing_rows = {row["id"]: dict(row) for row in self.db.get_downloads_by_rj(rj_id)}
         for t in targets:
-            dl_id = self._make_dl_id(rj_id, t.id or t.title,
-                                     t.save_path, t.title)
+            dl_id, row = self._matching_download_row(rj_id, t, existing_rows)
+            if row and t.legacy_track_id:
+                t.download_id_override = dl_id
+                if row.get("error_code") == "legacy_partial_ambiguous":
+                    download_rows.append({
+                        **{key: row[key] for key in (
+                            "rj_id", "track_title", "local_path", "status",
+                            "downloaded_bytes", "total_bytes", "error", "error_code",
+                        )},
+                        "download_id": dl_id,
+                    })
+                    continue
             existing_size = t.save_path.stat().st_size \
                 if t.save_path.exists() else 0
             download_rows.append({
@@ -1813,6 +1880,14 @@ class Orchestrator:
         ).fetchone()
         persisted_status = str(persisted["status"] or "").lower() if persisted else ""
         persisted_size = int(persisted["total_bytes"] or 0) if persisted else 0
+        if (persisted and persisted["error_code"] == "legacy_partial_ambiguous"
+                and (part_path.is_file() or (
+                    final_path.is_file() and 0 < final_path.stat().st_size < track.size
+                ))):
+            self.stats.failed += 1
+            self._emit_progress(meta.rj_id, track.id or track.title, track.title,
+                                0, track.size, "failed")
+            return False
         if (persisted_status in {"completed", "registered"}
                 and is_confirmed_empty_txt(final_path, persisted_size, persisted["error_code"])):
             self.stats.skipped += 1
@@ -2342,7 +2417,7 @@ class Orchestrator:
         mapping = await refresher.ensure_refreshed_once(rj_id)
         if not mapping:
             return None
-        key = track.id or track.title
+        key = track.source_key or track.id or track.title
         fresh = mapping.get(key)
         if fresh is None:
             return None
@@ -2370,6 +2445,10 @@ class Orchestrator:
             if prepared is not None and prepared.is_file():
                 lyric_paths.append(prepared)
 
+        track_lyrics = materialize_track_lyrics(
+            root_path, meta.rj_id, files, lyric_paths,
+            getattr(self.config, "subtitle_archive_dir", ""),
+        )
         if not self.config.tag_audio:
             return []
         effective_cover = (
@@ -2380,7 +2459,7 @@ class Orchestrator:
         for path in files:
             if path.suffix.casefold() not in AudioProcessor.SUPPORTED_EXTENSIONS:
                 continue
-            lyrics = AudioProcessor.find_matching_lyrics(path, lyric_paths)
+            lyrics = track_lyrics.get(path)
             if AudioProcessor.apply_tags(path, meta, effective_cover, lyrics):
                 tagged.append((path, path.stat().st_size))
         return tagged
@@ -2390,6 +2469,13 @@ class Orchestrator:
             cover_path: Optional[Path] = None,
             target_paths: Optional[List[Path]] = None) -> bool:
         """Run and persist best-effort album finalization after download success."""
+        index_album = getattr(self.db, "index_local_album", None)
+        roots = [getattr(self.config, "output_dir", None), *(getattr(self.config, "library_paths", []) or [])]
+        if callable(index_album) and root_path.is_dir():
+            try:
+                await asyncio.to_thread(index_album, meta.rj_id, root_path, roots)
+            except (OSError, RuntimeError, ValueError):
+                logger.exception("Unable to index downloaded album %s", meta.rj_id)
         self.db.set_postprocess_status(meta.rj_id, "running")
         self._emit_work_status(meta.rj_id, "Finalizing")
         try:
@@ -2436,6 +2522,11 @@ class Orchestrator:
                 })
             self.db.upsert_download_batch(tagged_rows)
             self.db.set_postprocess_status(meta.rj_id, "completed")
+            if callable(index_album) and root_path.is_dir():
+                try:
+                    await asyncio.to_thread(index_album, meta.rj_id, root_path, roots)
+                except (OSError, RuntimeError, ValueError):
+                    logger.exception("Unable to refresh album index after post-processing %s", meta.rj_id)
             return True
         except Exception as exc:
             message = str(exc) or exc.__class__.__name__
@@ -2481,7 +2572,8 @@ class Orchestrator:
     async def _process_download(self, rj_id: str, meta: WorkMetadata,
                                  targets: List[TrackItem],
                                  root_path: Path, *,
-                                 authoritative_plan: bool = True) -> None:
+                                 authoritative_plan: bool = True,
+                                 reconciled_paths: Optional[List[Path]] = None) -> None:
         cover_path = await self._download_cover(
             rj_id, meta.cover_url, root_path
         )
@@ -2493,7 +2585,8 @@ class Orchestrator:
         worker_count = max(1, int(self.config.file_concurrency))
         file_sem = asyncio.Semaphore(worker_count)
         refresher = SignedUrlRefresher(
-            lambda rj: self._fetch_fresh_track_items(rj, root_path))
+            lambda rj: self._fetch_fresh_track_items(rj, root_path),
+            key_of=lambda track: track.source_key or track.id or track.title)
         self._per_rj_inflight[rj_id] = 0
 
         pool = DownloadWorkerPool(
@@ -2610,9 +2703,12 @@ class Orchestrator:
                 # All success — register work as completed. A file-level retry
                 # finalizes the entire work only after every durable row is done.
                 if authoritative_plan:
-                    completed_paths = [
-                        t.save_path for t in targets if t.save_path.is_file()
-                    ]
+                    completed_paths = list(dict.fromkeys(
+                        path for path in [
+                            *(reconciled_paths or []),
+                            *(target.save_path for target in success_targets),
+                        ] if path.is_file()
+                    ))
                 else:
                     completed_paths = [
                         Path(str(row["local_path"])) for row in rows

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import sqlite3
+from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -63,6 +65,7 @@ class DownloadService:
         # so retain the immutable aggregate until SQLite reports a change.
         # ``total_changes`` covers this connection; ``data_version`` covers
         # commits made by another connection/process.
+        self._queue_revisions: dict[str, int] | None = None
         self._queue_snapshot_token: tuple[int, int] | None = None
         self._queue_snapshot_items: tuple[DownloadQueueItem, ...] = ()
         self._queue_snapshot_summary: DownloadQueueSummary | None = None
@@ -148,10 +151,14 @@ class DownloadService:
         return (priority, item.rj_id)
 
     @staticmethod
-    def _aggregate_sql() -> str:
+    def _aggregate_sql(*, changed_only: bool = False) -> str:
         terminal = ",".join(f"'{value}'" for value in sorted(_TERMINAL_WORK))
+        changed_cte = "changed AS (SELECT value FROM json_each(?))," if changed_only else ""
+        changed_filter = "rj_id IN (SELECT value FROM changed)" if changed_only else ""
+        file_filter = f"WHERE {changed_filter}" if changed_filter else ""
+        work_filter = f"AND {changed_filter}" if changed_filter else ""
         return f"""
-            WITH file_totals AS (
+            WITH {changed_cte} file_totals AS (
                 SELECT rj_id,
                     COUNT(id) AS file_count,
                     SUM(CASE WHEN status IN ('completed','registered') THEN 1 ELSE 0 END) AS completed_files,
@@ -167,9 +174,9 @@ class DownloadService:
                     MAX(CASE WHEN status IN ('downloading','resuming') THEN track_title END) AS current_file,
                     MAX(NULLIF(error, '')) AS error_summary,
                     MAX(CAST(updated_at AS TEXT)) AS updated_at
-                FROM downloads GROUP BY rj_id
+                FROM downloads {file_filter} GROUP BY rj_id
             ), queue_keys AS (
-                SELECT rj_id FROM works WHERE LOWER(COALESCE(status, '')) != 'missing'
+                SELECT rj_id FROM works WHERE LOWER(COALESCE(status, '')) != 'missing' {work_filter}
                 UNION
                 SELECT rj_id FROM file_totals
             )
@@ -242,7 +249,7 @@ class DownloadService:
 
     def fetch_queue_page(self, *, status_filter: str = "working", page: int = 1,
                          page_size: int = 24) -> DownloadQueuePage:
-        """Return a paged queue snapshot with exactly two bounded SELECTs."""
+        """Return a paged queue snapshot, reusing per-album aggregates."""
         status_filter = status_filter if status_filter in self.FILTERS else "working"
         page, page_size = self._normalize_page(page, page_size)
         lock = getattr(self.vault, "_lock", None)
@@ -271,48 +278,84 @@ class DownloadService:
 
     def _fetch_queue_page_unlocked(self, status_filter: str, page: int,
                                    page_size: int) -> DownloadQueuePage:
-        data_version = int(self.connection.execute(
-            "PRAGMA data_version"
-        ).fetchone()[0])
-        token = (int(self.connection.total_changes), data_version)
-        if (token != self._queue_snapshot_token
-                or self._queue_snapshot_summary is None):
-            rows = self.connection.execute(self._aggregate_sql()).fetchall()
-            all_items = [self._row_to_item(row) for row in rows]
-            all_items.sort(key=self._sort_key)
+        if self.connection.in_transaction:
+            # A caller-owned transaction can still roll back after this read.
+            items = self._read_queue_items()
+            return self._paginate_queue(items, self._summarize_queue(items),
+                                        status_filter, page, page_size)
 
-            # The second SELECT is intentionally tiny and provides durable byte totals.
-            totals = self.connection.execute(
-                """SELECT COALESCE(SUM(downloaded_bytes), 0),
-                          COALESCE(SUM(total_bytes), 0)
-                   FROM downloads"""
-            ).fetchone()
-            self._queue_snapshot_items = tuple(all_items)
-            self._queue_snapshot_summary = DownloadQueueSummary(
-                total_tasks=len(all_items),
-                active_tasks=sum(item.queue_state == "active" for item in all_items),
-                queued_tasks=sum(item.queue_state == "queued" for item in all_items),
-                paused_tasks=sum(item.queue_state == "paused" for item in all_items),
-                failed_tasks=sum(item.queue_state == "failed" for item in all_items),
-                completed_tasks=sum(item.queue_state == "completed" for item in all_items),
-                downloaded_bytes=int(totals[0] or 0),
-                cancelled_tasks=sum(item.queue_state == "cancelled" for item in all_items),
-                total_bytes=int(totals[1] or 0),
-            )
+        data_version = int(self.connection.execute("PRAGMA data_version").fetchone()[0])
+        token = (int(self.connection.total_changes), data_version)
+        if token != self._queue_snapshot_token or self._queue_snapshot_summary is None:
+            if getattr(self.vault, "_has_queue_revisions", False):
+                # Read revisions and the corresponding rows in one SQLite snapshot.
+                self.connection.execute("SAVEPOINT queue_snapshot")
+                try:
+                    revisions = dict(self.connection.execute(
+                        "SELECT rj_id, revision FROM queue_revisions"
+                    ).fetchall())
+                    previous = self._queue_revisions
+                    changed = [rid for rid, revision in revisions.items()
+                               if previous is None or previous.get(rid) != revision]
+                    if previous is None or previous.keys() - revisions.keys() or len(changed) > 256:
+                        items = self._read_queue_items()
+                    elif changed:
+                        merged = {item.rj_id: item for item in self._queue_snapshot_items}
+                        for rid in changed:
+                            merged.pop(rid, None)
+                        merged.update((item.rj_id, item) for item in self._read_queue_items(changed))
+                        items = tuple(sorted(merged.values(), key=self._sort_key))
+                    else:
+                        items = self._queue_snapshot_items
+                finally:
+                    self.connection.execute("RELEASE queue_snapshot")
+                self._queue_revisions = revisions
+                summary = self._queue_snapshot_summary
+                if summary is None or items is not self._queue_snapshot_items:
+                    summary = self._summarize_queue(items)
+            else:
+                items = self._read_queue_items()
+                summary = self._summarize_queue(items)
+            self._queue_snapshot_items = items
+            self._queue_snapshot_summary = summary
             self._queue_snapshot_token = token
 
-        all_items = self._queue_snapshot_items
-        filtered = [item for item in all_items if self._matches_filter(item, status_filter)]
+        summary = self._queue_snapshot_summary
+        assert summary is not None
+        return self._paginate_queue(self._queue_snapshot_items, summary,
+                                    status_filter, page, page_size)
+
+    def _read_queue_items(self, changed: list[str] | None = None) -> tuple[DownloadQueueItem, ...]:
+        rows = self.connection.execute(
+            self._aggregate_sql(changed_only=changed is not None),
+            () if changed is None else (json.dumps(changed),),
+        )
+        return tuple(sorted((self._row_to_item(row) for row in rows), key=self._sort_key))
+
+    @staticmethod
+    def _summarize_queue(items: tuple[DownloadQueueItem, ...]) -> DownloadQueueSummary:
+        counts = Counter(item.queue_state for item in items)
+        return DownloadQueueSummary(
+            total_tasks=len(items),
+            active_tasks=counts["active"],
+            queued_tasks=counts["queued"],
+            paused_tasks=counts["paused"],
+            failed_tasks=counts["failed"],
+            completed_tasks=counts["completed"],
+            downloaded_bytes=sum(item.downloaded_bytes for item in items),
+            cancelled_tasks=counts["cancelled"],
+            total_bytes=sum(item.total_bytes for item in items),
+        )
+
+    def _paginate_queue(self, items: tuple[DownloadQueueItem, ...], summary: DownloadQueueSummary,
+                        status_filter: str, page: int, page_size: int) -> DownloadQueuePage:
+        filtered = [item for item in items if self._matches_filter(item, status_filter)]
         total_items = len(filtered)
         page_count = max(1, (total_items + page_size - 1) // page_size)
         page = min(page, page_count)
         start = (page - 1) * page_size
-        page_items = tuple(filtered[start:start + page_size])
-
-        summary = self._queue_snapshot_summary
-        assert summary is not None
         return DownloadQueuePage(
-            items=page_items,
+            items=tuple(filtered[start:start + page_size]),
             summary=summary,
             page=page,
             page_size=page_size,

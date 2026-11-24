@@ -1,12 +1,16 @@
 import csv
+from functools import lru_cache
 import json
 import logging
+import re
 import shutil
 import sqlite3
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Iterable
+
+from opencc import OpenCC
 
 from core.intake_db import (
     IntakePathUpdateRequest,
@@ -17,6 +21,7 @@ from core.library_rebuild import (
     ACTIVE_DOWNLOAD_STATUSES,
     LibraryRebuildResult,
     LibraryScanError,
+    _scan_work_dir,
     choose_canonical_entries,
     flatten_metadata_track_titles,
     scan_library_snapshot,
@@ -33,6 +38,209 @@ DB_FILE: Optional[Path] = None
 
 # Cache expiry: 7 days
 CACHE_TTL_HOURS = 168
+
+
+_search_converter = OpenCC("t2s")
+
+
+@lru_cache(maxsize=32768)
+def _fold_search_segment(segment: str) -> str:
+    return segment if segment.isascii() else _search_converter.convert(segment)
+
+
+@lru_cache(maxsize=16384)
+def _library_search_key(text: str) -> str:
+    if text.isascii():
+        return text.casefold()
+    # Reuse the pinned OpenCC converter's separators to keep phrase matching
+    # intact while sharing repeated tags and names across different albums.
+    parts = _search_converter.split_chars_re.split(text)
+    parts[::2] = [_fold_search_segment(part) for part in parts[::2]]
+    return "".join(parts).casefold()
+
+
+def _search_terms(column: str) -> str:
+    return (
+        f"CASE WHEN json_valid({column}) THEN "
+        f"coalesce(json_extract({column},'$.tags'),'') || ' ' || "
+        f"coalesce(json_extract({column},'$.vas'),'') || ' ' || "
+        f"coalesce(json_extract({column},'$.voice_actors'),'') ELSE '' END"
+    )
+
+
+def _init_metadata_search(conn: sqlite3.Connection) -> None:
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='library_metadata_search'"
+    ).fetchone()
+    conn.execute("""CREATE TABLE IF NOT EXISTS library_metadata_search (
+        rj_id TEXT PRIMARY KEY, title TEXT, circle TEXT, terms TEXT NOT NULL)""")
+    if exists is None:
+        conn.execute(f"""INSERT INTO library_metadata_search
+            SELECT rj_id, title, circle, {_search_terms('metadata_json')}
+            FROM metadata_cache WHERE rj_id IS NOT NULL""")
+    for event in ("INSERT", "UPDATE OF rj_id, title, circle, metadata_json"):
+        remove = ("DELETE FROM library_metadata_search WHERE rj_id=old.rj_id "
+                  "AND old.rj_id IS NOT new.rj_id;" if event.startswith("UPDATE") else "")
+        conn.execute(f"""CREATE TRIGGER IF NOT EXISTS metadata_search_{event.split()[0].lower()}
+            AFTER {event} ON metadata_cache BEGIN
+                {remove}
+                INSERT INTO library_metadata_search (rj_id, title, circle, terms)
+                SELECT new.rj_id, new.title, new.circle, {_search_terms('new.metadata_json')}
+                WHERE new.rj_id IS NOT NULL
+                ON CONFLICT(rj_id) DO UPDATE SET title=excluded.title, circle=excluded.circle,
+                                                terms=excluded.terms;
+            END""")
+    conn.execute("""CREATE TRIGGER IF NOT EXISTS metadata_search_delete
+        AFTER DELETE ON metadata_cache BEGIN
+            DELETE FROM library_metadata_search WHERE rj_id=old.rj_id;
+        END""")
+
+
+def _init_queue_revisions(conn: sqlite3.Connection) -> None:
+    # At most one row per changed album, regardless of the number of file writes.
+    conn.execute("""CREATE TABLE IF NOT EXISTS queue_revisions (
+        rj_id TEXT PRIMARY KEY, revision INTEGER NOT NULL) WITHOUT ROWID""")
+
+    def mark(source: str, condition: str = "1") -> str:
+        return f"""INSERT INTO queue_revisions (rj_id, revision)
+            SELECT {source}.rj_id, 1 WHERE {source}.rj_id IS NOT NULL AND ({condition})
+            ON CONFLICT(rj_id) DO UPDATE SET revision=queue_revisions.revision+1;"""
+
+    for table, columns in (
+        ("works", "rj_id, title, circle, cover_url, local_path, status, downloaded_at"),
+        ("downloads", "id, rj_id, status, track_title, downloaded_bytes, total_bytes, error, updated_at"),
+    ):
+        for event, body in (
+            ("INSERT", mark("new")),
+            (f"UPDATE OF {columns}", mark("new") + mark("old", "old.rj_id IS NOT new.rj_id")),
+            ("DELETE", mark("old")),
+        ):
+            conn.execute(f"""CREATE TRIGGER IF NOT EXISTS queue_{table}_{event.split()[0].lower()}
+                AFTER {event} ON {table} BEGIN {body} END""")
+    # REPLACE can silently delete an existing file row belonging to another RJ.
+    conn.execute("""CREATE TRIGGER IF NOT EXISTS queue_downloads_replace
+        BEFORE INSERT ON downloads BEGIN
+            INSERT INTO queue_revisions (rj_id, revision)
+            SELECT rj_id, 1 FROM downloads WHERE id=new.id AND rj_id IS NOT new.rj_id
+            ON CONFLICT(rj_id) DO UPDATE SET revision=queue_revisions.revision+1;
+        END""")
+
+
+def _release_date_sql(column: str) -> str:
+    """Use the saved DLsite date, including the upstream 'release' spelling."""
+    fields = [f"substr(trim(json_extract({column},'$.{key}')),1,10)"
+              for key in ("release_date", "release")]
+    valid = [f"CASE WHEN date({ymd},'+0 days')={ymd} THEN {ymd} END" for ymd in fields]
+    return f"CASE WHEN json_valid({column}) THEN coalesce({', '.join(valid)}) END"
+
+
+def _admitted_at_sql(item: str) -> str:
+    return f"""coalesce(
+        CASE WHEN {item}.folder_path<>'' THEN (
+            SELECT julianday(w.downloaded_at) FROM works w WHERE w.rj_id={item}.rj_id
+            AND w.status IN ('completed','registered','verified','external','indexed')
+            AND w.local_path<>''
+        ) END,
+        CASE WHEN {item}.folder_path<>'' THEN julianday({item}.scanned_at) END,
+        (SELECT julianday(ca.archived_at) FROM cloud_archives ca WHERE ca.rj_id={item}.rj_id),
+        julianday({item}.scanned_at)
+    )"""
+
+
+def _init_library_dates(conn: sqlite3.Connection) -> None:
+    tables = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name IN ('library_admissions', 'library_release_dates')"
+    )}
+    conn.execute("""CREATE TABLE IF NOT EXISTS library_admissions (
+        rj_id TEXT PRIMARY KEY, admitted_at REAL NOT NULL) WITHOUT ROWID""")
+    if "library_admissions" not in tables:
+        conn.execute(f"""INSERT INTO library_admissions
+            SELECT li.rj_id, {_admitted_at_sql('li')} AS admitted_at FROM library_items li
+            WHERE li.rj_id IS NOT NULL AND admitted_at IS NOT NULL""")
+    # Keep the first available timestamp even when a rescan replaces the index.
+    for event in ("INSERT", "UPDATE OF folder_path, scanned_at"):
+        conn.execute(f"""CREATE TRIGGER IF NOT EXISTS library_admission_{event.split()[0].lower()}
+            AFTER {event} ON library_items
+            WHEN new.rj_id IS NOT NULL AND NOT EXISTS
+                (SELECT 1 FROM library_admissions WHERE rj_id=new.rj_id)
+            BEGIN
+                INSERT INTO library_admissions
+                SELECT new.rj_id, admitted_at
+                FROM (SELECT {_admitted_at_sql('new')} AS admitted_at)
+                WHERE admitted_at IS NOT NULL;
+            END""")
+    conn.execute("""CREATE TRIGGER IF NOT EXISTS cloud_archive_admission
+        AFTER INSERT ON cloud_archives
+        WHEN new.rj_id IS NOT NULL AND julianday(new.archived_at) IS NOT NULL
+        BEGIN
+            INSERT INTO library_admissions VALUES (new.rj_id, julianday(new.archived_at))
+            ON CONFLICT(rj_id) DO NOTHING;
+        END""")
+
+    conn.execute("""CREATE TABLE IF NOT EXISTS library_release_dates (
+        rj_id TEXT NOT NULL, source TEXT NOT NULL, release_date TEXT,
+        PRIMARY KEY (rj_id, source)) WITHOUT ROWID""")
+    for table in ("metadata_cache", "cloud_archives"):
+        if "library_release_dates" not in tables:
+            conn.execute(f"""INSERT INTO library_release_dates
+                SELECT rj_id, '{table}', {_release_date_sql('metadata_json')}
+                FROM {table} WHERE rj_id IS NOT NULL""")
+        for event in ("INSERT", "UPDATE OF rj_id, metadata_json", "DELETE"):
+            operation = event.split()[0].lower()
+            remove = (
+                f"DELETE FROM library_release_dates WHERE rj_id=old.rj_id AND source='{table}';"
+                if operation != "insert" else ""
+            )
+            save = f"""INSERT INTO library_release_dates
+                SELECT new.rj_id, '{table}', {_release_date_sql('new.metadata_json')}
+                WHERE new.rj_id IS NOT NULL
+                ON CONFLICT(rj_id, source) DO UPDATE SET release_date=excluded.release_date;"""
+            conn.execute(f"""CREATE TRIGGER IF NOT EXISTS library_release_{table}_{operation}
+                AFTER {event} ON {table} BEGIN {remove} {save if operation != 'delete' else ''} END""")
+
+
+def _album_tag_rows(column: str) -> str:
+    # json_quote preserves arrays/objects and makes scalar strings safe for json_each.
+    fields = [f"json_quote(json_extract({column},'$.{key}'))" for key in ("tags", "tag")]
+    values = [
+        f"CASE WHEN {field} NOT IN ('[]','{{}}','\"\"','null') THEN {field} END"
+        for field in fields
+    ]
+    array = f"CASE WHEN json_valid({column}) THEN coalesce({', '.join(values)},'[]') ELSE '[]' END"
+    # json_each expands a bare object as a tag map, and accepts a scalar string.
+    return f"""SELECT DISTINCT trim(CASE type
+        WHEN 'object' THEN json_extract(value,'$.name')
+        WHEN 'text' THEN value END) AS tag
+        FROM json_each({array}) WHERE tag<>''"""
+
+
+def _init_album_tags(conn: sqlite3.Connection) -> None:
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='library_album_tags'"
+    ).fetchone()
+    conn.execute("""CREATE TABLE IF NOT EXISTS library_album_tags (
+        rj_id TEXT NOT NULL, source TEXT NOT NULL, tag TEXT NOT NULL COLLATE NOCASE,
+        PRIMARY KEY (rj_id, source, tag)) WITHOUT ROWID""")
+    conn.execute("""CREATE INDEX IF NOT EXISTS idx_library_album_tag_name
+                    ON library_album_tags(tag, rj_id)""")
+    for table in ("metadata_cache", "cloud_archives"):
+        for event in ("INSERT", "UPDATE OF rj_id, metadata_json", "DELETE"):
+            operation = event.split()[0].lower()
+            previous = "new" if operation == "insert" else "old"
+            remove = f"DELETE FROM library_album_tags WHERE rj_id={previous}.rj_id AND source='{table}';"
+            save = f"""INSERT INTO library_album_tags
+                SELECT new.rj_id, '{table}', tag FROM ({_album_tag_rows('new.metadata_json')})
+                WHERE new.rj_id IS NOT NULL
+                ON CONFLICT DO NOTHING;"""
+            conn.execute(f"""CREATE TRIGGER IF NOT EXISTS library_album_tags_{table}_{operation}
+                AFTER {event} ON {table} BEGIN {remove} {save if operation != 'delete' else ''} END""")
+        if exists is None:
+            # Feed each metadata row through the same extraction used by the triggers.
+            for rid, metadata in conn.execute(f"SELECT rj_id, metadata_json FROM {table} WHERE rj_id IS NOT NULL"):
+                conn.execute(f"""INSERT INTO library_album_tags
+                    SELECT ?1, '{table}', tag FROM ({_album_tag_rows('?2')})
+                    WHERE true ON CONFLICT DO NOTHING""", (rid, metadata))
 
 
 class LibraryVault:
@@ -70,6 +278,14 @@ class LibraryVault:
             self.conn.row_factory = sqlite3.Row
         if not read_only:
             self._init_schema()
+        projection_tables = {row[0] for row in self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name IN ('library_metadata_search', 'queue_revisions', 'library_admissions', 'library_release_dates', 'library_album_tags')"
+        )}
+        self._has_metadata_search = "library_metadata_search" in projection_tables
+        self._has_queue_revisions = "queue_revisions" in projection_tables
+        self._has_album_tags = 'library_album_tags' in projection_tables
+        self._has_library_dates = {"library_admissions", "library_release_dates"} <= projection_tables
 
     @classmethod
     def open_read_only(cls, db_path: str | Path | None = None) -> "LibraryVault":
@@ -143,6 +359,15 @@ class LibraryVault:
     def _init_schema(self) -> None:
         conn = self.conn
         conn.execute("BEGIN")
+        conn.execute("""CREATE TABLE IF NOT EXISTS library_user_state (
+            rj_id TEXT PRIMARY KEY, favorite INTEGER NOT NULL DEFAULT 0, played_at TEXT)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS library_asset_checks (
+            rj_id TEXT PRIMARY KEY, folder_path TEXT NOT NULL,
+            missing_tags INTEGER NOT NULL, checked_at TEXT NOT NULL)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS library_collections (
+            name TEXT NOT NULL COLLATE NOCASE, rj_id TEXT NOT NULL,
+            PRIMARY KEY (name, rj_id))""")
+
         # ── works table (P0) ──
         conn.execute("""
                 CREATE TABLE IF NOT EXISTS works (
@@ -275,6 +500,8 @@ class LibraryVault:
             ("scanned_at", "TIMESTAMP"),
         ]:
             self._safe_alter(conn, "library_items", col_name, col_type)
+        self._safe_alter(conn, "library_items", "missing_lrc", "INTEGER DEFAULT 0")
+
         conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_library_items_scan_run
                 ON library_items(scan_run_id)
@@ -308,6 +535,16 @@ class LibraryVault:
             """)
         self._safe_alter(conn, "cloud_archives", "cover_cache_path", "TEXT DEFAULT ''")
         self._safe_alter(conn, "cloud_archives", "metadata_json", "TEXT DEFAULT '{}'")
+        conn.execute("""CREATE INDEX IF NOT EXISTS idx_library_items_size_sort
+                        ON library_items(total_size DESC, rj_id)""")
+        conn.execute("""CREATE INDEX IF NOT EXISTS idx_cloud_archive_sizes
+                        ON cloud_archives(total_size)""")
+        conn.execute("""CREATE INDEX IF NOT EXISTS idx_downloads_rj_status
+                        ON downloads(rj_id, status)""")
+        _init_metadata_search(conn)
+        _init_queue_revisions(conn)
+        _init_library_dates(conn)
+        _init_album_tags(conn)
         conn.commit()
 
     def _safe_alter(self, conn, table: str, col_name: str, col_type: str) -> None:
@@ -583,7 +820,7 @@ class LibraryVault:
                     bool(item["cloud_archived"]) or bool(row["cloud_archived"])
                 )
             for row in self.conn.execute(
-                f"SELECT rj_id, status FROM downloads "
+                f"SELECT DISTINCT rj_id, status FROM downloads "
                 f"WHERE rj_id IN ({placeholders})",
                 canonical,
             ).fetchall():
@@ -783,6 +1020,188 @@ class LibraryVault:
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (rj_id, library_path, work_dir, status,
              size_bytes, file_count, datetime.now()))
+
+    @staticmethod
+    def _write_library_entry(conn, entry, scanned: str) -> None:
+        conn.execute(
+            """INSERT OR REPLACE INTO library_index
+               (rj_id, library_path, work_dir, status, size_bytes, file_count, scanned_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""", entry.to_library_index_row(scanned))
+        conn.execute(
+            """INSERT OR REPLACE INTO library_items
+               (rj_id, folder_path, folder_name, total_files, total_size, audio_count,
+                image_count, video_count, other_count, has_audio, has_cover,
+                warnings_json, scan_run_id, scanned_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            entry.to_library_item_row("incremental", scanned))
+        conn.execute("UPDATE library_items SET missing_lrc=? WHERE rj_id=?",
+                     (entry.missing_lrc, entry.rj_id))
+
+    def index_local_album(self, rj_id: str, work_dir: str | Path,
+                          roots: Iterable[str | Path]) -> bool:
+        """Refresh both index rows for one album without changing download state."""
+        folder = Path(work_dir).resolve(strict=True)
+        parents = [Path(root).resolve() for root in roots if root]
+        root = next((base for base in parents if base in folder.parents), None)
+        if root is None:
+            raise ValueError("专辑目录不在已配置的仓库中")
+        entry = _scan_work_dir(folder, rj_id=rj_id, library_root=root)
+        if not entry.total_files:
+            raise ValueError("专辑目录没有文件")
+        scanned = datetime.now().isoformat()
+
+        def save(conn):
+            conn.execute("BEGIN IMMEDIATE")
+            work = conn.execute("SELECT local_path FROM works WHERE rj_id=?",
+                                (rj_id,)).fetchone()
+            if not work or not work["local_path"] or Path(work["local_path"]).resolve() != folder:
+                raise ValueError("作品目录已变更，请刷新后重试")
+            self._write_library_entry(conn, entry, scanned)
+        self._write(save)
+        return True
+
+    def backfill_downloaded_library(self, roots: Iterable[str | Path], *, progress=None) -> dict:
+        """Backfill stable album folders without replacing or deleting an index."""
+        parents = tuple(Path(root).resolve() for root in roots if root)
+        allowed = ("completed", "registered", "verified", "indexed", "external", "partial")
+        # Partial albums are eligible when they have playable files and no live/resumable tasks.
+        query = """SELECT w.rj_id, w.status, w.local_path FROM works w
+                   WHERE w.local_path<>'' AND w.status IN (?,?,?,?,?,?)
+                     AND NOT EXISTS (SELECT 1 FROM library_items li
+                                     WHERE li.rj_id=w.rj_id AND li.folder_path<>'')
+                     AND NOT EXISTS (SELECT 1 FROM downloads d WHERE d.rj_id=w.rj_id
+                                     AND d.status IN ('queued','downloading','resuming','paused'))"""
+        with self._lock:
+            candidates = [tuple(row) for row in self.conn.execute(query, allowed)]
+        indexed = 0
+        skipped: list[str] = []
+        staged = []
+        def flush():
+            scanned = datetime.now().isoformat()
+            def save(conn):
+                conn.execute("BEGIN IMMEDIATE")
+                count = 0
+                for entry, status, original_path in staged:
+                    eligible = conn.execute(
+                        """SELECT 1 FROM works w WHERE w.rj_id=? AND w.status=? AND w.local_path=?
+                             AND NOT EXISTS (SELECT 1 FROM library_items li
+                                             WHERE li.rj_id=w.rj_id AND li.folder_path<>'')
+                             AND NOT EXISTS (SELECT 1 FROM downloads d WHERE d.rj_id=w.rj_id
+                                 AND d.status IN ('queued','downloading','resuming','paused'))""",
+                        (entry.rj_id, status, original_path)).fetchone()
+                    if eligible and Path(entry.work_dir).is_dir():
+                        self._write_library_entry(conn, entry, scanned)
+                        count += 1
+                    else:
+                        skipped.append(entry.rj_id)
+                return count
+            count = self._write(save)
+            staged.clear()
+            return count
+
+        for number, (rj_id, status, original_path) in enumerate(candidates, 1):
+            try:
+                folder = Path(original_path).resolve(strict=True)
+                root = next((base for base in parents if base in folder.parents), None)
+                if root is None or not folder.is_dir():
+                    skipped.append(rj_id)
+                else:
+                    entry = _scan_work_dir(folder, rj_id=rj_id, library_root=root)
+                    if entry.has_audio:
+                        staged.append((entry, status, original_path))
+                    else:
+                        skipped.append(rj_id)
+            except (OSError, LibraryScanError):
+                skipped.append(rj_id)
+            if len(staged) >= 30:
+                indexed += flush()
+            if progress and number % 100 == 0:
+                progress(number, len(candidates), indexed)
+        if staged:
+            indexed += flush()
+        return {"candidates": len(candidates), "indexed": indexed, "skipped": skipped}
+
+    def backup_library_catalog(self, directory: Path) -> Path:
+        directory.mkdir(parents=True, exist_ok=True)
+        target = directory / f"library-catalog-{datetime.now():%Y%m%d-%H%M%S-%f}.db"
+        # SQLite's backup captures a consistent snapshot including WAL changes.
+        with self._lock:
+            with sqlite3.connect(target) as destination:
+                self.conn.backup(destination)
+                if destination.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                    raise RuntimeError("资源库备份校验失败")
+        return target
+
+    def update_cloud_archive_location(self, rj_id: str, location: str) -> None:
+        location = location.strip()
+        if len(location) > 2048:
+            raise ValueError("云盘归档位置过长")
+        self._execute_write(
+            "UPDATE cloud_archives SET remote_path=?,updated_at=? WHERE rj_id=?",
+            (location, datetime.now().isoformat(), rj_id))
+
+    def set_library_favorite(self, rj_id: str, favorite: bool) -> None:
+        self._execute_write(
+            """INSERT INTO library_user_state(rj_id,favorite) VALUES(?,?)
+               ON CONFLICT(rj_id) DO UPDATE SET favorite=excluded.favorite""",
+            (rj_id, int(favorite)))
+
+    def set_library_last_played(self, rj_id: str) -> None:
+        self._execute_write(
+            """INSERT INTO library_user_state(rj_id,played_at) VALUES(?,?)
+               ON CONFLICT(rj_id) DO UPDATE SET played_at=excluded.played_at""",
+            (rj_id, datetime.now().isoformat()))
+
+    def set_library_collection(self, rj_id: str, name: str, *, remove: bool = False) -> None:
+        name = name.strip()
+        if not name or len(name) > 48:
+            raise ValueError("合集名称应为 1–48 个字")
+        sql = ("DELETE FROM library_collections WHERE name=? AND rj_id=?" if remove else
+               "INSERT OR IGNORE INTO library_collections(name,rj_id) VALUES(?,?)")
+        self._execute_write(sql, (name, rj_id))
+
+    def library_collection_names(self) -> list[str]:
+        with self._lock:
+            return [row[0] for row in self.conn.execute(
+                "SELECT DISTINCT name FROM library_collections ORDER BY name")]
+
+    def library_asset_roots(self) -> list[tuple[str, str]]:
+        with self._lock:
+            return [tuple(row) for row in self.conn.execute(
+                "SELECT rj_id,folder_path FROM library_items WHERE folder_path<>'' ORDER BY rj_id")]
+
+    def save_library_asset_checks(self, checks: list[tuple[str, str, int]]) -> None:
+        timestamp = datetime.now().isoformat()
+        def save(conn):
+            conn.executemany(
+                "INSERT INTO library_asset_checks(rj_id,folder_path,missing_tags,checked_at) "
+                "VALUES(?,?,?,?) ON CONFLICT(rj_id) DO UPDATE SET "
+                "folder_path=excluded.folder_path, missing_tags=excluded.missing_tags, "
+                "checked_at=excluded.checked_at",
+                [(*row, timestamp) for row in checks])
+        self._write(save)
+
+    def known_library_work_ids(self) -> set[str]:
+        with self._lock:
+            return {row[0] for row in self.conn.execute(
+                "SELECT rj_id FROM works UNION SELECT rj_id FROM library_items "
+                "UNION SELECT rj_id FROM library_index WHERE status<>'missing' "
+                "UNION SELECT rj_id FROM cloud_archives UNION SELECT DISTINCT rj_id FROM downloads")}
+
+    def preview_library_scan(self, paths: list[str], *, exclude_paths=()) -> dict:
+        snapshot = scan_library_snapshot(paths, exclude_paths=exclude_paths)
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT rj_id, work_dir FROM library_index WHERE status='found'"
+            ).fetchall()
+        old = {(row["rj_id"], str(Path(row["work_dir"])).casefold()) for row in rows}
+        new = {(entry.rj_id, entry.work_dir.casefold()) for entry in snapshot.entries}
+        old_ids = {rj_id for rj_id, _ in old}
+        new_ids = {rj_id for rj_id, _ in new}
+        return {"found": len(new_ids), "new": len(new_ids - old_ids),
+                "moved": len({rj_id for rj_id, _ in new - old} & old_ids),
+                "removed": len(old_ids - new_ids), "duplicates": len(new) - len(new_ids),
+                "warnings": len(snapshot.warnings)}
 
     def find_in_library(self, rj_id: str) -> List[sqlite3.Row]:
         """Check whether an RJ exists locally or in the cloud archive ledger."""
@@ -1004,7 +1423,7 @@ class LibraryVault:
         except (OSError, RuntimeError):
             return False
 
-    def rebuild_library(self, paths: List[str]) -> dict:
+    def rebuild_library(self, paths: List[str], *, exclude_paths=()) -> dict:
         """Atomically replace library indexes from a complete scan snapshot.
 
         Filesystem scanning happens before the SQLite transaction.  Any scan or
@@ -1012,7 +1431,8 @@ class LibraryVault:
         works with active/resumable downloads are never rewritten.
         """
         try:
-            snapshot = scan_library_snapshot(paths)
+            snapshot = (scan_library_snapshot(paths, exclude_paths=exclude_paths)
+                        if exclude_paths else scan_library_snapshot(paths))
         except LibraryScanError as exc:
             logging.error("Library snapshot failed: %s", exc)
             return LibraryRebuildResult(
@@ -1117,6 +1537,9 @@ class LibraryVault:
                 (snapshot.run_id,),
             )
 
+            conn.executemany("UPDATE library_items SET missing_lrc=? WHERE rj_id=?",
+                             [(entry.missing_lrc, rj_id) for rj_id, entry in canonical.items()
+                              if entry.missing_lrc])
             for rj_id, entry in canonical.items():
                 existing = existing_works.get(rj_id)
                 if existing is None:
@@ -1500,45 +1923,74 @@ class LibraryVault:
     def get_library_summary(self) -> dict:
         try:
             with self._lock:
+                token = (self.conn.total_changes,
+                         self.conn.execute("PRAGMA data_version").fetchone()[0])
+                cached = getattr(self, "_library_summary_cache", None)
+                if cached is not None and cached[0] == token:
+                    return cached[1].copy()
                 total = self.conn.execute(
-                    "SELECT COUNT(*), SUM(total_files), SUM(total_size) FROM library_items"
+                    """SELECT COUNT(*), SUM(total_files), SUM(total_size),
+                              SUM(folder_path<>''),
+                              SUM(CASE WHEN folder_path<>'' THEN total_size ELSE 0 END),
+                              SUM(has_audio=1), SUM(has_cover=1),
+                              SUM(warnings_json IS NOT NULL AND warnings_json NOT IN ('', '[]'))
+                       FROM library_items"""
                 ).fetchone()
-                return {
-                    "total_works": total[0] or 0,
-                    "total_files": total[1] or 0,
-                    "total_size": total[2] or 0,
-                    "with_audio": self.conn.execute(
-                        "SELECT COUNT(*) FROM library_items WHERE has_audio=1"
-                    ).fetchone()[0],
-                    "with_cover": self.conn.execute(
-                        "SELECT COUNT(*) FROM library_items WHERE has_cover=1"
-                    ).fetchone()[0],
-                    "with_warnings": self.conn.execute(
-                        "SELECT COUNT(*) FROM library_items "
-                        "WHERE warnings_json IS NOT NULL "
-                        "AND warnings_json != '[]' AND warnings_json != ''"
-                    ).fetchone()[0],
-                    "cloud_archived": self.conn.execute(
-                        "SELECT COUNT(*) FROM cloud_archives"
-                    ).fetchone()[0],
-                }
-        except Exception as e:
-            logging.error(f"get_library_summary error: {e}")
+                cloud = self.conn.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(total_size),0) FROM cloud_archives"
+                ).fetchone()
+                summary = dict(zip((
+                    "total_works", "total_files", "total_size", "local_works", "local_bytes",
+                    "with_audio", "with_cover", "with_warnings",
+                ), (value or 0 for value in total)))
+                summary.update(cloud_archived=cloud[0], cloud_bytes=cloud[1])
+                self._library_summary_cache = token, summary
+                return summary.copy()
+        except Exception as exc:
+            logging.error("get_library_summary error: %s", exc)
             return {}
 
     def get_library_page(self, *, search: str = "", offset: int = 0,
                          limit: int = 20, category: str = "all",
-                         sort: str = "size_desc") -> dict:
+                         sort: str = "size_desc", collection: str = "", tag: str = "") -> dict:
         """Return one card page plus summary using a single serialized read."""
         try:
             with self._lock:
                 conditions, params = [], []
-                if search:
-                    query = f"%{search}%"
+                search = search.strip()
+                search_table = "metadata_cache"
+                exact_rj = re.fullmatch(r"RJ[0-9]{8}", search, re.IGNORECASE)
+                if exact_rj:
+                    conditions.append("li.rj_id = ?")
+                    params.append(search.upper())
+                elif search:
+                    self.conn.create_function("library_fold", 1, _library_search_key,
+                                              deterministic=True)
+                    query = _library_search_key(search)
+                    terms = _search_terms("mc.metadata_json")
+                    if getattr(self, "_has_metadata_search", False):
+                        search_table = "library_metadata_search"
+                        terms = "coalesce(mc.terms,'')"
                     conditions.append(
-                        "(li.rj_id LIKE ? OR li.folder_name LIKE ? OR li.folder_path LIKE ?)"
+                        "(instr(library_fold(li.rj_id || ' ' || li.folder_name || ' ' || "
+                        "li.folder_path || ' ' || coalesce(w.title,'') || ' ' || "
+                        "coalesce(w.circle,'') || ' ' || coalesce(mc.title,'') || ' ' || "
+                        f"coalesce(mc.circle,'') || ' ' || {terms}), ?) > 0)"
                     )
-                    params.extend([query, query, query])
+                    params.append(query)
+                tag = tag.strip()
+                if tag:
+                    if self._has_album_tags:
+                        conditions.append("li.rj_id IN (SELECT rj_id FROM library_album_tags WHERE tag=?)")
+                        params.append(tag)
+                    else:
+                        conditions.append(
+                            "EXISTS (SELECT 1 FROM ("
+                            f"{_album_tag_rows('rm.metadata_json')} UNION "
+                            f"{_album_tag_rows('ca.metadata_json')}"
+                            ") WHERE tag=? COLLATE NOCASE)"
+                        )
+                        params.append(tag)
                 category_conditions = {
                     "audio": "li.has_audio = 1",
                     "missing_cover": "li.has_cover = 0",
@@ -1551,58 +2003,142 @@ class LibraryVault:
                         "('completed','registered','stale','ignored'))"
                     ),
                     "postprocess_pending": (
-                        "w.status = 'completed' AND "
+                        "li.folder_path <> '' AND w.status = 'completed' AND "
                         "COALESCE(w.postprocess_status,'unknown') NOT IN "
                         "('completed','not_required')"
                     ),
+                    "favorite": "ls.favorite=1",
+                    "recent": "ls.played_at IS NOT NULL",
+                    "missing_lrc": "li.folder_path<>'' AND li.missing_lrc>0",
+                    "missing_tags": "li.folder_path<>'' AND ac.missing_tags>0",
                     "cloud_archived": "ca.rj_id IS NOT NULL",
+                    "cloud_only": "ca.rj_id IS NOT NULL AND li.folder_path=''",
+                    "cloud_and_local": "ca.rj_id IS NOT NULL AND li.folder_path<>''",
+                    "cloud_path_missing": "ca.rj_id IS NOT NULL AND COALESCE(ca.remote_path,'')=''",
+                    "needs_attention": (
+                        "li.folder_path<>'' AND (li.has_audio=0 OR li.has_cover=0 OR li.missing_lrc>0 OR ac.missing_tags>0 "
+                        "OR coalesce(w.postprocess_status,'unknown') IN ('pending','running','failed') "
+                        "OR EXISTS (SELECT 1 FROM downloads dx WHERE dx.rj_id=li.rj_id "
+                        "AND dx.status IN ('failed','paused')))"
+                    ),
                 }
                 if category in category_conditions:
                     conditions.append(category_conditions[category])
-                order_by = {
-                    "size_desc": "li.total_size DESC, li.rj_id",
-                    "files_desc": "li.total_files DESC, li.rj_id",
-                    "name_asc": "li.folder_name COLLATE NOCASE, li.rj_id",
-                    "rj_desc": "li.rj_id DESC",
-                }.get(sort, "li.total_size DESC, li.rj_id")
+                if category == "collection":
+                    conditions.append("EXISTS (SELECT 1 FROM library_collections lc "
+                                      "WHERE lc.rj_id=li.rj_id AND lc.name=?)")
+                    params.append(collection)
+                date_joins = ()
+                has_dates = self._has_library_dates
+                admission = "ad.admitted_at" if has_dates else _admitted_at_sql("li")
+                release = "coalesce(rd.release_date, cd.release_date)" if has_dates else (
+                    f"coalesce({_release_date_sql('rm.metadata_json')}, "
+                    f"{_release_date_sql('ca.metadata_json')})"
+                )
+                if sort == "admitted_desc" and has_dates:
+                    date_joins = ("LEFT JOIN library_admissions ad ON ad.rj_id=li.rj_id",)
+                elif sort == "release_desc":
+                    date_joins = (
+                        "LEFT JOIN library_release_dates rd ON rd.rj_id=li.rj_id AND rd.source='metadata_cache'",
+                        "LEFT JOIN library_release_dates cd ON cd.rj_id=li.rj_id AND cd.source='cloud_archives'",
+                    ) if has_dates else ("LEFT JOIN metadata_cache rm ON rm.rj_id=li.rj_id",)
+                sort_column, direction = {
+                    "size_desc": ("li.total_size", "DESC"),
+                    "files_desc": ("li.total_files", "DESC"),
+                    "name_asc": ("li.folder_name COLLATE NOCASE", "ASC"),
+                    "rj_desc": ("li.rj_id", "DESC"),
+                    "admitted_desc": (admission, "DESC"),
+                    "release_desc": (release, "DESC"),
+                }.get(sort, ("li.total_size", "DESC"))
+                if category == "recent":
+                    sort_column, direction = "ls.played_at", "DESC"
+                    date_joins = ()
+                order_by = f"{sort_column} {direction}, li.rj_id"
+                collate = " COLLATE NOCASE" if "COLLATE NOCASE" in sort_column else ""
+                needed = " ".join(conditions) + " " + sort_column
+                joins = [
+                    join for alias, join in (
+                        ("w.", "LEFT JOIN works w ON w.rj_id=li.rj_id"),
+                        ("mc.", f"LEFT JOIN {search_table} mc ON mc.rj_id=li.rj_id"),
+                        ("ca.", "LEFT JOIN cloud_archives ca ON ca.rj_id=li.rj_id"),
+                        ("rm.", "LEFT JOIN metadata_cache rm ON rm.rj_id=li.rj_id"),
+                        ("ls.", "LEFT JOIN library_user_state ls ON ls.rj_id=li.rj_id"),
+                        ("ac.", "LEFT JOIN library_asset_checks ac "
+                                "ON ac.rj_id=li.rj_id AND ac.folder_path=li.folder_path"),
+                    ) if alias in needed
+                ]
+                joins.extend(join for join in date_joins if join not in joins)
                 where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-                total = int(self.conn.execute(
-                    f"""SELECT COUNT(*) FROM library_items li
-                         LEFT JOIN works w ON w.rj_id=li.rj_id
-                         LEFT JOIN cloud_archives ca ON ca.rj_id=li.rj_id
-                         {where}""", params
-                ).fetchone()[0])
+                size, start = int(limit), max(0, int(offset))
+                summary = self.get_library_summary()
+                if not conditions:
+                    # Select narrow IDs before any metadata/tag queries on the page.
+                    total = int(summary.get("total_works", 0))
+                    cte = f"""WITH page_ids AS MATERIALIZED (
+                                  SELECT li.rj_id, {sort_column} AS sort_value
+                                  FROM library_items li {' '.join(joins)}
+                                  ORDER BY {order_by} LIMIT ? OFFSET ?
+                              )"""
+                    bindings = [size, start]
+                    total_select = ""
+                    page_from = "FROM page_ids page"
+                else:
+                    cte = f"""WITH matched AS MATERIALIZED (
+                                  SELECT li.rj_id, {sort_column} AS sort_value
+                                  FROM library_items li {' '.join(joins)} {where}
+                              ), page_ids AS MATERIALIZED (
+                                  SELECT rj_id, sort_value FROM matched ORDER BY sort_value{collate} {direction}, rj_id
+                                  LIMIT ? OFFSET ?
+                              ), amount AS (SELECT COUNT(*) AS page_total FROM matched)"""
+                    bindings = [*params, size, start]
+                    total_select = "amount.page_total,"
+                    page_from = "FROM amount LEFT JOIN page_ids page ON 1"
+                card_tags = """(SELECT json_group_array(tag) FROM (
+                    SELECT DISTINCT tag FROM library_album_tags
+                    WHERE rj_id=li.rj_id ORDER BY tag LIMIT 2
+                ))""" if self._has_album_tags else "'[]'"
                 rows = self.conn.execute(
-                    f"""SELECT li.*, mc.cover_url AS metadata_cover_url,
-                               w.status AS work_status,
-                               w.postprocess_status, w.postprocess_error,
-                               ca.provider AS archive_provider,
-                               ca.remote_path AS archive_remote_path,
-                               ca.note AS archive_note,
-                               ca.archived_at, ca.original_local_path,
+                    f"""{cte}
+                        SELECT {total_select} li.*, {card_tags} AS card_tags, ac.missing_tags, mc.cover_url AS metadata_cover_url,
+                               w.status AS work_status, w.postprocess_status, w.postprocess_error,
+                               (SELECT COUNT(*) FROM downloads dx WHERE dx.rj_id=li.rj_id
+                                AND dx.status='ignored') AS ignored_files,
+                               ca.provider AS archive_provider, ca.remote_path AS archive_remote_path,
+                               ca.note AS archive_note, ca.archived_at, ca.original_local_path,
                                ca.cover_cache_path AS archive_cover_path
-                        FROM library_items li
-                        LEFT JOIN metadata_cache mc ON mc.rj_id = li.rj_id
-                        LEFT JOIN works w ON w.rj_id = li.rj_id
-                        LEFT JOIN cloud_archives ca ON ca.rj_id = li.rj_id
-                        {where}
-                        ORDER BY {order_by}
-                        LIMIT ? OFFSET ?""",
-                    [*params, int(limit), int(offset)],
+                        {page_from}
+                        LEFT JOIN library_items li ON li.rj_id=page.rj_id
+                        LEFT JOIN metadata_cache mc ON mc.rj_id=li.rj_id
+                        LEFT JOIN works w ON w.rj_id=li.rj_id
+                        LEFT JOIN library_user_state ls ON ls.rj_id=li.rj_id
+                        LEFT JOIN library_asset_checks ac ON ac.rj_id=li.rj_id AND ac.folder_path=li.folder_path
+                        LEFT JOIN cloud_archives ca ON ca.rj_id=li.rj_id
+                        ORDER BY page.sort_value{collate} {direction}, li.rj_id""",
+                    bindings,
                 ).fetchall()
+                if conditions:
+                    total = rows[0]["page_total"] if rows else 0
+                items = []
+                for row in rows:
+                    if row["rj_id"] is None:
+                        continue
+                    item = dict(row)
+                    item.pop("page_total", None)
+                    item["card_tags"] = json.loads(item["card_tags"])
+                    items.append(item)
                 works_count = int(self.conn.execute(
                     "SELECT COUNT(*) FROM works"
                 ).fetchone()[0])
-                summary = self.get_library_summary()
                 return {
-                    "items": [dict(row) for row in rows],
+                    "items": items,
                     "total": total,
                     "works_count": works_count,
                     "summary": summary,
                 }
         except Exception as exc:
             logging.error("get_library_page error: %s", exc)
-            return {"items": [], "total": 0, "works_count": 0, "summary": {}}
+            return {"items": [], "total": 0, "works_count": 0, "summary": {},
+                    "error": "资源库读取失败，请刷新重试"}
 
     def get_library_detail(self, rj_id: str) -> dict | None:
         """Return one immutable library-detail snapshot without touching disk."""
@@ -1612,7 +2148,8 @@ class LibraryVault:
         try:
             with self._lock:
                 row = self.conn.execute(
-                    """SELECT li.*, w.title AS work_title, w.circle AS work_circle,
+                    """SELECT li.*, ls.favorite, ls.played_at,
+                              w.title AS work_title, w.circle AS work_circle,
                               w.status AS work_status, w.cover_url AS work_cover_url,
                                w.postprocess_status, w.postprocess_error,
                                w.postprocess_updated_at,
@@ -1627,14 +2164,20 @@ class LibraryVault:
                               ca.cover_cache_path AS archive_cover_path
                        FROM library_items li
                        LEFT JOIN works w ON w.rj_id = li.rj_id
+                       LEFT JOIN library_user_state ls ON ls.rj_id=li.rj_id
                        LEFT JOIN metadata_cache mc ON mc.rj_id = li.rj_id
                        LEFT JOIN cloud_archives ca ON ca.rj_id = li.rj_id
                        WHERE li.rj_id = ?""",
                     (normalized,),
                 ).fetchone()
-            if not row:
-                return None
+                if row is None:
+                    return None
+                album_tags = [tag[0] for tag in self.conn.execute(
+                    "SELECT DISTINCT tag FROM library_album_tags WHERE rj_id=? ORDER BY tag",
+                    (normalized,),
+                )] if self._has_album_tags else []
             result = dict(row)
+            result["album_tags"] = album_tags
             for key in ("metadata_json", "tracks_json", "warnings_json"):
                 raw = result.get(key) or "[]"
                 try:
@@ -1664,7 +2207,8 @@ class LibraryVault:
                 }
         except Exception as exc:
             logging.error("get_library_diagnostic_rows error: %s", exc)
-            return {"works": [], "library_items": [], "works_count": 0, "summary": {}}
+            return {"works": [], "library_items": [], "works_count": 0, "summary": {},
+                    "error": "异常记录读取失败，请刷新重试"}
 
 
 

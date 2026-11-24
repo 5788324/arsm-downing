@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ARSM 网页助手",
-  "version": "1.0.0",
-  "description": "在 asmr.one 标记已入库作品，并把未入库作品交给 ARSM Suite 下载。",
+  "version": "1.1.2",
+  "description": "在 asmr.one 显示入库和本机字幕状态，并把未入库作品交给 ARSM Suite 下载。",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA5Gxjwm5i+eEoL5xGjx4T2xddJcDkP/WtwiiyxZvg2g2czMS8zV99tH6jVQ0pDqGD+95iBRkIiLtwXeXSi3kc6E0S5fTfcXzna01mV+4qJ9CfVSxfR60hFgGypYoZbkmOdewYy8LEAescWhUfESWfazJQFMq81C/X4Lb8THY1psLS2HGzlpsW0V5eZE8HZPbkax1nVP37cG92lok+on+MuwQlgWe+9BiRsipSUmXGQrbhWpdYM0JemEjU+HeQJt7Xrd1bf0Ix1SkLQ7PGps3bXomK4PoOMTpqexVHvR0kiWh78epBeygFWV7KkHVzIPdvxhKd42lia4M6aHpVeD21LQIDAQAB",
   "permissions": [
     "storage"

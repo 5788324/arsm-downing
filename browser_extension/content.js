@@ -9,8 +9,18 @@
   const api = globalThis.ARSMExtension;
   const controlsByRj = new Map();
   const stateByRj = new Map();
+  const cardControls = new WeakMap();
+  const pendingAnchors = new Set();
+  const pendingIds = new Set();
+  const enqueuing = new Set();
+  const WORK_LINK = "a[href*='/work/'], a[href*='/works/']";
+  const BATCH_SIZE = 200;
+  let detailControls = null;
+  let pathname = location.pathname;
+  let needsCleanup = false;
   let scanTimer = 0;
   let pollTimer = 0;
+  let pollDue = 0;
   let refreshInFlight = null;
 
   function send(message) {
@@ -76,41 +86,63 @@
     }
     button.addEventListener("click", () => handleAction(rjId, button));
 
-    wrapper.append(badge, button);
+    const subtitleBadge = document.createElement("span");
+    subtitleBadge.className = "arsm-extension-badge arsm-extension-subtitle";
+    subtitleBadge.textContent = "有字幕";
+    subtitleBadge.title = "本机字幕库中有该作品的字幕包";
+    subtitleBadge.hidden = true;
+
+    wrapper.append(badge, subtitleBadge, button);
     const existing = controlsByRj.get(rjId) || [];
     existing.push(wrapper);
     controlsByRj.set(rjId, existing);
-    updateControls(rjId, stateByRj.get(rjId) || "loading");
+    const snapshot = stateByRj.get(rjId);
+    renderControls(wrapper, snapshot?.state || "loading", snapshot?.hasSubtitles === true);
+    if (!snapshot) {
+      pendingIds.add(rjId);
+    }
     return wrapper;
   }
 
-  function updateControls(rjId, state) {
-    stateByRj.set(rjId, state);
+  function renderControls(wrapper, state, hasSubtitles) {
     const presentation = api.presentationFor(state);
-    for (const wrapper of controlsByRj.get(rjId) || []) {
-      if (!wrapper.isConnected) {
-        continue;
-      }
-      const badge = wrapper.querySelector(".arsm-extension-badge");
-      const button = wrapper.querySelector(".arsm-extension-button");
-      badge.textContent = presentation.label;
-      badge.dataset.tone = presentation.tone;
-      button.hidden = presentation.action === "none";
-      button.disabled = state === "loading";
-      button.dataset.action = presentation.action;
-      if (presentation.action === "download") {
-        button.textContent = wrapper.classList.contains("arsm-extension-controls--detail")
-          ? "使用 ARSM 下载"
-          : "下载到 ARSM";
-      } else if (presentation.action === "open-library") {
-        button.textContent = "在 ARSM 中打开";
-      } else if (presentation.action === "open-download") {
-        button.textContent = "查看下载";
-      } else if (presentation.action === "settings") {
-        button.textContent = "设置连接";
+    const badge = wrapper.querySelector(".arsm-extension-badge");
+    const button = wrapper.querySelector(".arsm-extension-button");
+    badge.textContent = presentation.label;
+    badge.dataset.tone = presentation.tone;
+    wrapper.querySelector(".arsm-extension-subtitle").hidden = !hasSubtitles;
+    button.hidden = presentation.action === "none";
+    button.disabled = state === "loading";
+    button.dataset.action = presentation.action;
+    if (presentation.action === "download") {
+      button.textContent = wrapper.classList.contains("arsm-extension-controls--detail")
+        ? "使用 ARSM 下载"
+        : "下载到 ARSM";
+    } else if (presentation.action === "open-library") {
+      button.textContent = "在 ARSM 中打开";
+    } else if (presentation.action === "open-download") {
+      button.textContent = "查看下载";
+    } else if (presentation.action === "settings") {
+      button.textContent = "设置连接";
+    }
+  }
+
+  function updateControls(rjId, state, hasSubtitles = stateByRj.get(rjId)?.hasSubtitles === true) {
+    if (!controlsByRj.has(rjId)) {
+      return;
+    }
+    hasSubtitles = hasSubtitles && state !== "disconnected";
+    const previous = stateByRj.get(rjId);
+    if (previous?.state === state && previous.hasSubtitles === hasSubtitles) {
+      previous.refreshedAt = Date.now();
+      return;
+    }
+    stateByRj.set(rjId, { state, hasSubtitles, refreshedAt: Date.now() });
+    for (const wrapper of controlsByRj.get(rjId)) {
+      if (wrapper.isConnected) {
+        renderControls(wrapper, state, hasSubtitles);
       }
     }
-    schedulePolling();
   }
 
   async function handleAction(rjId, button) {
@@ -127,14 +159,17 @@
       });
       return;
     }
-    if (action !== "download") {
+    if (action !== "download" || enqueuing.has(rjId)) {
       return;
     }
 
+    enqueuing.add(rjId);
     updateControls(rjId, "loading");
     const response = await send({ type: "enqueue", rjId });
+    enqueuing.delete(rjId);
     if (response.ok && response.download) {
       updateControls(rjId, response.download.state || "queued");
+      schedulePolling();
       return;
     }
     const code = response.error && response.error.code;
@@ -148,32 +183,61 @@
     } else {
       updateControls(rjId, "failed");
     }
+    schedulePolling();
   }
 
-  function injectListCards() {
-    const anchors = Array.from(document.querySelectorAll(
-      "a[href*='/work/'], a[href*='/works/']"
-    ));
-    for (const anchor of anchors) {
-      const rjId = api.extractRjId(anchor.getAttribute("href") || "");
-      if (!rjId) {
-        continue;
-      }
-      const card = findWorkCard(anchor);
-      if (!card || card.querySelector(
-        ".arsm-extension-controls[data-arsm-rj-id='" + rjId + "']"
-      )) {
-        continue;
-      }
-      findSalesPlacement(card).append(createControls(rjId, false));
+  function discoverLinks(node) {
+    if (node.matches?.(WORK_LINK)) {
+      pendingAnchors.add(node);
+    }
+    for (const anchor of node.querySelectorAll?.(WORK_LINK) || []) {
+      pendingAnchors.add(anchor);
     }
   }
 
+  function injectListCards() {
+    for (const anchor of pendingAnchors) {
+      if (!anchor.isConnected) {
+        continue;
+      }
+      const rjId = api.extractRjId(anchor.getAttribute("href") || "");
+      const card = findWorkCard(anchor);
+      if (!card) {
+        continue;
+      }
+      const previous = cardControls.get(card);
+      if (!rjId) {
+        if (previous?.isConnected && !card.querySelector(WORK_LINK)) {
+          previous.remove();
+          needsCleanup = true;
+        }
+        continue;
+      }
+      if (previous?.isConnected && previous.dataset.arsmRjId === rjId) {
+        continue;
+      }
+      if (previous?.isConnected) {
+        previous.remove();
+        needsCleanup = true;
+      }
+      const controls = createControls(rjId, false);
+      findSalesPlacement(card).append(controls);
+      cardControls.set(card, controls);
+    }
+    pendingAnchors.clear();
+  }
+
   function injectDetail() {
-    const rjId = api.extractRjId(location.pathname);
-    if (!rjId || document.querySelector(
-      ".arsm-extension-controls--detail[data-arsm-rj-id='" + rjId + "']"
-    )) {
+    const rjId = api.extractRjId(pathname);
+    if (detailControls?.isConnected && detailControls.dataset.arsmRjId === rjId) {
+      return;
+    }
+    if (detailControls?.isConnected) {
+      detailControls.remove();
+      needsCleanup = true;
+    }
+    detailControls = null;
+    if (!rjId) {
       return;
     }
     const title = document.querySelector(
@@ -183,6 +247,7 @@
       return;
     }
     const controls = createControls(rjId, true);
+    detailControls = controls;
     const detailRoot = title.closest("main, .col-12, .q-page") || document;
     const sales = Array.from(detailRoot.querySelectorAll("span, div, p, small"))
       .find((element) => {
@@ -201,92 +266,195 @@
     parent.insertAdjacentElement("afterend", controls);
   }
 
-  function collectRjIds() {
-    return Array.from(document.querySelectorAll(
-      ".arsm-extension-controls[data-arsm-rj-id]"
-    )).map((element) => element.dataset.arsmRjId).filter(Boolean)
-      .filter((value, index, values) => values.indexOf(value) === index)
-      .slice(0, 200);
-  }
-
   async function refreshStatuses() {
-    if (refreshInFlight) {
-      return refreshInFlight;
+    if (refreshInFlight || document.hidden || !pendingIds.size) {
+      return;
     }
     refreshInFlight = (async () => {
-      const rjIds = collectRjIds();
-      if (!rjIds.length) {
-        return;
-      }
-      const response = await send({ type: "statusBatch", rjIds });
-      if (!response.ok || !response.states) {
-        for (const rjId of rjIds) {
-          updateControls(rjId, "disconnected");
+      while (pendingIds.size && !document.hidden) {
+        const ids = [];
+        for (const rjId of pendingIds) {
+          pendingIds.delete(rjId);
+          if (controlsByRj.has(rjId) && !enqueuing.has(rjId)) {
+            ids.push(rjId);
+          }
+          if (ids.length === BATCH_SIZE) {
+            break;
+          }
         }
-        return;
-      }
-      for (const rjId of rjIds) {
-        const snapshot = response.states[rjId];
-        updateControls(rjId, snapshot ? snapshot.state : "not_in_library");
+        if (!ids.length) {
+          continue;
+        }
+        const before = ids.map(rjId => stateByRj.get(rjId));
+        const response = await send({ type: "statusBatch", rjIds: ids });
+        const disconnected = !response.ok || !response.states;
+        ids.forEach((rjId, index) => {
+          if (enqueuing.has(rjId) || stateByRj.get(rjId) !== before[index]) {
+            return;
+          }
+          if (disconnected) {
+            updateControls(rjId, "disconnected");
+            return;
+          }
+          const snapshot = response.states[rjId];
+          updateControls(
+            rjId, snapshot ? snapshot.state : "not_in_library", snapshot?.has_subtitles === true
+          );
+        });
+        if (disconnected) {
+          for (const rjId of pendingIds) {
+            if (!enqueuing.has(rjId)) {
+              updateControls(rjId, "disconnected");
+            }
+          }
+          pendingIds.clear();
+          break;
+        }
       }
     })();
     try {
       await refreshInFlight;
     } finally {
       refreshInFlight = null;
+      schedulePolling();
     }
   }
 
   function cleanDisconnectedControls() {
-    for (const [rjId, controls] of controlsByRj.entries()) {
-      const connected = controls.filter((control) => control.isConnected);
+    for (const [rjId, controls] of controlsByRj) {
+      const connected = controls.filter(control => control.isConnected);
       if (connected.length) {
         controlsByRj.set(rjId, connected);
       } else {
         controlsByRj.delete(rjId);
         stateByRj.delete(rjId);
+        pendingIds.delete(rjId);
       }
     }
+    needsCleanup = false;
   }
 
-  async function scan() {
-    cleanDisconnectedControls();
+  function scan() {
+    scanTimer = 0;
+    if (pathname !== location.pathname) {
+      pathname = location.pathname;
+    }
     injectListCards();
     injectDetail();
-    await refreshStatuses();
+    if (needsCleanup) {
+      cleanDisconnectedControls();
+    }
+    if (pendingIds.size) {
+      void refreshStatuses();
+    } else if (!pollTimer) {
+      schedulePolling();
+    }
   }
 
   function scheduleScan() {
-    clearTimeout(scanTimer);
-    scanTimer = setTimeout(scan, 250);
+    if (!scanTimer) {
+      scanTimer = setTimeout(scan, 100);
+    }
   }
 
   function schedulePolling() {
-    const states = Array.from(stateByRj.values());
-    const active = states.some(
-      (state) => state === "queued" || state === "downloading" || state === "loading"
-    );
-    const disconnected = states.some((state) => state === "disconnected");
-    clearTimeout(pollTimer);
-    if (active || disconnected) {
-      pollTimer = setTimeout(async () => {
-        await refreshStatuses();
-        schedulePolling();
-      }, active ? 4000 : 10000);
+    if (document.hidden || !controlsByRj.size) {
+      clearTimeout(pollTimer);
+      pollTimer = 0;
+      return;
     }
+    let hasActive = false;
+    let hasDisconnected = false;
+    for (const { state } of stateByRj.values()) {
+      hasActive ||= state === "queued" || state === "downloading";
+      hasDisconnected ||= state === "disconnected";
+    }
+    const delay = hasActive ? 4000 : (hasDisconnected ? 10000 : 60000);
+    const due = Date.now() + delay;
+    if (pollTimer && pollDue <= due) {
+      return;
+    }
+    clearTimeout(pollTimer);
+    pollDue = due;
+    pollTimer = setTimeout(() => {
+      pollTimer = 0;
+      const now = Date.now();
+      for (const rjId of controlsByRj.keys()) {
+        const snapshot = stateByRj.get(rjId);
+        if (!snapshot || ["queued", "downloading", "disconnected"].includes(snapshot.state)
+            || now - snapshot.refreshedAt >= 60000) {
+          pendingIds.add(rjId);
+        }
+      }
+      if (pendingIds.size) {
+        void refreshStatuses();
+      } else {
+        schedulePolling();
+      }
+    }, delay);
   }
 
   const observer = new MutationObserver((mutations) => {
-    const hasExternalMutation = mutations.some((mutation) => {
+    let relevant = pathname !== location.pathname || (!detailControls?.isConnected &&
+      Boolean(api.extractRjId(location.pathname)));
+    for (const mutation of mutations) {
       const target = mutation.target instanceof Element
         ? mutation.target
         : mutation.target.parentElement;
-      return !target || !target.closest(".arsm-extension-controls");
-    });
-    if (hasExternalMutation) {
+      if (!target || target.closest(".arsm-extension-controls")) {
+        continue;
+      }
+      if (mutation.type === "attributes") {
+        if (target.matches("a")) {
+          pendingAnchors.add(target);
+        }
+        continue;
+      }
+      for (const node of mutation.addedNodes) {
+        if (node instanceof Element && !node.closest(".arsm-extension-controls")) {
+          discoverLinks(node);
+        }
+      }
+      for (const node of mutation.removedNodes) {
+        if (!(node instanceof Element)) {
+          continue;
+        }
+        if (node.matches(".arsm-extension-controls") ||
+            node.querySelector(".arsm-extension-controls")) {
+          needsCleanup = true;
+        }
+        if (node.matches(WORK_LINK) || node.querySelector(WORK_LINK)) {
+          const card = findWorkCard(target);
+          if (card) {
+            const link = card.querySelector(WORK_LINK);
+            if (link) {
+              pendingAnchors.add(link);
+            } else if (cardControls.get(card)?.isConnected) {
+              cardControls.get(card).remove();
+              needsCleanup = true;
+            }
+          }
+        }
+      }
+    }
+    if (relevant || pendingAnchors.size || needsCleanup) {
       scheduleScan();
     }
   });
-  observer.observe(document.documentElement, { childList: true, subtree: true });
+  observer.observe(document.documentElement, {
+    childList: true, subtree: true, attributes: true, attributeFilter: ["href"]
+  });
+  window.addEventListener("popstate", scheduleScan);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      schedulePolling();
+      return;
+    }
+    for (const rjId of controlsByRj.keys()) {
+      pendingIds.add(rjId);
+    }
+    scan();
+  });
+  discoverLinks(document);
   scan();
 })();

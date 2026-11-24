@@ -58,3 +58,7 @@ tmp_probe_*/
 release/
 .pytest_cache/
 .venv-py311/
+
+# Resource library runtime output
+library_playlists/
+reports/library-anomalies-*.csv

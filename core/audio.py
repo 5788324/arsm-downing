@@ -211,8 +211,8 @@ class AudioProcessor:
         if not path.is_file() or path.suffix.casefold() not in {".lrc", ".vtt"}:
             return None
         destination = AudioProcessor.canonical_lyrics_path(path, ".lrc")
-        if path.suffix.casefold() == ".lrc" and destination == path:
-            return path
+        if destination.is_file():
+            return destination
         try:
             text = AudioProcessor._decode_text(path.read_bytes())
             if path.suffix.casefold() == ".vtt":
@@ -225,7 +225,7 @@ class AudioProcessor:
             temp.write_text(text.rstrip() + "\n", encoding="utf-8")
             os.replace(temp, destination)
             return destination
-        except OSError as exc:
+        except (OSError, UnicodeError) as exc:
             logger.warning("Failed to prepare lyric sidecar %s: %s", path, exc)
             return None
 

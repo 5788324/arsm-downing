@@ -302,3 +302,54 @@ def test_sync_mp3_assets_accepts_wave_content_with_mp3_suffix(
     )
 
     assert AudioProcessor.sync_mp3_assets(disguised_wave, None, None) is False
+
+
+def test_completed_download_copies_matched_lyrics_before_tagging(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from zipfile import ZipFile
+
+    from core.orchestrator import Orchestrator
+
+    meta = metadata()
+    archive_dir = tmp_path / "archives"
+    archive_dir.mkdir()
+    root = tmp_path / "album"
+    for name in ("SE", "No SE", "subtitles", "MP3"):
+        (root / name).mkdir(parents=True)
+    se = root / "SE" / "track.mp3"
+    no_se = root / "No SE" / "track.mp3"
+    solo = root / "MP3" / "solo.mp3"
+    wrong_version = root / "SE" / "different.mp3"
+    tracks = [se, no_se, solo, wrong_version]
+    for track in tracks:
+        track.write_bytes(b"fixture")
+    vtt = root / "subtitles" / "solo.mp3.vtt"
+    vtt.write_text("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n繁體歌詞\n", encoding="utf8")
+    cover = root / "cover.jpg"
+    cover.write_bytes(b"fixture")
+    with ZipFile(archive_dir / f"{meta.rj_id}.zip", "w") as pack:
+        pack.writestr("SE/track.mp3.lrc", "[00:01.00]聲音")
+        pack.writestr("track.lrc", "[00:01.00]版本不明")
+        pack.writestr("No SE/different.lrc", "[00:01.00]错误版本")
+
+    tags = {}
+    def capture_tags(path, _meta, image, lyrics):
+        tags[path] = (image, lyrics)
+        return True
+    monkeypatch.setattr(AudioProcessor, "apply_tags", staticmethod(capture_tags))
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    orchestrator.config = SimpleNamespace(tag_audio=True, subtitle_archive_dir=str(archive_dir))
+    targets = [*tracks, vtt, cover]
+    tagged = orchestrator._postprocess_completed_work(meta, cover, root, targets)
+    assert len(tagged) == 4
+    assert se.with_suffix(".lrc").read_text(encoding="utf8") == "[00:01.00]声音\n"
+    assert solo.with_suffix(".lrc").read_text(encoding="utf8") == "[00:01.00]繁体歌词\n"
+    assert tags[se] == (cover, se.with_suffix(".lrc"))
+    assert tags[solo] == (cover, solo.with_suffix(".lrc"))
+    assert tags[no_se] == (cover, None)
+    assert tags[wrong_version] == (cover, None)
+    assert not no_se.with_suffix(".lrc").exists()
+    assert vtt.is_file()
+    solo.with_suffix(".lrc").write_text("[00:01.00]手动版本", encoding="utf8")
+    orchestrator._postprocess_completed_work(meta, cover, root, targets)
+    assert solo.with_suffix(".lrc").read_text(encoding="utf8") == "[00:01.00]手动版本"

@@ -1,12 +1,15 @@
 """Local sidecar asset discovery shared by downloads and library views."""
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 import re
+import tempfile
+import threading
 from typing import Iterable
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 COVER_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 COVER_EXACT_NAMES = {
@@ -98,7 +101,8 @@ def _visual_cover_rank(path: Path, album: Path) -> tuple | None:
             return None
         depth = len(relative.parts) - 1
         return (depth, abs(ratio - 0.75), -(width * height), lowered)
-    except (OSError, ValueError, UnidentifiedImageError):
+    except (OSError, ValueError, UnidentifiedImageError,
+            Image.DecompressionBombError, Image.DecompressionBombWarning):
         return None
 
 
@@ -155,3 +159,51 @@ def find_local_cover(root: str | Path) -> Path | None:
     ]
     ranked.sort(key=lambda item: item[0])
     return ranked[0][1] if ranked else None
+
+_THUMBNAIL_SIZE = (400, 400)
+_thumbnail_lock = threading.Lock()
+_thumbnail_directory: tempfile.TemporaryDirectory | None = None
+
+
+def get_cover_thumbnail(source: str | Path) -> Path | None:
+    """Cache a bounded, disposable grid image without rewriting the cover."""
+    global _thumbnail_directory
+    original = Path(source)
+    try:
+        stat = original.stat()
+        key = hashlib.sha256(os.fsencode(
+            f"{original.absolute()}\n{stat.st_size}\n{stat.st_mtime_ns}"
+        )).hexdigest()
+        with _thumbnail_lock:
+            if _thumbnail_directory is None:
+                _thumbnail_directory = tempfile.TemporaryDirectory(prefix="arsm-cover-")
+            target = Path(_thumbnail_directory.name) / f"{key}.jpg"
+        if target.is_file():
+            return target
+
+        with Image.open(original) as image:
+            if Image.MAX_IMAGE_PIXELS is not None and (
+                image.width * image.height > Image.MAX_IMAGE_PIXELS
+            ):
+                return None
+            image.draft("RGB", _THUMBNAIL_SIZE)
+            preview = ImageOps.exif_transpose(image)
+            preview.thumbnail(_THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
+            if "A" in preview.getbands() or "transparency" in preview.info:
+                rgba = preview.convert("RGBA")
+                background = Image.new("RGB", preview.size, (32, 32, 32))
+                background.paste(rgba, mask=rgba.getchannel("A"))
+                preview = background
+            else:
+                preview = preview.convert("RGB")
+            stream = tempfile.NamedTemporaryFile(dir=target.parent, suffix=".tmp", delete=False)
+            temporary = Path(stream.name)
+            try:
+                with stream:
+                    preview.save(stream, format="JPEG", quality=82, optimize=True)
+                temporary.replace(target)
+            finally:
+                temporary.unlink(missing_ok=True)
+        return target
+    except (OSError, ValueError, Image.DecompressionBombError, Image.DecompressionBombWarning):
+        return None

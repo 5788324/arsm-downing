@@ -303,37 +303,56 @@ class ToolsView(ft.Container):
         return Path(getattr(self.app_controller.db, "db_path", "history.db"))
 
     def scan_library(self, e):
-        """Build a filesystem snapshot and atomically refresh library indexes."""
-        del e
-        paths = list(getattr(self.app_controller.config, "library_paths", []) or [])
-        if not paths:
-            self.log("⚠ library_paths 为空 — 请先在设置中添加资源库路径", WARNING)
-            return
-        self.log(f"> 后台扫描资源库路径 ({len(paths)} 个)…", "white")
+        """Preview catalog changes before backing up and applying a full scan."""
+        from core.paths import app_path
 
-        def _scan():
-            return self.app_controller.db.rebuild_library(paths)
+        config = self.app_controller.config
+        roots = [config.output_dir, *(getattr(config, "library_paths", []) or [])]
+        paths = list(dict.fromkeys(str(root) for root in roots if root))
+        excluded = [getattr(config, "subtitle_archive_dir", "")]
+        self.log("正在预览资源库扫描范围…", "white")
 
-        def _render(result):
-            if not result.get("success"):
-                self.log(f"  扫描失败，旧索引已保留：{result.get('error', 'unknown')}", ERROR)
+        def preview():
+            return self.app_controller.db.preview_library_scan(paths, exclude_paths=excluded)
+
+        def render_preview(result):
+            self.log(
+                f"发现 {result['found']} 部 · 新增 {result['new']} · "
+                f"目录变化 {result['moved']} · 索引移除 {result['removed']} · "
+                f"重复目录 {result['duplicates']}", ACCENT_PRIMARY)
+            if not self.page:
                 return
-            self.log(
-                f"  发现 {result['found']} 个 RJ / {result['entries']} 个目录",
-                SUCCESS,
+            description = (
+                f"发现 {result['found']} 部作品，新增 {result['new']} 部，"
+                f"目录变化 {result['moved']} 部，预计移除 {result['removed']} 条旧索引。"
+                "应用前先备份数据库。"
             )
-            self.log(
-                f"  新增 works={result['indexed']} | 更新={result['updated']} | "
-                f"陈旧索引清理={result['removed_index']} | 标记缺失={result['missing']}",
-                ACCENT_PRIMARY,
-            )
-            if result.get("warnings"):
-                self.log(f"  扫描警告: {result['warnings']} 项", WARNING)
-            self.log("  library_items 与 library_index 已由同一快照原子更新。", "grey")
+            dialog = ft.AlertDialog(title=ft.Text("资源库扫描预览"), content=ft.Text(description))
 
-        self.app_controller.run_blocking(
-            _scan, _render, action_label="资源库扫描"
-        )
+            def apply(_event):
+                self.page.close(dialog)
+                def worker():
+                    db = self.app_controller.db
+                    backup = db.backup_library_catalog(app_path(".local_backups"))
+                    return db.rebuild_library(paths, exclude_paths=excluded), backup
+                def render(payload):
+                    result, backup = payload
+                    if not result.get("success"):
+                        self.log(f"扫描未提交：{result.get('error', '')}", ERROR)
+                        return
+                    self.log(f"索引已更新 · {result['found']} 部 · 备份 {backup}", SUCCESS)
+                    view = self.app_controller.views.get(1)
+                    if getattr(view, "_active", False):
+                        view.load_library()
+                self.app_controller.run_blocking(worker, render, action_label="更新资源库索引")
+
+            dialog.actions = [
+                ft.TextButton("取消", on_click=lambda _: self.page.close(dialog)),
+                ft.FilledButton("备份并应用", on_click=apply),
+            ]
+            self.page.open(dialog)
+
+        self.app_controller.run_blocking(preview, render_preview, action_label="预览资源库扫描")
 
     def repair_db(self, e):
         """VACUUM on a dedicated connection and fail closed for active queues."""

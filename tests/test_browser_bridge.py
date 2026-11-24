@@ -1,4 +1,5 @@
 import asyncio
+from zipfile import ZipFile
 from dataclasses import dataclass
 
 import aiohttp
@@ -86,7 +87,15 @@ def test_sanitized_state_priority():
     assert sanitized_rj_state(db, "RJ00000001")["state"] == "not_in_library"
 
 
-def test_browser_bridge_end_to_end_loopback_contract():
+def test_browser_bridge_end_to_end_loopback_contract(tmp_path):
+    archives = tmp_path / "subtitle archives"
+    nested = archives / "archive pack"
+    nested.mkdir(parents=True)
+    with ZipFile(nested / "rj000001.ZIP", "w") as archive:
+        archive.writestr("track.lrc", "[00:00.00]字幕")
+    (nested / "BJ000002.zip").touch()
+    (nested / "RJ000002.zip.part").touch()
+
     async def scenario():
         db = _FakeDb()
         db.library.add("RJ00000002")
@@ -105,6 +114,7 @@ def test_browser_bridge_end_to_end_loopback_contract():
             token="t" * 48,
             enabled=True,
             port=0,
+            subtitle_archive_dir=archives,
         )
         await bridge.start()
         assert bridge.running is True
@@ -200,6 +210,9 @@ def test_browser_bridge_end_to_end_loopback_contract():
                 assert list(states) == ["RJ00000001", "RJ00000002"]
                 assert states["RJ00000001"]["state"] == "not_in_library"
                 assert states["RJ00000002"]["state"] == "in_library"
+                assert states["RJ00000001"]["has_subtitles"] is True
+                assert states["RJ00000002"]["has_subtitles"] is False
+                assert str(archives) not in repr(states)
 
                 response = await session.post(
                     f"{endpoint}/v1/downloads",

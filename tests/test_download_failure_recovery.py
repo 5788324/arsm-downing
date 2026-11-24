@@ -58,6 +58,14 @@ def _orchestrator(tmp_path):
     return orchestrator, db, kernel
 
 
+
+def test_windows_japanese_text_with_vendor_characters_is_accepted(tmp_path):
+    path = tmp_path / "readme.txt"
+    path.write_bytes(bytes.fromhex("fa40a60a"))
+    assert validate_completed_local_file(path) == (True, "valid_text")
+    path.write_bytes(bytes.fromhex("fa40800a"))
+    assert not validate_completed_local_file(path)[0]
+
 def test_structurally_valid_oversized_recovery_formats(tmp_path):
     image_path = tmp_path / "cover.jpg"
     Image.new("RGB", (3, 2), "red").save(image_path, format="JPEG")
@@ -229,6 +237,76 @@ def test_success_removes_stale_queued_row_from_old_path_plan(tmp_path):
             assert rows[0]["status"] == "completed"
             assert rows[0]["local_path"] == str(current.save_path)
             assert db.get_works_status(_meta().rj_id) == "completed"
+        finally:
+            await kernel.shutdown()
+            db.close()
+
+    asyncio.run(run())
+
+
+def test_album_resume_preserves_failed_image_and_finalizes_existing_lyrics(tmp_path, monkeypatch):
+    async def run():
+        orchestrator, db, kernel = _orchestrator(tmp_path)
+        meta = _meta()
+        monkeypatch.setattr(orchestrator, "get_save_path", lambda _: tmp_path)
+        monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 10)
+        image = tmp_path / "large.jpg"
+        Image.new("RGB", (5, 5)).save(image)
+        lyric = tmp_path / "track.wav.vtt"
+        lyric.write_text(
+            "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n繁體聲音\n",
+            encoding="utf-8",
+        )
+        nodes = [
+            {"id": str(index), "title": name, "size": size,
+             "mediaDownloadUrl": f"https://invalid/{name}"}
+            for index, (name, size) in enumerate([
+                (image.name, image.stat().st_size),
+                (lyric.name, lyric.stat().st_size),
+                ("missing.bin", 1),
+            ])
+        ]
+
+        def set_cache(items):
+            db.set_metadata_cache(meta.rj_id, meta.title, meta.circle, "",
+                                  {"title": meta.title}, items)
+
+        async def download(target, *_args):
+            target.save_path.write_bytes(b"x")
+            return True
+
+        async def no_cover(*_args):
+            return None
+
+        async def run_queued():
+            job = orchestrator._queued_work_data.pop(meta.rj_id)
+            await orchestrator._process_download(
+                meta.rj_id, job["meta"], job["targets"], job["root_path"],
+                authoritative_plan=job["authoritative_plan"],
+                reconciled_paths=job["reconciled_paths"],
+            )
+
+        orchestrator.download_file = download
+        orchestrator._download_cover = no_cover
+        try:
+            set_cache(nodes)
+            assert (await orchestrator.resume_job(meta.rj_id))["status"] == "queued"
+            await run_queued()
+            rows = {row["track_title"]: row for row in db.get_downloads_by_rj(meta.rj_id)}
+            assert rows[image.name]["status"] == "failed"
+            assert db.get_works_status(meta.rj_id) == "partial"
+            assert not (tmp_path / "track.lrc").exists()
+
+            # Once the source manifest no longer lists the big image, completing
+            # a new track must use the already-verified VTT in post-processing.
+            nodes[-1] = {**nodes[-1], "title": "another.bin"}
+            set_cache(nodes[1:])
+            assert (await orchestrator.resume_job(meta.rj_id))["status"] == "queued"
+            await run_queued()
+            assert db.get_works_status(meta.rj_id) == "completed"
+            assert (tmp_path / "track.lrc").read_text(encoding="utf-8") == (
+                "[00:01.00]繁体声音\n"
+            )
         finally:
             await kernel.shutdown()
             db.close()

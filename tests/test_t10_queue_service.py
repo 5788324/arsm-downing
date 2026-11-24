@@ -300,3 +300,42 @@ def test_pristine_queued_page_skips_disk_verification(tmp_path: Path, monkeypatc
         assert calls == []
     finally:
         vault.close()
+
+
+def test_queue_delta_reuses_history_and_matches_full_snapshot(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "history.db"
+    with LibraryVault(path) as vault:
+        _seed(vault, 8)
+        service = DownloadService(vault)
+        service.fetch_queue_page(status_filter="all")
+        with sqlite3.connect(path) as writer:
+            writer.execute("UPDATE downloads SET downloaded_bytes=53 WHERE id='RJ00000001:0'")
+            writer.execute("UPDATE downloads SET rj_id='RJ00000029' WHERE id='RJ00000002:0'")
+            writer.execute("DELETE FROM works WHERE rj_id='RJ00000003'")
+            writer.execute("DELETE FROM downloads WHERE rj_id='RJ00000003'")
+
+        statements = []
+        vault.conn.set_trace_callback(statements.append)
+        incremental = service.fetch_queue_page(status_filter="all")
+        vault.conn.set_trace_callback(None)
+        assert any("WITH changed AS" in sql for sql in statements)
+        assert incremental == DownloadService(vault).fetch_queue_page(status_filter="all")
+        ids = {item.rj_id for item in incremental.items}
+        assert "RJ00000003" not in ids and "RJ00000029" in ids
+
+        with sqlite3.connect(path) as writer:
+            writer.execute("INSERT OR REPLACE INTO downloads (id, rj_id, status) "
+                           "VALUES ('RJ00000001:0', 'RJ00000030', 'failed')")
+        assert service.fetch_queue_page(status_filter="all") == (
+            DownloadService(vault).fetch_queue_page(status_filter="all")
+        )
+
+        vault.conn.execute("BEGIN")
+        vault.conn.execute("DELETE FROM downloads")
+        assert service.fetch_queue_page(status_filter="all") != incremental
+        vault.conn.rollback()
+        assert service.fetch_queue_page(status_filter="all") == (
+            DownloadService(vault).fetch_queue_page(status_filter="all")
+        )
